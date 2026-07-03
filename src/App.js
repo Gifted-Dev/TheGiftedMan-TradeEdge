@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   Lock,
   LogOut,
+  Menu,
   Palette,
   ScanSearch,
   Settings,
@@ -22,6 +23,7 @@ import {
   Timer,
   TriangleAlert,
   Wallet,
+  X,
 } from "lucide-react";
 
 const OLD_SK = { S:'gm_s_v1', T:'gm_t_v1', A:'gm_a_v1', W:'gm_w_v1', SS:'gm_ss_v1' };
@@ -2116,6 +2118,7 @@ export default function App(){
   const[page,setPage]=useState(()=>sessionStorage.getItem('gm_page')||'landing');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
+  const[mobileNavOpen,setMobileNavOpen]=useState(false);
   const userId=authUser?.id??null;
   const prevUserId=useRef(null);
 
@@ -2367,6 +2370,9 @@ export default function App(){
           {/* Mobile top bar */}
           <div className="mb-4 flex items-center justify-between rounded px-4 py-3 lg:hidden" style={{background:'var(--surface-1)',border:'1px solid var(--border)'}}>
             <div className="flex items-center gap-2.5">
+              <button onClick={()=>setMobileNavOpen(true)} aria-label="Open menu" className="rounded-sm p-2 text-ink-3" style={{border:'1px solid var(--border)'}}>
+                <Menu size={15}/>
+              </button>
               <div className="flex h-7 w-7 items-center justify-center rounded-sm text-white" style={{background:'var(--fill-accent)'}}><Sparkles size={13}/></div>
               <div className="text-[13px] font-semibold text-ink">TheGiftedMan</div>
             </div>
@@ -2379,6 +2385,71 @@ export default function App(){
               </button>
             </div>
           </div>
+
+          {mobileNavOpen&&(
+            <div role="dialog" aria-modal="true" className="lg:hidden" style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',zIndex:1000,display:'flex'}} onClick={()=>setMobileNavOpen(false)}>
+              <div className="flex w-72 max-w-[80vw] flex-col p-3" style={{background:'var(--surface-0)',borderRight:'1px solid var(--border)',height:'100%'}} onClick={e=>e.stopPropagation()}>
+                <div className="flex items-center justify-between px-2 py-3 mb-2">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-sm text-white" style={{background:'var(--fill-accent)',boxShadow:'0 4px 12px -4px rgba(98,112,243,0.5)'}}>
+                      <Sparkles size={15}/>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-semibold leading-tight text-ink">TheGiftedMan</div>
+                      <div className="text-[11px] text-ink-3">Trading system</div>
+                    </div>
+                  </div>
+                  <button onClick={()=>setMobileNavOpen(false)} aria-label="Close menu" className="rounded-sm p-1.5 text-ink-3" style={{border:'1px solid var(--border)'}}>
+                    <X size={15}/>
+                  </button>
+                </div>
+
+                <nav className="space-y-0.5">
+                  {nav.map(item=>{
+                    const Icon=item.icon;
+                    const on=view===item.id;
+                    return(
+                      <button key={item.id} onClick={()=>{setView(item.id);setMobileNavOpen(false);}} className={`relative flex w-full items-center gap-2.5 rounded-sm px-3 py-2 text-left text-[13px] transition-colors ${on?'font-semibold text-ink':'font-normal text-ink-3 hover:text-ink-2'}`} style={on?{background:'var(--bg-accent)'}:undefined}>
+                        {on&&<span className="absolute left-0 top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-full" style={{background:'var(--fill-accent)'}}/>}
+                        <Icon size={16} style={{color:on?'var(--text-accent)':'currentColor',flexShrink:0}}/>
+                        <span className="flex-1">{item.label}</span>
+                        {item.badge>0&&<span className="rounded-full px-1.5 py-px text-[10px] font-bold" style={{background:'var(--bg-danger)',color:'var(--text-danger)',border:'1px solid var(--border-danger)'}}>{item.badge}</span>}
+                      </button>
+                    );
+                  })}
+                </nav>
+
+                <div className="mt-auto space-y-2">
+                  <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+                    {ACCOUNT_MODES.map(m=>{
+                      const on=mode===m;
+                      const isReal=m==='REAL';
+                      return(
+                        <button key={m} onClick={()=>setMode(m)} aria-pressed={on}
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-sm py-1.5 text-xs font-bold tracking-wide transition-colors"
+                          style={on?{background:isReal?'var(--fill-danger)':'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>
+                          {isReal&&on&&<span className="pulse-dot" style={{background:'#fff'}}/>}
+                          {isReal?'REAL':'DEMO'}
+                          {isReal&&on&&<span style={{fontSize:9,opacity:0.85}}>LIVE</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="rounded p-3" style={{background:'var(--surface-1)',border:'1px solid var(--border)',boxShadow:'var(--highlight-top)'}}>
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-3">{mode==='REAL'?'Real balance':'Demo balance'}</div>
+                    <div className="mt-1 text-lg font-bold tracking-tight text-ink"><AnimatedNumber value={bal} format={v=>f$(v)}/></div>
+                    {todaySS&&(
+                      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-3">
+                        {todaySS.perMode?.[mode]?.isDailyLocked
+                          ?<><Lock size={12} style={{color:'var(--text-danger)'}}/><span style={{color:'var(--text-danger)'}}>Day locked</span></>
+                          :<>Session {todaySS.sessions.filter(s=>s.accountMode===mode).length}/{settings.sessionsPerDay}</>}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
             {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} bal={bal} mode={mode} nav={setView}/>}
