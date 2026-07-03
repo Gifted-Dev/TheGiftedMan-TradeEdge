@@ -1382,6 +1382,7 @@ function Money({settings,trades,wds,saveWds,mode}){
   const isPhase1=bal<phase1Thresh;
   const hitMs=settings.milestones.slice().reverse().find(m=>bal>=settings.startingBalanceReal*m.mul);
   const nextMs=settings.milestones.find(m=>bal<settings.startingBalanceReal*m.mul);
+  const nextMilestoneMessage=nextMs?`Next withdrawal milestone: ${nextMs.mul}× → ${f$(settings.startingBalanceReal*nextMs.mul)} (withdraw ${nextMs.pct}%).`:null;
 
   async function logWd(){
     const a=parseFloat(amt);if(!a||a<settings.brokerMin)return;
@@ -1434,6 +1435,9 @@ function Money({settings,trades,wds,saveWds,mode}){
             </div>
           );
         })}
+        {nextMilestoneMessage && !hitMs && (
+          <div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginTop:10,fontSize:13,color:'var(--text-accent)'}}>{nextMilestoneMessage}</div>
+        )}
       </div>
 
       <div style={card}>
@@ -1654,10 +1658,11 @@ export function Analytics({trades,settings,bal}){
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function Cfg({settings,saveSettings,ss}){
+function Cfg({settings,saveSettings,ss,resetAccount}){
   const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0});
   const[saved,setSaved]=useState(false);
   const[sessionWarn,setSessionWarn]=useState(false);
+  const[includeBalances,setIncludeBalances]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   const activeSession=ss?getActive(ss):null;
 
@@ -1760,6 +1765,22 @@ function Cfg({settings,saveSettings,ss}){
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between all sessions.</p>
         </div>
+      </div>
+
+      <div style={{...card,background:'var(--bg-danger)',borderColor:'var(--border-danger)',marginTop:16}}>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:10,color:'var(--text-danger)'}}>Reset account data</div>
+        <div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:12}}>
+          Choose a scope below, then decide whether you also want to reset starting balances. Real reset with balances also clears withdrawal history.
+        </div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('DEMO',includeBalances)}>Reset Demo{includeBalances?' + balances':''}</button>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('REAL',includeBalances)}>Reset Real{includeBalances?' + balances':''}</button>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('BOTH',includeBalances)}>Reset All{includeBalances?' + balances':''}</button>
+        </div>
+        <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--text-secondary)'}}>
+          <input type="checkbox" checked={includeBalances} onChange={e=>setIncludeBalances(e.target.checked)} />
+          Also reset starting balances and clear Real withdrawal history
+        </label>
       </div>
 
       <button style={{...btn('pri'),width:'100%'}} onClick={save}>{saved?'✓ Saved':'Save settings'}</button>
