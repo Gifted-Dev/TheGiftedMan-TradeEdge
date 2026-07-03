@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "./supabaseClient";
+import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import {
   Activity,
   ArrowDownRight,
@@ -2007,6 +2007,14 @@ export default function App(){
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
   if(authLoading)return<Loading/>;
+  if(!isSupabaseConfigured)return(
+    <div style={{maxWidth:440,margin:'4rem auto',padding:'1rem',textAlign:'center'}}>
+      <div style={{fontSize:18,fontWeight:500,color:'var(--text-danger)',marginBottom:8}}>Supabase not configured</div>
+      <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+        Set <code>REACT_APP_SUPABASE_URL</code> and <code>REACT_APP_SUPABASE_ANON_KEY</code> environment variables, then rebuild and redeploy.
+      </div>
+    </div>
+  );
   if(!authUser)return<Login/>;
   if(loading)return<Loading/>;
   if(!settings?.setupComplete)return<Setup onDone={saveSettings}/>;
