@@ -1175,7 +1175,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(!file||!selectedTrade)return;
     const b=await toB64(file);
     const url=typeof URL.createObjectURL==='function'?URL.createObjectURL(file):`data:${file.type||'image/png'};base64,${b}`;
-    const next=[...(editDraft.screenshots||selectedTrade.screenshots||[]),{url,b,mime:file.type||'image/png'}];
+    const next=[...(editDraft.screenshots||selectedTrade.screenshots||[]),{url,b64:b,mime:file.type||'image/png'}];
     setEditDraft(d=>({...d,screenshots:next}));
     setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);
   }
@@ -1195,7 +1195,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
   useEffect(()=>{
     if(selectedTrade){
-      setEditDraft({notes:selectedTrade.notes||'',screenshots:(selectedTrade.screenshots||[]).map((src,i)=>({id:i,url:typeof src==='string'&&src.startsWith('data:')?src:toDataUrl(src),b64:src,mime:'image/png'}))});
+      setEditDraft({notes:selectedTrade.notes||'',screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
+        const isStr=typeof src==='string';
+        return{id:i,url:isStr?toDataUrl(src):(src?.url||toDataUrl(src?.b64||src?.b)),b64:isStr?src:(src?.b64||src?.b||null),mime:src?.mime||'image/png'};
+      })});
     }
   },[selectedTrade]);
 
