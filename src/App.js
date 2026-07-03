@@ -1892,6 +1892,8 @@ export default function App(){
   const[view,setView]=useState('dashboard');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
+  const userId=authUser?.id??null;
+  const prevUserId=useRef(null);
 
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{setAuthUser(session?.user||null);setAuthLoading(false);}).catch(()=>setAuthLoading(false));
@@ -1900,16 +1902,18 @@ export default function App(){
   },[]);
 
   useEffect(()=>{
-    if(!authUser){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setSS(null);setLoading(false);return;}
+    if(!userId){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setSS(null);setLoading(false);prevUserId.current=null;return;}
+    if(prevUserId.current===userId)return;
+    prevUserId.current=userId;
     setLoading(true);
     (async()=>{
-      await maybeMigrateLocal(authUser.id);
+      await maybeMigrateLocal(userId);
       const[{data:s},{data:t},{data:sessRows},{data:w},{data:a}]=await Promise.all([
-        supabase.from('settings').select('*').eq('user_id',authUser.id).maybeSingle(),
-        supabase.from('trades').select('*').eq('user_id',authUser.id).order('timestamp',{ascending:false}),
-        supabase.from('sessions').select('*').eq('user_id',authUser.id).eq('date',tod()),
-        supabase.from('withdrawals').select('*').eq('user_id',authUser.id).order('timestamp',{ascending:false}),
-        supabase.from('zone_analyses').select('*').eq('user_id',authUser.id).order('timestamp',{ascending:false}),
+        supabase.from('settings').select('*').eq('user_id',userId).maybeSingle(),
+        supabase.from('trades').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
+        supabase.from('sessions').select('*').eq('user_id',userId).eq('date',tod()),
+        supabase.from('withdrawals').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
+        supabase.from('zone_analyses').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
       ]);
       const sObj=s?fromSettingsRow(s):null;
       const normalized=sObj&&{
@@ -1928,7 +1932,7 @@ export default function App(){
       setSS(normalized?dayFromSessionRows(sessRows||[]):null);
       setLoading(false);
     })();
-  },[authUser]);
+  },[userId]);
 
   useEffect(()=>{
     document.documentElement.setAttribute('data-theme', theme);
