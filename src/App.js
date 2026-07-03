@@ -63,6 +63,20 @@ ZONE TYPES:
 - Demand (DBR): Drop-Base-Rally → BUY
 - Demand (RBR): Rally-Base-Rally → BUY
 
+HOW TO DETERMINE ZONE DIRECTION — do this first, before any gate evaluation:
+1. Do NOT use the color of any drawn rectangle/box annotation as your signal for zone type. Drawn zone boxes may appear in a consistent color (e.g. green) regardless of whether the zone is Supply or Demand — box color is a user annotation choice, not a signal of direction.
+2. Instead, trace the actual candle price action in this exact order:
+   a. Identify the base — the tight cluster of 1-2 (or more) consolidation candles.
+   b. Look at price action immediately BEFORE the base: did price move UP into the base (this was a rally), or DOWN into the base (this was a drop)?
+   c. Look at price action immediately AFTER the base (the departure): did price move UP away from the base (rally/departure upward), or DOWN away from the base (drop/departure downward)?
+3. Classify using ONLY the before/after price movement, never the box color:
+   - Rally INTO base, then DROP away = Supply (RBD) = SELL
+   - DROP INTO base, then DROP away = Supply (DBD) = SELL
+   - DROP INTO base, then RALLY away = Demand (DBR) = BUY
+   - Rally INTO base, then RALLY away = Demand (RBR) = BUY
+4. The single most reliable signal is the DEPARTURE direction — which way did price move AWAY from the base after it formed? If price moved down away from the base, this is a Supply zone (expect further selling pressure on return). If price moved up away from the base, this is a Demand zone (expect further buying pressure on return).
+5. Before finalizing zoneType and direction in your response, explicitly state in your reasoning which way the departure candle(s) moved (up or down) as your primary evidence — this must match your final zoneType and direction fields exactly.
+
 THE 10 GATES — binary pass/fail, evaluated independently from this 1-minute chart image only. This is a strict filter, not a grader on a curve. When in doubt on any gate, FAIL it. Each justification must cite what you actually observe in the image. You are NOT evaluating live 10-second confirmation — that candle resolution is not visible in this image and is judged separately by the trader in real time.
 
 Four gates are HARD FILTERS (2, 3, 4, 5). If any hard filter fails, the zone is automatically INVALID regardless of the other six gates.
@@ -94,8 +108,8 @@ SELF-CHECK — before returning your final answer, review your own gate results.
 
 Also read the trading pair from the chart header if visible. If the pair is not clearly legible, set detectedPair to "UNKNOWN" — never guess.
 
-Respond ONLY with JSON (no markdown, no backticks). gateResults must contain exactly 10 entries in gate order, each with gate, label, isHardFilter, pass, justification. hardFilterFailed, hardFilterFailures, score, and grade must all be consistent with the gate results and the classification logic above:
-{"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}`;
+Respond ONLY with JSON (no markdown, no backticks). gateResults must contain exactly 10 entries in gate order, each with gate, label, isHardFilter, pass, justification. hardFilterFailed, hardFilterFailures, score, and grade must all be consistent with the gate results and the classification logic above. departureDirection must be "UP" or "DOWN" based on your own visual reading of which way price moved away from the base (step 4 above), and must agree with zoneType/direction:
+{"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","departureDirection":"DOWN","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}`;
 
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 
@@ -302,6 +316,13 @@ function chkLock(sess,style){
     if(sess.conWin>=2)return{locked:false,adv:`${sess.conWin} consecutive wins (+${f$(sess.sPnl)}). Consider securing this session — trade ${sess.trades+1} risks giving it back.`};
   }
   return{locked:false,adv:null};
+}
+
+function validateZoneDirection(r){
+  const dd=r.departureDirection;
+  if(dd!=='UP'&&dd!=='DOWN')return false;
+  if(dd==='DOWN')return r.direction==='SELL'&&/^Supply/.test(r.zoneType||'');
+  return r.direction==='BUY'&&/^Demand/.test(r.zoneType||'');
 }
 
 async function gemini(b64,mime,key){
@@ -904,6 +925,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
     setBusy(true);setErr(null);
     try{
       const r=provider==='groq'?await groqAnalyze(b64,mime,activeKey):await gemini(b64,mime,activeKey);
+      if(!validateZoneDirection(r))throw new Error('Zone direction could not be reliably determined — please verify manually before trading');
       const a={id:uid(),timestamp:Date.now(),date:tod(),screenshot:b64,screenshotMime:mime,linkedTradeId:null,...r};
       await saveAnalyses([a,...analyses]);
       setRes(a);
