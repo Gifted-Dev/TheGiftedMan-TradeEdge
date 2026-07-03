@@ -1803,6 +1803,185 @@ function Loading(){
   );
 }
 
+// ── Landing Page ──────────────────────────────────────────────────────────────
+function Landing({onLogin}){
+  const features=[
+    {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 7 strict structural gates before you enter a trade.'},
+    {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, zone grades, and outcomes. Track your execution quality over time.'},
+    {icon:BarChart3,title:'Performance Analytics',desc:'Deep-dive into your win rate by zone grade, pair, and account mode. See if AI analysis actually improves your results.'},
+    {icon:Wallet,title:'Money Management',desc:'Position sizing, milestone-based withdrawal tracking, and growth projection based on your actual win rate.'},
+    {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. Pre-trade checklists and discipline guidelines keep you consistent and away from emotional overtrading.'},
+    {icon:Target,title:'Session Control',desc:'Structured trading sessions with built-in circuit breakers. Stop after consecutive losses. Never trade on tilt again.'},
+  ];
+
+  const gates=[
+    {n:'1',label:'Base Structure',desc:'1-2 candle consolidation'},
+    {n:'2',label:'Departure Candle',desc:'Strong impulsive departure'},
+    {n:'3',label:'Freshness',desc:'First retest only'},
+    {n:'4',label:'Trend Alignment',desc:'Matches higher timeframe'},
+    {n:'5',label:'Distance Ratio',desc:'3x zone width travel'},
+    {n:'6',label:'Zone Width',desc:'2-3 pips precise zone'},
+    {n:'7',label:'No Conflicts',desc:'Clean path to target'},
+  ];
+
+  const steps=[
+    {n:'01',icon:ScanSearch,title:'Analyze',desc:'Upload your chart. AI evaluates the zone against 7 strict gates and returns a grade.'},
+    {n:'02',icon:CircleCheck,title:'Confirm',desc:'Watch the live 10-second chart. Confirm a Tier 1 trigger before entering.'},
+    {n:'03',icon:BookOpen,title:'Journal',desc:'Log the trade with one click. Screenshots, notes, and analysis data carry over automatically.'},
+    {n:'04',icon:BarChart3,title:'Improve',desc:'Review your analytics. See which grades, pairs, and styles produce the best results.'},
+  ];
+
+  return(
+    <div className="ld-wrap">
+      {/* ── Nav ── */}
+      <nav className="ld-nav">
+        <div className="ld-nav-inner">
+          <div className="ld-nav-brand">
+            <div className="ld-nav-icon"><Sparkles size={14} color="#fff"/></div>
+            <span>TheGiftedMan</span>
+          </div>
+          <button className="ld-btn ld-btn-ghost" onClick={()=>onLogin()}>Log in</button>
+        </div>
+      </nav>
+
+      {/* ── Hero ── */}
+      <section className="ld-hero">
+        <div className="ld-orb ld-orb-1"/>
+        <div className="ld-orb ld-orb-2"/>
+        <div className="ld-orb ld-orb-3"/>
+        <div className="ld-hero-content">
+          <div className="ld-badge">AI-Powered Trading System</div>
+          <h1 className="ld-hero-title">Master Your Trading<br/>with <span className="ld-gradient-text">Precision</span></h1>
+          <p className="ld-hero-sub">Validate zones with AI, journal every trade, manage risk intelligently, and analyze your performance — all in one workspace built for disciplined traders.</p>
+          <div className="ld-hero-ctas">
+            <button className="ld-btn ld-btn-primary ld-btn-lg" onClick={()=>onLogin()}>Get Started Free</button>
+            <a href="#features" className="ld-btn ld-btn-outline ld-btn-lg">See Features</a>
+          </div>
+          <div className="ld-hero-proof">
+            <div className="ld-proof-dots">
+              <div className="ld-proof-dot" style={{background:'var(--text-success)'}}/>
+              <div className="ld-proof-dot" style={{background:'var(--accent)'}}/>
+              <div className="ld-proof-dot" style={{background:'var(--text-warning)'}}/>
+            </div>
+            <span>Free AI via Gemini &amp; Groq — no paid API needed</span>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Features ── */}
+      <section id="features" className="ld-section">
+        <div className="ld-section-inner">
+          <div className="ld-section-head">
+            <div className="ld-section-tag">Features</div>
+            <h2 className="ld-section-title">Everything You Need to Trade with Discipline</h2>
+            <p className="ld-section-sub">Six integrated modules that work together to keep you consistent, data-driven, and in control.</p>
+          </div>
+          <div className="ld-features-grid">
+            {features.map((f,i)=>(
+              <div key={i} className="ld-feature-card" style={{animationDelay:`${i*80}ms`}}>
+                <div className="ld-feature-icon"><f.icon size={22}/></div>
+                <div className="ld-feature-title">{f.title}</div>
+                <div className="ld-feature-desc">{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── AI Analyzer Showcase ── */}
+      <section className="ld-section ld-section-alt">
+        <div className="ld-section-inner">
+          <div className="ld-analyzer-layout">
+            <div className="ld-analyzer-text">
+              <div className="ld-section-tag">AI-Powered</div>
+              <h2 className="ld-section-title" style={{textAlign:'left'}}>7-Gate Zone Validation</h2>
+              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>Every setup is evaluated against 7 strict binary gates. No curves, no partial credit — a zone either meets the standard or it doesn't. This keeps you out of borderline trades.</p>
+              <div className="ld-analyzer-grades">
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A+</span><span>7/7 gates — Valid, pending live confirmation</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-b">B</span><span>5-6/7 gates — Valid, pending live confirmation</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-c">C</span><span>3-4/7 gates — Valid, pending live confirmation</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-inv">INVALID</span><span>0-2/7 gates — Do not trade</span></div>
+              </div>
+            </div>
+            <div className="ld-gates-grid">
+              {gates.map((g,i)=>(
+                <div key={i} className="ld-gate-item" style={{animationDelay:`${i*60}ms`}}>
+                  <div className="ld-gate-num">{g.n}</div>
+                  <div>
+                    <div className="ld-gate-label">{g.label}</div>
+                    <div className="ld-gate-desc">{g.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── How It Works ── */}
+      <section className="ld-section">
+        <div className="ld-section-inner">
+          <div className="ld-section-head">
+            <div className="ld-section-tag">Workflow</div>
+            <h2 className="ld-section-title">From Analysis to Improvement in 4 Steps</h2>
+          </div>
+          <div className="ld-steps-grid">
+            {steps.map((s,i)=>(
+              <div key={i} className="ld-step-card" style={{animationDelay:`${i*100}ms`}}>
+                <div className="ld-step-num">{s.n}</div>
+                <div className="ld-step-icon-wrap"><s.icon size={24}/></div>
+                <div className="ld-step-title">{s.title}</div>
+                <div className="ld-step-desc">{s.desc}</div>
+                {i<3&&<div className="ld-step-arrow">→</div>}
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Stats ── */}
+      <section className="ld-section ld-section-alt">
+        <div className="ld-section-inner">
+          <div className="ld-stats-row">
+            {[
+              {val:'24+',label:'OTC Pairs'},
+              {val:'7',label:'Validation Gates'},
+              {val:'3',label:'Trade Styles'},
+              {val:'6',label:'Withdrawal Milestones'},
+              {val:'100%',label:'Free AI'},
+            ].map((s,i)=>(
+              <div key={i} className="ld-stat-item">
+                <div className="ld-stat-val">{s.val}</div>
+                <div className="ld-stat-label">{s.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── Final CTA ── */}
+      <section className="ld-section ld-cta-section">
+        <div className="ld-section-inner" style={{textAlign:'center'}}>
+          <h2 className="ld-cta-title">Start Trading with Precision Today</h2>
+          <p className="ld-cta-sub">Join a system built for traders who value discipline over impulse. Free to use, powered by AI.</p>
+          <button className="ld-btn ld-btn-primary ld-btn-xl" onClick={()=>onLogin()}>Get Started Free</button>
+        </div>
+      </section>
+
+      {/* ── Footer ── */}
+      <footer className="ld-footer">
+        <div className="ld-footer-inner">
+          <div className="ld-footer-brand">
+            <div className="ld-nav-icon" style={{width:28,height:28,borderRadius:8}}><Sparkles size={13} color="#fff"/></div>
+            <span>TheGiftedMan Trading Tool</span>
+          </div>
+          <div className="ld-footer-copy">Built for disciplined traders. Not financial advice.</div>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
 // ── Login ─────────────────────────────────────────────────────────────────────
 function Login(){
   const[mode,setMode]=useState('signin');
@@ -1890,6 +2069,7 @@ export default function App(){
   const[wds,setWds]=useState([]);
   const[ss,setSS]=useState(null);
   const[view,setView]=useState('dashboard');
+  const[page,setPage]=useState('landing');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
   const userId=authUser?.id??null;
@@ -2039,7 +2219,7 @@ export default function App(){
       </div>
     </div>
   );
-  if(!authUser)return<Login/>;
+  if(!authUser)return page==='login'?<Login/>:<Landing onLogin={()=>setPage('login')}/>;
   if(loading)return<Loading/>;
   if(!settings?.setupComplete)return<Setup onDone={saveSettings}/>;
 
@@ -2124,7 +2304,7 @@ export default function App(){
                   </button>
                 ))}
               </div>
-              <button onClick={()=>supabase.auth.signOut()} aria-label="Log out" className="flex flex-1 items-center justify-center rounded-sm py-2 text-ink-3 transition-colors hover:text-loss" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+              <button onClick={()=>{supabase.auth.signOut();setPage('landing');}} aria-label="Log out" className="flex flex-1 items-center justify-center rounded-sm py-2 text-ink-3 transition-colors hover:text-loss" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
                 <LogOut size={15}/>
               </button>
             </div>
@@ -2142,7 +2322,7 @@ export default function App(){
               <button onClick={()=>setTheme(THEMES[(THEMES.findIndex(t=>t.id===theme)+1)%THEMES.length].id)} aria-label="Next theme" className="rounded-sm p-2 text-ink-3" style={{border:'1px solid var(--border)'}}>
                 <Palette size={15}/>
               </button>
-              <button onClick={()=>supabase.auth.signOut()} aria-label="Log out" className="rounded-sm p-2 text-ink-3" style={{border:'1px solid var(--border)'}}>
+              <button onClick={()=>{supabase.auth.signOut();setPage('landing');}} aria-label="Log out" className="rounded-sm p-2 text-ink-3" style={{border:'1px solid var(--border)'}}>
                 <LogOut size={15}/>
               </button>
             </div>
