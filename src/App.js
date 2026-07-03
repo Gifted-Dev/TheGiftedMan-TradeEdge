@@ -1805,7 +1805,7 @@ function Loading(){
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 function Login(){
-  const[mode,setMode]=useState('signin'); // signin | signup | reset
+  const[mode,setMode]=useState('signin');
   const[email,setEmail]=useState('');
   const[password,setPassword]=useState('');
   const[err,setErr]=useState(null);
@@ -1829,31 +1829,51 @@ function Login(){
     if(mode==='signup'&&!data.session)setMsg('Account created — check your email to confirm before logging in.');
   }
 
+  function switchMode(m){setMode(m);setErr(null);setMsg(null);}
+
+  const subhead=mode==='signin'?'Log in to your account':mode==='signup'?'Create an account':'Reset your password';
+  const ctaLabel=busy?'Please wait...':mode==='signin'?'Log in':mode==='signup'?'Sign up':'Send reset email';
+
   return(
-    <div style={{maxWidth:380,margin:'4rem auto',padding:'1rem'}}>
-      <div style={{textAlign:'center',marginBottom:24}}>
-        <div style={{fontSize:20,fontWeight:500,color:'var(--text-primary)'}}>TheGiftedMan Trading Tool</div>
-        <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:4}}>{mode==='signin'?'Log in to your account':mode==='signup'?'Create an account':'Reset your password'}</div>
-      </div>
-      <form onSubmit={submit} style={card}>
-        <div style={{marginBottom:mode==='reset'?14:12}}>
-          <label style={lbl}>Email</label>
-          <input style={inp} type="email" required value={email} onChange={e=>setEmail(e.target.value)}/>
-        </div>
-        {mode!=='reset'&&(
-          <div style={{marginBottom:14}}>
-            <label style={lbl}>Password</label>
-            <input style={inp} type="password" required minLength={6} value={password} onChange={e=>setPassword(e.target.value)}/>
+    <div className="login-wrap">
+      <div className="login-orb login-orb-1"/>
+      <div className="login-orb login-orb-2"/>
+
+      <div className="login-card">
+        {/* Header */}
+        <div className="login-header">
+          <div className="login-icon-wrap">
+            <Target size={28} strokeWidth={2} color="#fff"/>
           </div>
-        )}
-        {err&&<div style={{fontSize:12,color:'var(--text-danger)',marginBottom:10}}>{err}</div>}
-        {msg&&<div style={{fontSize:12,color:'var(--text-success)',marginBottom:10}}>{msg}</div>}
-        <button style={{...btn('pri'),width:'100%'}} disabled={busy}>{busy?'Please wait...':mode==='signin'?'Log in':mode==='signup'?'Sign up':'Send reset email'}</button>
-      </form>
-      <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,marginTop:14,fontSize:13}}>
-        {mode!=='signup'&&<button type="button" style={{background:'none',border:'none',color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>{setMode('signup');setErr(null);setMsg(null);}}>Don't have an account? Sign up</button>}
-        {mode!=='signin'&&<button type="button" style={{background:'none',border:'none',color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>{setMode('signin');setErr(null);setMsg(null);}}>Already have an account? Log in</button>}
-        {mode!=='reset'&&<button type="button" style={{background:'none',border:'none',color:'var(--text-muted)',cursor:'pointer',fontSize:12}} onClick={()=>{setMode('reset');setErr(null);setMsg(null);}}>Forgot password?</button>}
+          <div className="login-title">TheGiftedMan Trading Tool</div>
+          <div className="login-subtitle">{subhead}</div>
+        </div>
+
+        {/* Form */}
+        <form onSubmit={submit} className="login-form" key={mode}>
+          <div className="login-field">
+            <label className="login-label">Email</label>
+            <input className="login-input" type="email" required placeholder="you@example.com" value={email} onChange={e=>setEmail(e.target.value)}/>
+          </div>
+          {mode!=='reset'&&(
+            <div className="login-field">
+              <label className="login-label">Password</label>
+              <input className="login-input" type="password" required minLength={6} placeholder="Min 6 characters" value={password} onChange={e=>setPassword(e.target.value)}/>
+            </div>
+          )}
+
+          {err&&<div className="login-error">{err}</div>}
+          {msg&&<div className="login-success">{msg}</div>}
+
+          <button className="login-btn" type="submit" disabled={busy}>{ctaLabel}</button>
+        </form>
+
+        {/* Links */}
+        <div className="login-links">
+          {mode!=='signup'&&<button type="button" className="login-link login-link-accent" onClick={()=>switchMode('signup')}>Don't have an account? Sign up</button>}
+          {mode!=='signin'&&<button type="button" className="login-link login-link-accent" onClick={()=>switchMode('signin')}>Already have an account? Log in</button>}
+          {mode!=='reset'&&<button type="button" className="login-link login-link-muted" onClick={()=>switchMode('reset')}>Forgot password?</button>}
+        </div>
       </div>
     </div>
   );
