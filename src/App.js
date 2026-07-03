@@ -1360,13 +1360,22 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <button style={btn()} onClick={()=>setSelectedTrade(null)}>Close</button>
             </div>
             <div style={{display:'grid',gap:12}}>
-              <div style={{display:'grid',gap:8}}>
-                {editDraft.screenshots?.length>0
-                  ?<div style={{display:'grid',gap:8,maxHeight:320,overflowY:'auto',paddingRight:4}}>
-                      {editDraft.screenshots.map((src,i)=><div key={i} style={{cursor:'zoom-in'}} onClick={()=>openTradeImage(src.url)}><img src={src.url} alt={`Trade screenshot ${i+1}`} style={{width:'100%',borderRadius:10,border:'1px solid var(--border)',objectFit:'contain',maxHeight:280}}/></div>) }
+              <div>
+                <label style={lbl}>Screenshots</label>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+                  {editDraft.screenshots?.map((src,i)=>(
+                    <div key={i} style={{position:'relative'}}>
+                      <img src={src.url} alt="" style={{width:72,height:54,objectFit:'cover',borderRadius:6,border:'0.5px solid var(--border)',cursor:'zoom-in'}} onClick={()=>openTradeImage(src.url)}/>
+                      <button onClick={()=>{const next=editDraft.screenshots.filter((_,j)=>j!==i);setEditDraft(d=>({...d,screenshots:next}));setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);}} style={{position:'absolute',top:-5,right:-5,background:'var(--fill-danger)',border:'none',color:'#fff',borderRadius:'50%',width:16,height:16,cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>×</button>
                     </div>
-                  :<div style={{padding:'12px 14px',border:'1px dashed var(--border)',borderRadius:8,color:'var(--text-muted)',fontSize:13}}>No screenshots attached to this entry.</div>
-                }
+                  ))}
+                  <label style={{width:72,height:54,border:'1px dashed var(--border)',borderRadius:6,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:2}}>
+                    <span style={{fontSize:20,lineHeight:1}}>+</span>
+                    <span style={{fontSize:9}}>browse</span>
+                    <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addTradeImage(f);}}/>
+                  </label>
+                </div>
+                {(!editDraft.screenshots||editDraft.screenshots.length===0)&&<div style={{padding:'12px 14px',border:'1px dashed var(--border)',borderRadius:8,color:'var(--text-muted)',fontSize:13}}>No screenshots attached to this entry.</div>}
               </div>
               <div style={card}>
                 <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Notes</div>
