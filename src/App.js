@@ -1003,7 +1003,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[filt,setFilt]=useState('ALL');
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
-  const[mf,smf]=useState({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO'});
+  const[mf,smf]=useState(()=>{
+    try{const saved=sessionStorage.getItem('gm_draft_mf');if(saved)return JSON.parse(saved);}catch{}
+    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO'};
+  });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
   const[editDraft,setEditDraft]=useState({notes:'',screenshots:[]});
@@ -1012,6 +1015,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // Journal defaults to the matching tab whenever the global Demo/Real toggle
   // changes, but the trader can still flip tabs independently while it's unchanged.
   useEffect(()=>{if(mode)setJournalTab(mode);},[mode]);
+
+  // survives a background-tab reload (Chrome tab discard / dev-server reconnect) without losing the in-progress entry
+  useEffect(()=>{
+    try{sessionStorage.setItem('gm_draft_mf',JSON.stringify(mf));}catch{}
+  },[mf]);
 
   const stakeFor=m=>calcStake(balForMode(settings,trades,wds,m),settings.riskPercent);
   // Analyzer results always log to the global toggle's account (Change 4) —
@@ -1105,6 +1113,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
     await saveTrades(prev=>[t,...(prev||[])]);
     setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab});
+    try{sessionStorage.removeItem('gm_draft_mf');}catch{}
   }
 
   async function addManualImage(file){
@@ -2071,8 +2080,8 @@ export default function App(){
   const[analyses,setAnalyses]=useState([]);
   const[wds,setWds]=useState([]);
   const[ss,setSS]=useState(null);
-  const[view,setView]=useState('dashboard');
-  const[page,setPage]=useState('landing');
+  const[view,setView]=useState(()=>sessionStorage.getItem('gm_view')||'dashboard');
+  const[page,setPage]=useState(()=>sessionStorage.getItem('gm_page')||'landing');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
   const userId=authUser?.id??null;
@@ -2124,6 +2133,11 @@ export default function App(){
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('gm_theme', theme); // device preference, not account data
   },[theme]);
+
+  // so a background-tab reload (Chrome tab discard, dev-server reconnect) restores
+  // the same screen instead of snapping back to the dashboard
+  useEffect(()=>{sessionStorage.setItem('gm_view',view);},[view]);
+  useEffect(()=>{sessionStorage.setItem('gm_page',page);},[page]);
 
   const saveSettings=async v=>{
     const normalized={
