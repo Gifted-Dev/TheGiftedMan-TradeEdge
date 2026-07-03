@@ -1874,7 +1874,7 @@ export default function App(){
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
 
   useEffect(()=>{
-    supabase.auth.getSession().then(({data:{session}})=>{setAuthUser(session?.user||null);setAuthLoading(false);});
+    supabase.auth.getSession().then(({data:{session}})=>{setAuthUser(session?.user||null);setAuthLoading(false);}).catch(()=>setAuthLoading(false));
     const{data:sub}=supabase.auth.onAuthStateChange((_e,session)=>setAuthUser(session?.user||null));
     return()=>sub.subscription.unsubscribe();
   },[]);
