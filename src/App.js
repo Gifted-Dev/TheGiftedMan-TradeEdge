@@ -1983,7 +1983,7 @@ function Landing({onLogin}){
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
-function Login(){
+function Login({onBack}){
   const[mode,setMode]=useState('signin');
   const[email,setEmail]=useState('');
   const[password,setPassword]=useState('');
@@ -2019,6 +2019,9 @@ function Login(){
       <div className="login-orb login-orb-2"/>
 
       <div className="login-card">
+        {/* Back button */}
+        {onBack&&<button type="button" onClick={onBack} className="login-back">← Back</button>}
+
         {/* Header */}
         <div className="login-header">
           <div className="login-icon-wrap">
@@ -2077,7 +2080,10 @@ export default function App(){
 
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{setAuthUser(session?.user||null);setAuthLoading(false);}).catch(()=>setAuthLoading(false));
-    const{data:sub}=supabase.auth.onAuthStateChange((_e,session)=>setAuthUser(session?.user||null));
+    const{data:sub}=supabase.auth.onAuthStateChange((_e,session)=>{
+      const next=session?.user||null;
+      setAuthUser(prev=>prev?.id===next?.id?prev:next);
+    });
     return()=>sub.subscription.unsubscribe();
   },[]);
 
@@ -2219,7 +2225,7 @@ export default function App(){
       </div>
     </div>
   );
-  if(!authUser)return page==='login'?<Login/>:<Landing onLogin={()=>setPage('login')}/>;
+  if(!authUser)return page==='login'?<Login onBack={()=>setPage('landing')}/>:<Landing onLogin={()=>setPage('login')}/>;
   if(loading)return<Loading/>;
   if(!settings?.setupComplete)return<Setup onDone={saveSettings}/>;
 
