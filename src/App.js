@@ -59,30 +59,39 @@ ZONE TYPES:
 - Demand (DBR): Drop-Base-Rally → BUY
 - Demand (RBR): Rally-Base-Rally → BUY
 
-THE 7 GATES — binary pass/fail, evaluated independently from this 1-minute chart image only. This is a strict filter, not a grader on a curve. When in doubt on any gate, FAIL it. Each justification must cite what you actually observe in the image. You are NOT evaluating live 10-second confirmation — that candle resolution is not visible in this image and is judged separately by the trader in real time.
+THE 10 GATES — binary pass/fail, evaluated independently from this 1-minute chart image only. This is a strict filter, not a grader on a curve. When in doubt on any gate, FAIL it. Each justification must cite what you actually observe in the image. You are NOT evaluating live 10-second confirmation — that candle resolution is not visible in this image and is judged separately by the trader in real time.
 
-When uncertain whether a candle count, departure strength, or trend alignment meets the strict threshold, default to FAIL, not PASS. These gates exist specifically to reject borderline setups — err on the side of rejection.
+Four gates are HARD FILTERS (2, 3, 4, 5). If any hard filter fails, the zone is automatically INVALID regardless of the other six gates.
 
-GATE 1 — Base structure: PASS only if the base is exactly 1-2 candles. 3 or more candles = FAIL. Count every candle between the clear trend move and the departure candle. If you count 3 or more consolidation candles, this gate FAILS regardless of how tight they visually appear.
-GATE 2 — Departure candle: PASS only if the departure candle's body is >=70% of its total range AND its total range is >=1.5x the average range of the 5 candles preceding the base.
-GATE 3 — Freshness: PASS only if price is returning to the zone for the FIRST time since formation — zero prior retests. Any prior touch of the proximal line = FAIL.
-GATE 4 — Trend alignment: PASS only if the zone's direction matches the visible higher-timeframe trend. Counter-trend zones or a ranging market = FAIL. If the visible price history shows multiple swings up and down without a clear directional bias — price making both higher highs/higher lows AND lower highs/lower lows within the visible window — classify this as ranging market and FAIL this gate, even if the immediate few candles before the zone suggest a local trend.
-GATE 5 — Distance ratio: PASS only if the distance price traveled away from the zone before returning is >=3x the zone's width.
-GATE 6 — Zone width: PASS only if the zone is 2-3 pips wide. Wider or narrower = FAIL.
-GATE 7 — No conflicting structure: PASS only if no opposing zone is visible within the likely 2-minute price path to target.
+GATE 1 — Base Structure: PASS only if the base is exactly 1-2 candles. 3+ consolidation candles, or heavy overlap with no directional intent = FAIL.
+GATE 2 — Departure Strength [HARD FILTER]: PASS only if the departure candle's body is >=70% of its total range, its total range is >=1.5x the average range of the 5 candles preceding the base, AND it closes near its extreme (upper close for Demand, lower close for Supply). Doji, spinning top, average/below-average departure, or weak overlapping candles = FAIL.
+GATE 3 — Break of Structure [HARD FILTER]: PASS only if the departure breaks a significant swing high (Demand) or swing low (Supply). No meaningful structure broken, or only minor internal structure exceeded = FAIL.
+GATE 4 — Freshness [HARD FILTER]: PASS only if this is the first return to the zone since formation, with no previous touch of the proximal line. Any previous retest or touch = FAIL.
+GATE 5 — Trend Alignment [HARD FILTER]: PASS only if Demand aligns with Higher Highs + Higher Lows, or Supply aligns with Lower Highs + Lower Lows, in a clearly trending market. Counter-trend setups, or a ranging/choppy market = FAIL.
+GATE 6 — Zone Location: PASS only if the zone forms near a major swing high/low, or immediately after a liquidity sweep — not mid-range. Mid-range zones or zones inside prolonged consolidation = FAIL.
+GATE 7 — Distance Ratio: PASS only if price travels at least 3x the zone width before returning. Returning too quickly, or insufficient expansion away from the zone = FAIL.
+GATE 8 — Compact Zone: PASS only if the zone width is <=30% of the departure move and the base remains compact. An excessively wide zone, or a base occupying a large portion of the departure = FAIL.
+GATE 9 — Return Quality: PASS only if the return is corrective — momentum gradually weakens into the zone, with small/overlapping candles on the return. Consecutive impulsive candles into the zone, or strong momentum directly attacking the zone = FAIL.
+GATE 10 — No Conflicting Structure: PASS only if no opposing Supply/Demand zone sits within the expected price path. A significant opposing zone likely to stop/reverse price before the expected move = FAIL.
 
-GRADING — computed strictly from the pass count. This is a PRE-VALIDATION grade only; it is upgraded or flagged unconfirmed by the trader after watching the live 10-second reaction, not a final trade signal:
-7/7 passed  → grade "A+", verdict "VALID",   recommendation "PENDING LIVE CONFIRMATION"
-5-6/7 passed → grade "B",  verdict "VALID",   recommendation "PENDING LIVE CONFIRMATION"
-3-4/7 passed → grade "C",  verdict "VALID",   recommendation "PENDING LIVE CONFIRMATION"
-0-2/7 passed → grade "INVALID", verdict "INVALID", recommendation "DO NOT TRADE"
+When uncertain whether any gate meets its strict threshold, default to FAIL, not PASS. These gates exist specifically to reject borderline setups.
 
-SELF-CHECK — before returning your final grade, review your own gate results. If you marked 6 or more gates as PASS, re-examine Gates 1, 2, and 4 specifically, as these are the most commonly over-graded criteria. Confirm your reasoning for each PASS is based on clear visual evidence, not assumption.
+CLASSIFICATION LOGIC — apply in this exact order:
+1. Check the four hard filters (Gates 2, 3, 4, 5). If ANY fail, the zone is INVALID immediately — do not proceed to score-based classification, no matter how many of the other six gates passed.
+2. If all four hard filters pass, calculate the total score out of 10 (count every PASS, including the hard filters).
+3. Classify by score:
+   10/10       → "A+"
+   9/10        → "A"
+   7-8/10      → "B"
+   5-6/10      → "C"
+   Below 5/10  → "INVALID"
 
-Also read the trading pair from the chart header if visible.
+SELF-CHECK — before returning your final answer, review your own gate results. If you marked 8 or more gates as PASS, re-examine Gates 1, 2, and 5 specifically, as these are the most commonly over-graded criteria. Confirm your reasoning for each PASS is based on clear visual evidence, not assumption.
 
-Respond ONLY with JSON (no markdown, no backticks). gateResults must contain exactly 7 entries in gate order, and passCount and grade must match the gate results:
-{"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","gateResults":[{"gate":1,"label":"Base structure","pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure candle","pass":true,"justification":"Body ~85% of range, roughly 2x the preceding 5-candle average"},{"gate":3,"label":"Freshness","pass":true,"justification":"No retest of the proximal line since formation"},{"gate":4,"label":"Trend alignment","pass":true,"justification":"Sell zone within a visible downtrend"},{"gate":5,"label":"Distance ratio","pass":true,"justification":"Travel is ~4x the zone width"},{"gate":6,"label":"Zone width","pass":true,"justification":"Zone is ~2.5 pips wide"},{"gate":7,"label":"No conflicting structure","pass":true,"justification":"No opposing zone in the likely price path"}],"passCount":6,"grade":"B","verdict":"VALID","recommendation":"PENDING LIVE CONFIRMATION","confidence":78,"keyStrengths":["Fresh zone","Explosive departure"],"keyWeaknesses":["Distance ratio only slightly above minimum"],"executionAdvice":"Watch the live 10-second chart at the proximal line for a Tier 1 confirmation before entering SELL.","summary":"6 of 7 gates passed — pre-validated, awaiting live confirmation."}`;
+Also read the trading pair from the chart header if visible. If the pair is not clearly legible, set detectedPair to "UNKNOWN" — never guess.
+
+Respond ONLY with JSON (no markdown, no backticks). gateResults must contain exactly 10 entries in gate order, each with gate, label, isHardFilter, pass, justification. hardFilterFailed, hardFilterFailures, score, and grade must all be consistent with the gate results and the classification logic above:
+{"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}`;
 
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 
@@ -104,7 +113,7 @@ function toTradeRow(userId,t){
   return{id:t.id,user_id:userId,timestamp:new Date(t.timestamp).toISOString(),pair:t.pair,direction:t.direction,
     zone_type:t.zoneType,zone_grade:t.zoneGrade,stake:t.stake,outcome:t.outcome,pnl:t.pnl,source:t.source,
     screenshots:(t.screenshots||[]).map(shotPath),notes:t.notes,session_num:t.sessionNum,is_analyzed:t.isAnalyzed,
-    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,passCount:t.passCount,liveConfirmed:t.liveConfirmed,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode}};
+    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,score:t.score,hardFilterFailed:t.hardFilterFailed,hardFilterFailures:t.hardFilterFailures,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode}};
 }
 function fromTradeRow(r){
   return{id:r.id,timestamp:new Date(r.timestamp).getTime(),pair:r.pair,direction:r.direction,zoneType:r.zone_type,
@@ -135,7 +144,7 @@ function toAnalysisRow(userId,a){
   return{id:a.id,user_id:userId,timestamp:new Date(a.timestamp).toISOString(),screenshot:shotPath(a.screenshot),
     detected_pair:a.detectedPair,zone_type:a.zoneType,grade:a.grade,verdict:a.verdict,criteria:a.criteria||{},
     linked_trade_id:a.linkedTradeId,
-    extra:{date:a.date,screenshotMime:a.screenshotMime,direction:a.direction,recommendation:a.recommendation,confidence:a.confidence,gateResults:a.gateResults,passCount:a.passCount,failedCriteria:a.failedCriteria,keyStrengths:a.keyStrengths,keyWeaknesses:a.keyWeaknesses,executionAdvice:a.executionAdvice,summary:a.summary}};
+    extra:{date:a.date,screenshotMime:a.screenshotMime,direction:a.direction,recommendation:a.recommendation,confidence:a.confidence,gateResults:a.gateResults,score:a.score,hardFilterFailed:a.hardFilterFailed,hardFilterFailures:a.hardFilterFailures,failedCriteria:a.failedCriteria,keyStrengths:a.keyStrengths,keyWeaknesses:a.keyWeaknesses,executionAdvice:a.executionAdvice,summary:a.summary}};
 }
 function fromAnalysisRow(r){
   return{id:r.id,timestamp:new Date(r.timestamp).getTime(),screenshot:r.screenshot,detectedPair:r.detected_pair,
@@ -337,15 +346,6 @@ function badge(g){
   return{background:bg,color,borderRadius:999,padding:'3px 9px',fontSize:11,fontWeight:700,letterSpacing:'0.02em',display:'inline-flex',alignItems:'center',gap:4,border:`1px solid ${border}`,boxShadow:glow};
 }
 
-// Confirmation-status pill for analyzer-sourced trades: "Live confirmed" vs "Unconfirmed entry".
-// liveConfirmed is null for manual entries / pre-gate trades, so nothing renders.
-function ConfirmBadge({liveConfirmed}){
-  if(liveConfirmed==null)return null;
-  return liveConfirmed
-    ?<span style={{fontSize:11,fontWeight:600,color:'var(--text-success)',background:'var(--bg-success)',border:'1px solid var(--border-success)',borderRadius:999,padding:'1px 7px',display:'inline-flex',alignItems:'center',gap:3}}><CircleCheck size={11}/>Live confirmed</span>
-    :<span title='Entered without confirmed Tier 1 trigger' style={{fontSize:11,fontWeight:600,color:'var(--text-warning)',background:'var(--bg-warning)',border:'1px solid var(--border-warning)',borderRadius:999,padding:'1px 7px',display:'inline-flex',alignItems:'center',gap:3}}><TriangleAlert size={11}/>Unconfirmed entry</span>;
-}
-
 // Grade pill with icon treatment — A+/A get a spark, INVALID reads calmly final
 function Grade({g,size=11}){
   return(
@@ -465,26 +465,29 @@ function Alert({type,title,body,icon,pulse}){
   );
 }
 
-// Gate breakdown for the strict AI pre-validation filter (new schema). Criteria
+// Gate breakdown for the strict AI validation filter (new 10-gate schema). Criteria
 // below stays for analyses saved under the old loose-criteria schema.
-function Gates({gates,passCount}){
-  const n=passCount??gates.filter(g=>g.pass).length;
+function Gates({gates,score,grade}){
+  const n=score??gates.filter(g=>g.pass).length;
+  const failedHardFilter=gates.some(g=>g.isHardFilter&&!g.pass);
   return(
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-        <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)'}}>{n}/{gates.length} gates passed</span>
+        <span style={{fontSize:14,fontWeight:700,color:'var(--text-primary)'}}>{n}/{gates.length}{grade?` — Grade ${grade}`:''}</span>
         <div style={{display:'flex',gap:3}} aria-hidden="true">
           {gates.map(g=><span key={g.gate} style={{width:16,height:5,borderRadius:999,background:g.pass?'var(--text-success)':'var(--surface-2)',border:g.pass?'none':'1px solid var(--border-strong)'}}/>)}
         </div>
       </div>
+      {failedHardFilter&&<div style={{fontSize:12,color:'var(--text-danger)',background:'var(--bg-danger)',border:'1px solid var(--border-danger)',borderRadius:'var(--radius)',padding:'6px 10px',marginBottom:8}}>A hard filter failed — automatically INVALID regardless of the other gates.</div>}
       {gates.map(g=>(
-        <div key={g.gate} style={{display:'flex',gap:10,padding:'7px 0',borderBottom:'1px solid var(--border)'}}>
+        <div key={g.gate} style={{display:'flex',gap:10,padding:'7px 0',borderBottom:'1px solid var(--border)',background:g.isHardFilter&&!g.pass?'var(--bg-danger)':undefined}}>
           {g.pass
             ?<CircleCheck size={15} style={{color:'var(--text-success)',flexShrink:0,marginTop:2}}/>
             :<CircleX size={15} style={{color:'var(--text-danger)',flexShrink:0,marginTop:2}}/>}
           <div>
             <div style={{fontSize:13,fontWeight:500,color:'var(--text-primary)'}}>
               <span style={{color:'var(--text-muted)',fontWeight:700,fontSize:10,letterSpacing:'0.08em',marginRight:6}}>GATE {g.gate}</span>{g.label}
+              {g.isHardFilter&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,letterSpacing:'0.06em',color:'var(--text-danger)',background:'var(--bg-danger)',border:'1px solid var(--border-danger)',borderRadius:4,padding:'1px 5px'}}>CRITICAL</span>}
             </div>
             <div style={{fontSize:12,color:'var(--text-secondary)'}}>{g.justification}</div>
           </div>
@@ -800,7 +803,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
   const[res,setRes]=useState(null);
   const[err,setErr]=useState(null);
   const[extras,setExtras]=useState([]);
-  const[liveConfirmed,setLiveConfirmed]=useState(false);
+  const[pairEdit,setPairEdit]=useState('');
   const fRef=useRef();const xRef=useRef();
 
   const active=getActive(ss,mode);
@@ -867,18 +870,19 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 
   async function analyze(){
     if(!b64||!activeKey)return;
-    setBusy(true);setErr(null);setLiveConfirmed(false);
+    setBusy(true);setErr(null);
     try{
       const r=provider==='groq'?await groqAnalyze(b64,mime,activeKey):await gemini(b64,mime,activeKey);
       const a={id:uid(),timestamp:Date.now(),date:tod(),screenshot:b64,screenshotMime:mime,linkedTradeId:null,...r};
       await saveAnalyses([a,...analyses]);
       setRes(a);
+      setPairEdit(a.detectedPair&&a.detectedPair!=='UNKNOWN'?a.detectedPair:'');
     }catch(e){setErr(e.message);}
     finally{setBusy(false);}
   }
 
   function goJournal(){
-    setPA({...res,extras,liveConfirmed:res.gateResults?liveConfirmed:null});
+    setPA({...res,detectedPair:pairEdit.trim()||res.detectedPair,extras});
     nav('journal');
   }
 
@@ -911,7 +915,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
       {img&&!busy&&(
         <div style={{display:'flex',gap:8,marginBottom:12}}>
           <button style={{...btn('pri'),flex:1}} onClick={analyze} disabled={locked||!activeKey}>Analyze zone</button>
-          <button style={btn()} onClick={()=>{setImg(null);setB64(null);setRes(null);setErr(null);setExtras([]);setLiveConfirmed(false);}}>Clear</button>
+          <button style={btn()} onClick={()=>{setImg(null);setB64(null);setRes(null);setErr(null);setExtras([]);setPairEdit('');}}>Clear</button>
         </div>
       )}
 
@@ -931,7 +935,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
               <div>
                 <div style={{fontSize:18,fontWeight:500,color:res.verdict==='VALID'?'var(--text-success)':'var(--text-danger)'}}>{res.verdict==='VALID'?'✓ Valid zone':'✗ Invalid zone'}</div>
-                <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2}}>{res.zoneType} · {res.detectedPair||'Pair not detected'}</div>
+                <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2}}>{res.zoneType}</div>
               </div>
               <div style={{textAlign:'right'}}>
                 <span style={{...badge(res.grade),fontSize:14,padding:'4px 10px'}}>Grade {res.grade}</span>
@@ -939,12 +943,18 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
               </div>
             </div>
             <div style={{fontSize:13,color:'var(--text-secondary)'}}>{res.summary}</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',marginTop:10}}>
+              <label style={{fontSize:12,color:'var(--text-secondary)',flexShrink:0}}>Pair:</label>
+              <input style={{...inp,padding:'6px 8px',fontSize:13}} value={pairEdit} onChange={e=>setPairEdit(e.target.value)} placeholder={res.detectedPair==='UNKNOWN'?'Not detected — enter manually':'Pair'} list="analyzer-pair-options"/>
+              <datalist id="analyzer-pair-options">{PAIRS.map(p=><option key={p} value={p}/>)}</datalist>
+              {res.detectedPair==='UNKNOWN'&&<span style={{fontSize:11,color:'var(--text-warning)',flexShrink:0}}>⚠ Not detected</span>}
+            </div>
           </div>
 
           <div style={card}>
             <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>{res.gateResults?'Gate check':'Criteria check'}</div>
             {res.gateResults?.length
-              ?<Gates gates={res.gateResults} passCount={res.passCount}/>
+              ?<Gates gates={res.gateResults} score={res.score} grade={res.grade}/>
               :res.criteria&&<Criteria criteria={res.criteria}/>}
           </div>
 
@@ -974,19 +984,6 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
             </div>
             <input ref={xRef} type="file" accept="image/*" style={{display:'none'}} onChange={async e=>{const f=e.target.files[0];if(f)await addImage(f,'extra');}}/>
           </div>
-
-          {res.gateResults&&res.grade!=='INVALID'&&(
-            <div style={{...card,background:liveConfirmed?'var(--bg-success)':'var(--bg-warning)',borderColor:liveConfirmed?'var(--border-success)':'var(--border-warning)'}}>
-              <div style={{fontSize:13,fontWeight:600,color:liveConfirmed?'var(--text-success)':'var(--text-warning)',marginBottom:8}}>Live 10-second confirmation required</div>
-              <label style={{display:'flex',gap:10,alignItems:'flex-start',cursor:'pointer'}}>
-                <input type="checkbox" checked={liveConfirmed} onChange={e=>setLiveConfirmed(e.target.checked)} style={{marginTop:3,flexShrink:0,width:16,height:16,accentColor:'var(--accent)'}}/>
-                <span style={{fontSize:13,color:'var(--text-secondary)'}}>I observed a Tier 1 confirmation on the live 10-second chart (full-body engulfing, pin bar with wick ≥2x body closing outside the zone, or confirmed FTR/BOS) with no hesitation inside the zone beforehand.</span>
-              </label>
-              <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
-                {liveConfirmed?'This entry will log as live confirmed.':'Unchecked entries can still be logged, tagged "Entered without confirmed Tier 1 trigger" for later comparison in Analytics.'}
-              </div>
-            </div>
-          )}
 
           {res.verdict==='VALID'&&(res.grade==='A+'||res.grade==='A'||res.grade==='B'||res.grade==='C')
             ?<button style={{...btn('suc'),width:'100%'}} onClick={goJournal}>Record journal entry →</button>
@@ -1047,7 +1044,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(!pa)return;
     let cur=ss,sess=active;
     if(!sess){const r=await mkSession(cur,mode);if(!r)return;cur=r.ss;sess=r.sess;}
-    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess.num,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:stake.actual,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,passCount:pa.passCount??null,liveConfirmed:pa.liveConfirmed??null,failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
+    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess.num,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:stake.actual,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
     await saveTrades(prev=>[t,...(prev||[])]);
     const us={...sess,trades:sess.trades+1};
     await saveSS({...cur,sessions:cur.sessions.map(s=>s.id===sess.id?us:s)});
@@ -1178,7 +1175,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       {pa&&(
         <div style={{...card,background:'var(--bg-success)',borderColor:'var(--border-success)'}}>
           <div style={{fontSize:14,fontWeight:500,color:'var(--text-success)',marginBottom:6}}>Zone analysis ready to log</div>
-          <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:10}}>{pa.zoneType} · Grade {pa.grade} · {pa.detectedPair||'Pair auto-detected'} · {pa.direction} · Stake {f$(stake.actual)}</div>
+          <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:10}}>{pa.zoneType} · Grade {pa.grade} · {pa.detectedPair&&pa.detectedPair!=='UNKNOWN'?pa.detectedPair:'Pair not set'} · {pa.direction} · Stake {f$(stake.actual)}</div>
           <div style={{marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,letterSpacing:'0.04em',padding:'3px 9px',borderRadius:999,background:mode==='REAL'?'var(--bg-danger)':'var(--bg-accent)',color:mode==='REAL'?'var(--text-danger)':'var(--text-accent)',border:`1px solid ${mode==='REAL'?'var(--border-danger)':'var(--border-accent)'}`}}>
               Logging to {mode==='REAL'?'REAL':'DEMO'}
@@ -1292,7 +1289,6 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <span style={{fontSize:12,background:t.direction==='BUY'?'var(--bg-success)':'var(--bg-danger)',color:t.direction==='BUY'?'var(--text-success)':'var(--text-danger)',borderRadius:4,padding:'1px 6px'}}>{t.direction}</span>
               <span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{(t.accountMode||'DEMO')==='REAL'?'Real':'Demo'}</span>
               {!t.isAnalyzed&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>Manual</span>}
-              <ConfirmBadge liveConfirmed={t.liveConfirmed}/>
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:13,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'}}>{t.outcome==='PENDING'?`${f$(t.stake)} pending`:(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
@@ -1317,7 +1313,6 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Trade details</div>
                 <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span>{selectedTrade.pair} · {selectedTrade.direction}</span>
-                  <ConfirmBadge liveConfirmed={selectedTrade.liveConfirmed}/>
                 </div>
               </div>
               <button style={btn()} onClick={()=>setSelectedTrade(null)}>Close</button>
@@ -1344,7 +1339,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <div style={card}>
                 <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>{selectedTrade.gateResults?.length?'Gate check':'Zone analysis criteria'}</div>
                 {selectedTrade.gateResults?.length
-                  ?<Gates gates={selectedTrade.gateResults} passCount={selectedTrade.passCount}/>
+                  ?<Gates gates={selectedTrade.gateResults} score={selectedTrade.score} grade={selectedTrade.zoneGrade}/>
                   :selectedTrade.criteria && Object.keys(selectedTrade.criteria).length>0
                     ?<Criteria criteria={selectedTrade.criteria}/>
                     :<div style={{fontSize:13,color:'var(--text-muted)'}}>No detailed criteria attached to this entry.</div>
@@ -1521,7 +1516,7 @@ function Plan({settings}){
     3:['Up to 3 trades per session','Stop: 2 losses on session','Advisory: 2 consecutive wins — consider securing','Take profit: 3 wins',`Max ${settings.sessionsPerDay} session${settings.sessionsPerDay>1?'s':''}/day`,'6-hour gap between sessions'],
   };
   const sections=[
-    {t:'Zone rules',items:['Pre-validated A+ or B zones only','Zone must pass the 7-gate AI pre-validation','Confirm a live Tier 1 trigger on the 10-second chart before entry','Use zone analyzer before every trade','No C-grade or invalid zones']},
+    {t:'Zone rules',items:['A+, A, or B graded zones only','Zone must pass the 10-gate AI validation, including all 4 hard filters','Confirm a live Tier 1 trigger on the 10-second chart yourself before entry — the app no longer tracks this','Use zone analyzer before every trade','No C-grade or invalid zones']},
     {t:'Instrument rules',items:['OTC pairs only','Minimum 90%+ ROI payout','Avoid any pair below 90% payout']},
     {t:'Risk rules',items:[`${settings.riskPercent}% risk per trade`,'$1 minimum trade (broker floor)','No Martingale or loss recovery','No mid-session risk increases']},
     {t:'Daily circuit breaker',items:[`${MAX_DL} total losses locks the day until midnight`,'No exceptions — step away and reset']},
@@ -1848,7 +1843,7 @@ function Loading(){
 // ── Landing Page ──────────────────────────────────────────────────────────────
 function Landing({onLogin}){
   const features=[
-    {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 7 strict structural gates before you enter a trade.'},
+    {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 10 strict structural gates, 4 of them hard filters, before you enter a trade.'},
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, zone grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Deep-dive into your win rate by zone grade, pair, and account mode. See if AI analysis actually improves your results.'},
     {icon:Wallet,title:'Money Management',desc:'Position sizing, milestone-based withdrawal tracking, and growth projection based on your actual win rate.'},
@@ -1858,17 +1853,20 @@ function Landing({onLogin}){
 
   const gates=[
     {n:'1',label:'Base Structure',desc:'1-2 candle consolidation'},
-    {n:'2',label:'Departure Candle',desc:'Strong impulsive departure'},
-    {n:'3',label:'Freshness',desc:'First retest only'},
-    {n:'4',label:'Trend Alignment',desc:'Matches higher timeframe'},
-    {n:'5',label:'Distance Ratio',desc:'3x zone width travel'},
-    {n:'6',label:'Zone Width',desc:'2-3 pips precise zone'},
-    {n:'7',label:'No Conflicts',desc:'Clean path to target'},
+    {n:'2',label:'Departure Strength',desc:'Strong impulsive departure',crit:true},
+    {n:'3',label:'Break of Structure',desc:'Breaks a significant swing',crit:true},
+    {n:'4',label:'Freshness',desc:'First retest only',crit:true},
+    {n:'5',label:'Trend Alignment',desc:'Matches higher timeframe',crit:true},
+    {n:'6',label:'Zone Location',desc:'Swing extreme or liquidity sweep'},
+    {n:'7',label:'Distance Ratio',desc:'3x zone width travel'},
+    {n:'8',label:'Compact Zone',desc:'Tight relative to departure'},
+    {n:'9',label:'Return Quality',desc:'Corrective, fading momentum'},
+    {n:'10',label:'No Conflicts',desc:'Clean path to target'},
   ];
 
   const steps=[
-    {n:'01',icon:ScanSearch,title:'Analyze',desc:'Upload your chart. AI evaluates the zone against 7 strict gates and returns a grade.'},
-    {n:'02',icon:CircleCheck,title:'Confirm',desc:'Watch the live 10-second chart. Confirm a Tier 1 trigger before entering.'},
+    {n:'01',icon:ScanSearch,title:'Analyze',desc:'Upload your chart. AI evaluates the zone against 10 strict gates, 4 of them hard filters, and returns a grade.'},
+    {n:'02',icon:CircleCheck,title:'Confirm',desc:'Watch the live 10-second chart yourself and confirm a Tier 1 trigger before entering — this step is on you, not tracked in-app.'},
     {n:'03',icon:BookOpen,title:'Journal',desc:'Log the trade with one click. Screenshots, notes, and analysis data carry over automatically.'},
     {n:'04',icon:BarChart3,title:'Improve',desc:'Review your analytics. See which grades, pairs, and styles produce the best results.'},
   ];
@@ -1936,13 +1934,14 @@ function Landing({onLogin}){
           <div className="ld-analyzer-layout">
             <div className="ld-analyzer-text">
               <div className="ld-section-tag">AI-Powered</div>
-              <h2 className="ld-section-title" style={{textAlign:'left'}}>7-Gate Zone Validation</h2>
-              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>Every setup is evaluated against 7 strict binary gates. No curves, no partial credit — a zone either meets the standard or it doesn't. This keeps you out of borderline trades.</p>
+              <h2 className="ld-section-title" style={{textAlign:'left'}}>10-Gate Zone Validation</h2>
+              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>Every setup is evaluated against 10 strict binary gates — 4 of them hard filters that instantly invalidate the zone if any one fails. No curves, no partial credit — a zone either meets the standard or it doesn't. This keeps you out of borderline trades.</p>
               <div className="ld-analyzer-grades">
-                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A+</span><span>7/7 gates — Valid, pending live confirmation</span></div>
-                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-b">B</span><span>5-6/7 gates — Valid, pending live confirmation</span></div>
-                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-c">C</span><span>3-4/7 gates — Valid, pending live confirmation</span></div>
-                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-inv">INVALID</span><span>0-2/7 gates — Do not trade</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A+</span><span>10/10 gates — highest conviction</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A</span><span>9/10 gates — strong setup</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-b">B</span><span>7-8/10 gates — valid setup</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-c">C</span><span>5-6/10 gates — marginal, trade with caution</span></div>
+                <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-inv">INVALID</span><span>Any hard filter failed, or below 5/10 — do not trade</span></div>
               </div>
             </div>
             <div className="ld-gates-grid">
@@ -1950,7 +1949,7 @@ function Landing({onLogin}){
                 <div key={i} className="ld-gate-item" style={{animationDelay:`${i*60}ms`}}>
                   <div className="ld-gate-num">{g.n}</div>
                   <div>
-                    <div className="ld-gate-label">{g.label}</div>
+                    <div className="ld-gate-label">{g.label}{g.crit&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,letterSpacing:'0.06em',color:'var(--text-danger)',background:'var(--bg-danger)',border:'1px solid var(--border-danger)',borderRadius:4,padding:'1px 5px'}}>CRITICAL</span>}</div>
                     <div className="ld-gate-desc">{g.desc}</div>
                   </div>
                 </div>
@@ -1987,7 +1986,7 @@ function Landing({onLogin}){
           <div className="ld-stats-row">
             {[
               {val:'24+',label:'OTC Pairs'},
-              {val:'7',label:'Validation Gates'},
+              {val:'10',label:'Validation Gates'},
               {val:'3',label:'Trade Styles'},
               {val:'6',label:'Withdrawal Milestones'},
               {val:'100%',label:'Free AI'},
