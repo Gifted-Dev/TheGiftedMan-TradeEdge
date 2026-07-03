@@ -1374,24 +1374,27 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 }
 
 // ── Money Management ──────────────────────────────────────────────────────────
-// Always Real-account data (Change 2) — independent of the global Demo/Real toggle.
+// Milestones and the growth projector follow the global Demo/Real toggle, so
+// growth can be envisioned on Demo too. Withdrawal logging stays Real-only —
+// Demo has no concept of a withdrawal.
 function Money({settings,trades,wds,saveWds,mode}){
-  const bal=balForMode(settings,trades,wds,'REAL');
-  const realTrades=trades.filter(t=>getTradeMode(t)==='REAL');
+  const startBal=getStartingBalanceForMode(settings,mode);
+  const bal=balForMode(settings,trades,wds,mode);
+  const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const[amt,setAmt]=useState('');
   const[note,setNote]=useState('');
   const[wks,setWks]=useState(12);
   const stake=calcStake(bal,settings.riskPercent);
-  const done=realTrades.filter(t=>t.outcome!=='PENDING');
+  const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
   const wr=done.length?wins/done.length:0.65;
   const totalWd=wds.reduce((s,w)=>s+w.amount,0);
   const firstMs=settings.milestones[0];
   const phase1Thresh=settings.brokerMin/(firstMs.pct/100);
   const isPhase1=bal<phase1Thresh;
-  const hitMs=settings.milestones.slice().reverse().find(m=>bal>=settings.startingBalanceReal*m.mul);
-  const nextMs=settings.milestones.find(m=>bal<settings.startingBalanceReal*m.mul);
-  const nextMilestoneMessage=nextMs?`Next withdrawal milestone: ${nextMs.mul}× → ${f$(settings.startingBalanceReal*nextMs.mul)} (withdraw ${nextMs.pct}%).`:null;
+  const hitMs=settings.milestones.slice().reverse().find(m=>bal>=startBal*m.mul);
+  const nextMs=settings.milestones.find(m=>bal<startBal*m.mul);
+  const nextMilestoneMessage=nextMs?`Next ${mode==='REAL'?'withdrawal ':''}milestone: ${nextMs.mul}× → ${f$(startBal*nextMs.mul)}${mode==='REAL'?` (withdraw ${nextMs.pct}%)`:''}.`:null;
 
   async function logWd(){
     const a=parseFloat(amt);if(!a||a<settings.brokerMin)return;
@@ -1407,7 +1410,7 @@ function Money({settings,trades,wds,saveWds,mode}){
     <div>
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Money management</div>
 
-      {mode!=='REAL'&&<Alert type="inf" title="Milestones apply to your Real account only" body="You're viewing the Demo account elsewhere in the app, but Money Management always reflects Real — Demo has no withdrawals or milestone targets."/>}
+      {mode!=='REAL'&&<Alert type="inf" title="Viewing Demo growth" body="Milestones and the growth projector below reflect your Demo balance — this is for practice only. Demo has no real withdrawals; switch to Real to log an actual withdrawal."/>}
 
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Position sizer</div>
@@ -1426,11 +1429,11 @@ function Money({settings,trades,wds,saveWds,mode}){
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Withdrawal milestones</div>
         {isPhase1
-          ?<div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-accent)'}}>🔒 Phase 1 — Compounding. First withdrawal advised at {f$(phase1Thresh)}.</div>
-          :hitMs&&<div style={{padding:'8px 12px',background:'var(--bg-success)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-success)'}}>Milestone {hitMs.mul}× reached — consider withdrawing {hitMs.pct}% (≈{f$(bal*(hitMs.pct/100))}). Advisory only.</div>
+          ?<div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-accent)'}}>🔒 Phase 1 — Compounding. {mode==='REAL'?`First withdrawal advised at ${f$(phase1Thresh)}.`:`Keeps growing past ${f$(phase1Thresh)}.`}</div>
+          :hitMs&&<div style={{padding:'8px 12px',background:'var(--bg-success)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-success)'}}>Milestone {hitMs.mul}× reached{mode==='REAL'?` — consider withdrawing ${hitMs.pct}% (≈${f$(bal*(hitMs.pct/100))}). Advisory only.`:'.'}</div>
         }
         {settings.milestones.map((m,i)=>{
-          const target=settings.startingBalanceReal*m.mul;
+          const target=startBal*m.mul;
           const reached=bal>=target;
           return(
             <div key={i} style={{marginBottom:10}}>
@@ -1469,6 +1472,7 @@ function Money({settings,trades,wds,saveWds,mode}){
         <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate · {fp(settings.riskPercent)} risk · {settings.sessionsPerDay*6} trades/week</div>
       </div>
 
+      {mode==='REAL'&&(
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Log withdrawal</div>
         <div style={g2}>
@@ -1479,8 +1483,9 @@ function Money({settings,trades,wds,saveWds,mode}){
         {parseFloat(amt)>0&&(bal-parseFloat(amt))<(stake.actual*20)&&parseFloat(amt)>=settings.brokerMin&&<div style={{fontSize:12,color:'var(--text-warning)',marginTop:6}}>⚠ Post-withdrawal balance covers fewer than 20 sessions. Consider waiting.</div>}
         <button style={{...btn('pri'),marginTop:10}} onClick={logWd} disabled={!amt||parseFloat(amt)<settings.brokerMin}>Log withdrawal</button>
       </div>
+      )}
 
-      {wds.length>0&&(
+      {mode==='REAL'&&wds.length>0&&(
         <div style={card}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Withdrawal history</div>
           {wds.map(w=>(
@@ -1551,7 +1556,9 @@ function Plan({settings}){
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 export function Analytics({trades,settings,bal}){
-  const done=trades.filter(t=>t.outcome!=='PENDING');
+  const[scope,setScope]=useState('ALL');
+  const scoped=scope==='ALL'?trades:trades.filter(t=>getTradeMode(t)===scope);
+  const done=scoped.filter(t=>t.outcome!=='PENDING');
   const total=done.length,wins=done.filter(t=>t.outcome==='WIN').length;
   const wr=total?(wins/total)*100:0;
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
@@ -1566,8 +1573,9 @@ export function Analytics({trades,settings,bal}){
   const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)||0;acc.push(prev+t.pnl);return acc;},[]);
   const gradeBars=grades.map(x=>({label:x.g,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
   const pairBars=pairs.map(x=>({label:x.p.length>8?x.p.slice(0,8)+'…':x.p,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'})).slice(0,5);
+  const doneAll=trades.filter(t=>t.outcome!=='PENDING');
   const modeStats=ACCOUNT_MODES.map(mode=>{
-    const modeTrades=done.filter(t=>getTradeMode(t)===mode);
+    const modeTrades=doneAll.filter(t=>getTradeMode(t)===mode);
     const modeWins=modeTrades.filter(t=>t.outcome==='WIN').length;
     const modePnl=modeTrades.reduce((s,t)=>s+t.pnl,0);
     const startBalance=getStartingBalanceForMode(settings,mode);
@@ -1577,7 +1585,22 @@ export function Analytics({trades,settings,bal}){
 
   return(
     <div>
-      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Analytics</div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Analytics</div>
+        <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+          {['ALL',...ACCOUNT_MODES].map(m=>{
+            const on=scope===m;
+            const isReal=m==='REAL';
+            return(
+              <button key={m} onClick={()=>setScope(m)} aria-pressed={on}
+                className="flex items-center justify-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-bold tracking-wide transition-colors"
+                style={on?{background:isReal?'var(--fill-danger)':'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>
+                {m==='ALL'?'All':m}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <div style={g2}>
         <Metric label="Total trades" value={total} sub={`${wins}W / ${total-wins}L`}/>
         <Metric label="Win rate" value={fp(wr)} sub={`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
@@ -1585,12 +1608,13 @@ export function Analytics({trades,settings,bal}){
         <Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/>
       </div>
 
+      {scope==='ALL'&&(
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Performance by account mode</div>
         <div style={g2}>
           {modeStats.map(stat=>(
-            <div key={stat.mode} style={{...card,marginBottom:0}}>
-              <div style={{fontSize:13,fontWeight:600,marginBottom:6,color:'var(--text-primary)'}}>{stat.mode==='REAL'?'Real':'Demo'}</div>
+            <div key={stat.mode} style={{...card,marginBottom:0,borderLeft:`3px solid ${stat.mode==='REAL'?'var(--fill-danger)':'var(--fill-accent)'}`}}>
+              <div style={{fontSize:13,fontWeight:600,marginBottom:6,color:stat.mode==='REAL'?'var(--text-danger)':'var(--text-accent)'}}>{stat.mode==='REAL'?'Real':'Demo'}</div>
               <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10}}>{stat.trades.length} completed trades</div>
               <div style={{display:'grid',gap:6}}>
                 <div style={{fontSize:20,fontWeight:600,fontFamily:'var(--font-mono)',color:stat.wr>=65?'var(--text-success)':stat.wr>=52.6?'var(--text-accent)':'var(--text-danger)'}}>{fp(stat.wr)}</div>
@@ -1602,6 +1626,7 @@ export function Analytics({trades,settings,bal}){
           ))}
         </div>
       </div>
+      )}
 
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Performance trend</div>
