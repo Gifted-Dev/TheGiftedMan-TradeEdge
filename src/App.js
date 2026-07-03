@@ -9,6 +9,8 @@ import {
   CircleCheck,
   CircleX,
   ClipboardList,
+  Eye,
+  EyeOff,
   Info,
   Inbox,
   LayoutDashboard,
@@ -2030,6 +2032,7 @@ function Login({onBack}){
   const[mode,setMode]=useState('signin');
   const[email,setEmail]=useState('');
   const[password,setPassword]=useState('');
+  const[showPw,setShowPw]=useState(false);
   const[err,setErr]=useState(null);
   const[msg,setMsg]=useState(null);
   const[busy,setBusy]=useState(false);
@@ -2083,7 +2086,12 @@ function Login({onBack}){
           {mode!=='reset'&&(
             <div className="login-field">
               <label className="login-label">Password</label>
-              <input className="login-input" type="password" required minLength={6} placeholder="Min 6 characters" value={password} onChange={e=>setPassword(e.target.value)}/>
+              <div style={{position:'relative'}}>
+                <input className="login-input" style={{paddingRight:40}} type={showPw?'text':'password'} required minLength={6} placeholder="Min 6 characters" value={password} onChange={e=>setPassword(e.target.value)}/>
+                <button type="button" onClick={()=>setShowPw(v=>!v)} aria-label={showPw?'Hide password':'Show password'} style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',cursor:'pointer',padding:6,display:'flex',color:'var(--text-muted)'}}>
+                  {showPw?<EyeOff size={16}/>:<Eye size={16}/>}
+                </button>
+              </div>
             </div>
           )}
 
