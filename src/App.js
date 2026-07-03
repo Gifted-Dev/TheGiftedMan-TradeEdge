@@ -521,11 +521,31 @@ function Criteria({criteria}){
 // ── Setup Wizard ──────────────────────────────────────────────────────────────
 function Setup({onDone}){
   const[step,setStep]=useState(1);
+  const[loading,setLoading]=useState(false);
+  const[error,setError]=useState('');
   const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS});
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
 
-  function finish(){
-    onDone({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0),setupComplete:true,createdAt:Date.now()});
+  async function finish(){
+    console.log('[Setup] finish — Validating inputs');
+    const demo=parseFloat(f.startingBalanceDemo);
+    const real=parseFloat(f.startingBalanceReal);
+    if(!demo||!real){
+      console.log('[Setup] finish — Validation failed: missing starting balances');
+      setError('Please enter both Demo and Real starting balances.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try{
+      console.log('[Setup] finish — Saving to Supabase');
+      await onDone({...f,startingBalanceDemo:demo,startingBalanceReal:real,setupComplete:true,createdAt:Date.now()});
+      console.log('[Setup] finish — Setup complete');
+    }catch(e){
+      console.log('[Setup] finish — Error:', e);
+      setError('Could not save settings: '+(e.message||e)+'. Please try again.');
+      setLoading(false);
+    }
   }
 
   return(
@@ -635,11 +655,18 @@ function Setup({onDone}){
         )}
       </div>
 
-      <div style={{display:'flex',gap:8,justifyContent:'space-between'}}>
+      {error&&(
+        <div style={{marginTop:12,padding:'8px 12px',background:'var(--bg-danger)',border:'1px solid var(--border-danger)',borderRadius:'var(--radius-sm)',fontSize:13,color:'var(--text-danger)'}}>
+          {error}
+        </div>
+      )}
+      <div style={{display:'flex',gap:8,justifyContent:'space-between',marginTop:error?12:0}}>
         {step>1?<button style={btn()} onClick={()=>setStep(s=>s-1)}>← Back</button>:<div/>}
         {step<4
           ?<button style={btn('pri')} onClick={()=>setStep(s=>s+1)}>Next →</button>
-          :<button style={btn('pri')} onClick={finish} disabled={!f.startingBalanceDemo||!f.startingBalanceReal}>Start trading →</button>
+          :<button style={btn('pri')} onClick={finish} disabled={loading||!f.startingBalanceDemo||!f.startingBalanceReal}>
+            {loading?'Saving…':'Start trading →'}
+          </button>
         }
       </div>
     </div>
@@ -2191,7 +2218,10 @@ export default function App(){
       startingBalanceReal:parseFloat(v.startingBalanceReal||0),
     };
     setSettings(normalized);
-    if(authUser)await supabase.from('settings').upsert(toSettingsRow(authUser.id,normalized));
+    if(authUser){
+      const{error:dbErr}=await supabase.from('settings').upsert(toSettingsRow(authUser.id,normalized));
+      if(dbErr)throw new Error(dbErr.message);
+    }
   };
   const saveTrades=async v=>{
     const next=typeof v==='function'?v(trades):v;
