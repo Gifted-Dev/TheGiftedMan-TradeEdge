@@ -1,13 +1,216 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ─────────────────────────────────────────────────────────
+   Layers   : bg (page) → surface-0 (inset well) → surface-1 (card) → surface-2 (raised/input)
+   Accent   : single indigo family; gradient reserved for primary actions + hero moments
+   Semantic : win / loss / warning — always paired with a sign, label, or icon (never color alone)
+   Type     : Inter only. Two weights on screen: 400/500 body, 600 emphasis, 700 hero numbers.
+   Space    : 4px base — 4 / 8 / 12 / 16 / 24 / 32 / 48
+   Radius   : 8 controls · 12 cards · 16 modals/shell
+──────────────────────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Inter', ui-sans-serif, system-ui, sans-serif; /* numbers rely on tabular-nums, not a mono face */
+
+  --bg: #07080c;
+  --surface-0: #0a0c11;
+  --surface-1: #0f1218;
+  --surface-2: #151924;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.13);
+
+  --text-primary: #edeff5;
+  --text-secondary: #a9b1c3;
+  --text-muted: #6b7385;
+  --on-accent: #ffffff;
+
+  --accent: #6270f3;
+  --text-accent: #8e9bff;
+  --fill-accent: linear-gradient(135deg, #5b67f2, #8b5cf6);
+
+  --text-success: #3ecf8e;
+  --text-danger: #f17179;
+  --text-warning: #ecb44e;
+  --fill-success: linear-gradient(135deg, #18b77e, #3ecf8e);
+  --fill-danger: linear-gradient(135deg, #e5484d, #f17179);
+  --fill-warning: linear-gradient(135deg, #d9930d, #ecb44e);
+
+  --bg-accent: rgba(98, 112, 243, 0.12);
+  --bg-success: rgba(62, 207, 142, 0.1);
+  --bg-danger: rgba(241, 113, 121, 0.1);
+  --bg-warning: rgba(236, 180, 78, 0.1);
+  --border-accent: rgba(142, 155, 255, 0.3);
+  --border-success: rgba(62, 207, 142, 0.28);
+  --border-danger: rgba(241, 113, 121, 0.28);
+  --border-warning: rgba(236, 180, 78, 0.28);
+
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f4f5f9;
+  --surface-0: #eceef4;
+  --surface-1: #ffffff;
+  --surface-2: #ffffff;
+  --border: rgba(15, 23, 42, 0.08);
+  --border-strong: rgba(15, 23, 42, 0.14);
+
+  --text-primary: #171b26;
+  --text-secondary: #444b5c;
+  --text-muted: #7b8294;
+
+  --accent: #4f5ae8;
+  --text-accent: #4652d9;
+  --fill-accent: linear-gradient(135deg, #4f5ae8, #7c3aed);
+
+  --text-success: #0e9f6e;
+  --text-danger: #dc4854;
+  --text-warning: #b57812;
+  --fill-success: linear-gradient(135deg, #0e9f6e, #34d399);
+  --fill-danger: linear-gradient(135deg, #dc2626, #f43f5e);
+  --fill-warning: linear-gradient(135deg, #d97706, #f59e0b);
+
+  --bg-accent: rgba(79, 90, 232, 0.08);
+  --bg-success: rgba(14, 159, 110, 0.1);
+  --bg-danger: rgba(220, 72, 84, 0.09);
+  --bg-warning: rgba(181, 120, 18, 0.1);
+  --border-accent: rgba(79, 90, 232, 0.22);
+  --border-success: rgba(14, 159, 110, 0.24);
+  --border-danger: rgba(220, 72, 84, 0.24);
+  --border-warning: rgba(181, 120, 18, 0.24);
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px -12px rgba(15, 23, 42, 0.1);
+  --shadow-card-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 16px 32px -12px rgba(15, 23, 42, 0.16);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* Ocean — dark surfaces with a blue cast, cyan accent */
+[data-theme='ocean'] {
+  color-scheme: dark;
+  --bg: #06111a;
+  --surface-0: #081821;
+  --surface-1: #0c1f2b;
+  --surface-2: #122938;
+  --border: rgba(148, 210, 255, 0.09);
+  --border-strong: rgba(148, 210, 255, 0.16);
+
+  --accent: #22b8d4;
+  --text-accent: #67dcf9;
+  --fill-accent: linear-gradient(135deg, #0e9cbe, #38d4f0);
+  --bg-accent: rgba(34, 184, 212, 0.12);
+  --border-accent: rgba(103, 220, 249, 0.3);
+
+  --shadow-card: 0 1px 2px rgba(0, 10, 20, 0.5), 0 8px 24px -12px rgba(0, 10, 20, 0.6);
+  --shadow-card-hover: 0 2px 4px rgba(0, 10, 20, 0.5), 0 16px 32px -12px rgba(0, 10, 20, 0.7);
+}
+
+/* Graphite — neutral mono dark, silver accent */
+[data-theme='graphite'] {
+  color-scheme: dark;
+  --bg: #0a0a0b;
+  --surface-0: #0e0e10;
+  --surface-1: #141416;
+  --surface-2: #1b1b1f;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+
+  --accent: #a1a7b8;
+  --text-accent: #c9cede;
+  --fill-accent: linear-gradient(135deg, #6d7382, #b8becd);
+  --bg-accent: rgba(200, 206, 222, 0.09);
+  --border-accent: rgba(200, 206, 222, 0.26);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text-primary);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums; /* every number lines up — this is a data tool */
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ── Motion primitives ──────────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(62, 207, 142, 0.45); }
+  50%      { box-shadow: 0 0 0 5px rgba(62, 207, 142, 0); }
+}
+
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* satisfying press on every button, no per-component wiring */
+button { transition: transform 0.1s ease; }
+button:active:not(:disabled) { transform: scale(0.98); }
+
+/* interactive cards lift on hover — opt in with .card-lift */
+.card-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.card-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card-hover), var(--highlight-top);
+  border-color: var(--border-strong);
+}
+
+/* skeleton block for loading states */
+.skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface-1) 25%, var(--surface-2) 50%, var(--surface-1) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease infinite;
+}
+
+/* live-session pulsing indicator */
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-success);
+  animation: pulseDot 2s ease infinite;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton, .pulse-dot { animation: none; }
+  .card-lift, button { transition: none; }
+}
+
+::selection {
+  background: rgba(98, 112, 243, 0.4);
+  color: white;
 }
