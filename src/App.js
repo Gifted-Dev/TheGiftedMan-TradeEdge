@@ -1039,6 +1039,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[selectedTrade,setSelectedTrade]=useState(null);
   const[editDraft,setEditDraft]=useState({notes:'',screenshots:[]});
   const[previewImage,setPreviewImage]=useState(null);
+  const[saving,setSaving]=useState(false);
 
   // Journal defaults to the matching tab whenever the global Demo/Real toggle
   // changes, but the trader can still flip tabs independently while it's unchanged.
@@ -1104,44 +1105,50 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   }
 
   async function addManual(){
-    const tradeDate = mf.tradeDate || tod();
-    const isToday = tradeDate === tod();
-    let sessionNum = null;
+    if(saving)return;
+    setSaving(true);
+    try{
+      const tradeDate = mf.tradeDate || tod();
+      const isToday = tradeDate === tod();
+      let sessionNum = null;
 
-    const entryAccountMode=mf.accountMode || journalTab;
+      const entryAccountMode=mf.accountMode || journalTab;
 
-    if (isToday) {
-      let cur=ss;
-      let sess=getActive(ss,entryAccountMode);
-      if(!sess){
-        const r=await mkSession(cur,entryAccountMode);
-        if(!r)return;
-        cur=r.ss;
-        sess=r.sess;
+      if (isToday) {
+        let cur=ss;
+        let sess=getActive(ss,entryAccountMode);
+        if(!sess){
+          const r=await mkSession(cur,entryAccountMode);
+          if(!r){setSaving(false);return;}
+          cur=r.ss;
+          sess=r.sess;
+        }
+        const us={...sess,trades:sess.trades+1};
+        await saveSS({...cur,sessions:cur.sessions.map(s=>s.id===sess.id?us:s)});
+        sessionNum = sess.num;
       }
-      const us={...sess,trades:sess.trades+1};
-      await saveSS({...cur,sessions:cur.sessions.map(s=>s.id===sess.id?us:s)});
-      sessionNum = sess.num;
+
+      const pair=(mf.pair||'').trim()||'Manual';
+      addPairOption(pair);
+      const outcome=mf.outcome||'PENDING';
+      const entryStake=stakeFor(entryAccountMode).actual;
+      const pnl=calcPnl(entryStake,outcome);
+
+      const now = new Date();
+      const tradeDateTime = new Date(tradeDate);
+      tradeDateTime.setHours(now.getHours());
+      tradeDateTime.setMinutes(now.getMinutes());
+      tradeDateTime.setSeconds(now.getSeconds());
+      const timestamp = tradeDateTime.getTime();
+
+      const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode};
+
+      await saveTrades(prev=>[t,...(prev||[])]);
+      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab});
+      try{sessionStorage.removeItem('gm_draft_mf');}catch{}
+    }finally{
+      setSaving(false);
     }
-
-    const pair=(mf.pair||'').trim()||'Manual';
-    addPairOption(pair);
-    const outcome=mf.outcome||'PENDING';
-    const entryStake=stakeFor(entryAccountMode).actual;
-    const pnl=calcPnl(entryStake,outcome);
-
-    const now = new Date();
-    const tradeDateTime = new Date(tradeDate);
-    tradeDateTime.setHours(now.getHours());
-    tradeDateTime.setMinutes(now.getMinutes());
-    tradeDateTime.setSeconds(now.getSeconds());
-    const timestamp = tradeDateTime.getTime();
-
-    const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode};
-
-    await saveTrades(prev=>[t,...(prev||[])]);
-    setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab});
-    try{sessionStorage.removeItem('gm_draft_mf');}catch{}
   }
 
   async function addManualImage(file){
@@ -1197,7 +1204,8 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(selectedTrade){
       setEditDraft({notes:selectedTrade.notes||'',screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
         const isStr=typeof src==='string';
-        return{id:i,url:isStr?toDataUrl(src):(src?.url||toDataUrl(src?.b64||src?.b)),b64:isStr?src:(src?.b64||src?.b||null),mime:src?.mime||'image/png'};
+        const raw=isStr?src:(src?.b64||src?.b);
+        return{id:i,url:toDataUrl(raw,src?.mime),b64:raw,mime:src?.mime||'image/png'};
       })});
     }
   },[selectedTrade]);
@@ -1301,8 +1309,8 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           </div>
           <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Stake: {f$(stake.actual)} · Risk: {fp(stake.eff)}</div>
           <div style={{display:'flex',gap:8,marginTop:10}}>
-            <button style={{...btn('pri'),flex:1}} onClick={addManual}>Save entry</button>
-            <button style={btn()} onClick={()=>setManual(false)}>Cancel</button>
+            <button style={{...btn('pri'),flex:1}} onClick={addManual} disabled={saving}>{saving?'Saving…':'Save entry'}</button>
+            <button style={btn()} onClick={()=>setManual(false)} disabled={saving}>Cancel</button>
           </div>
         </div>
       )}
