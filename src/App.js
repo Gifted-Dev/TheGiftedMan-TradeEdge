@@ -1387,7 +1387,9 @@ function Money({settings,trades,wds,saveWds,mode}){
   const stake=calcStake(bal,settings.riskPercent);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
-  const wr=done.length?wins/done.length:0.65;
+  const actualWr=done.length?wins/done.length:0.65;
+  const[wrOverride,setWrOverride]=useState(null);
+  const wr=(wrOverride!=null?wrOverride:Math.round(actualWr*100))/100;
   const totalWd=wds.reduce((s,w)=>s+w.amount,0);
   const firstMs=settings.milestones[0];
   const phase1Thresh=settings.brokerMin/(firstMs.pct/100);
@@ -1461,6 +1463,12 @@ function Money({settings,trades,wds,saveWds,mode}){
             <span style={{fontSize:12,fontFamily:'var(--font-mono)',minWidth:20}}>{wks}</span>
           </div>
         </div>
+        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10}}>
+          <span style={{fontSize:12,color:'var(--text-muted)'}}>Win rate:</span>
+          <input type="range" min="0" max="100" step="1" value={Math.round(wr*100)} onChange={e=>setWrOverride(+e.target.value)} style={{width:100}}/>
+          <span style={{fontSize:12,fontFamily:'var(--font-mono)',minWidth:32}}>{Math.round(wr*100)}%</span>
+          {wrOverride!=null&&<button onClick={()=>setWrOverride(null)} style={{fontSize:11,color:'var(--text-accent)',background:'none',border:'none',cursor:'pointer',padding:0}}>Reset to actual ({fp(actualWr*100)})</button>}
+        </div>
         <div style={{display:'flex',alignItems:'flex-end',gap:2,height:72}}>
           {proj.map((v,i)=>(
             <div key={i} title={f$(v)} style={{flex:1,background:i===0?'var(--border-strong)':'var(--fill-accent)',borderRadius:'2px 2px 0 0',height:`${Math.max(4,(v/maxP)*100)}%`,opacity:0.6+(i/proj.length)*0.4}}/>
@@ -1469,7 +1477,7 @@ function Money({settings,trades,wds,saveWds,mode}){
         <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginTop:4}}>
           <span>Now: {f$(bal)}</span><span>{wks}w: {f$(proj[proj.length-1])}</span>
         </div>
-        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate · {fp(settings.riskPercent)} risk · {settings.sessionsPerDay*6} trades/week</div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate{wrOverride!=null?' (custom)':''} · {fp(settings.riskPercent)} risk · {settings.sessionsPerDay*6} trades/week</div>
       </div>
 
       {mode==='REAL'&&(
