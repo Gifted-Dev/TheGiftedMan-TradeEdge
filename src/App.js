@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import {
   Activity,
@@ -11,6 +11,7 @@ import {
   ClipboardList,
   Eye,
   EyeOff,
+  GripHorizontal,
   Info,
   Inbox,
   LayoutDashboard,
@@ -18,18 +19,25 @@ import {
   LogOut,
   Menu,
   Palette,
+  Pause,
+  Play,
   ScanSearch,
   Settings,
+  SkipForward,
   Sparkles,
   Target,
   Timer,
   TriangleAlert,
+  Volume2,
+  VolumeX,
   Wallet,
   X,
 } from "lucide-react";
 
 const OLD_SK = { S:'gm_s_v1', T:'gm_t_v1', A:'gm_a_v1', W:'gm_w_v1', SS:'gm_ss_v1' };
 const GAP = 6 * 3600 * 1000;
+const NO_TRADE_GAP_DEFAULT = 90; // minutes for no-trade session cooldown
+const MAX_NO_TRADE_STREAK = 3;   // consecutive no-trade sessions before full gap applies
 const PAYOUT = 0.92;
 const MAX_DL = 4;
 const ACCOUNT_MODES = ['DEMO','REAL'];
@@ -125,7 +133,7 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations}};
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,noTradeGapMin:s.noTradeGapMin}};
 }
 function fromSettingsRow(r){
   return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
@@ -149,7 +157,7 @@ function toSessionRow(userId,date,s){
     end_time:s.endTime?new Date(s.endTime).toISOString():null,trades:s.trades,wins:s.wins,losses:s.losses,
     con_loss:s.conLoss,con_win:s.conWin,net_loss:s.netLoss,session_pnl:s.sPnl,is_active:s.isActive,
     is_locked:s.isLocked,lock_reason:s.lockReason,
-    extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal}};
+    extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,paidOnStart:s.paidOnStart}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
@@ -184,7 +192,16 @@ function perModeFromSessions(sessions){
     const modeSessions=sessions.filter(s=>s.accountMode===mode);
     const dailyLosses=modeSessions.reduce((s,x)=>s+x.losses,0);
     const lastEnd=modeSessions.reduce((m,x)=>x.endTime&&x.endTime>m?x.endTime:m,0)||null;
-    perMode[mode]={dailyLosses,isDailyLocked:dailyLosses>=MAX_DL,lastEnd};
+    // Count consecutive no-trade sessions (most recent first) — a session
+    // with trades > 0 resets the streak.
+    const sorted=[...modeSessions].sort((a,b)=>b.startTime-a.startTime);
+    let consecutiveNoTrade=0;
+    for(const s of sorted){
+      if(s.trades>0)break;
+      if(s.lockCode==='TIME_EXPIRED_NO_TRADE')consecutiveNoTrade++;
+      else break;
+    }
+    perMode[mode]={dailyLosses,isDailyLocked:dailyLosses>=MAX_DL,lastEnd,consecutiveNoTrade};
   }
   return perMode;
 }
@@ -255,10 +272,32 @@ function calcBal(start,trades,wds){
   return start+pnl-wd;
 }
 
-function calcStake(bal,rPct){
+// Risk sizing supports two modes, switchable anytime in Settings:
+// PERCENT (default) — stake is riskPercent% of current balance, like before.
+// FIXED — stake is always the same dollar amount regardless of balance.
+// Either way this returns the same {calc,actual,eff} shape so every call site
+// (Dashboard, Journal, Money) stays agnostic to which mode is active.
+function calcStake(bal,settings){
+  if(settings?.riskMode==='FIXED'){
+    const amt=Math.max(1,parseFloat(settings.riskAmount)||1);
+    return{calc:amt,actual:amt,eff:bal?(amt/bal)*100:0};
+  }
+  const rPct=settings?.riskPercent??5;
   const c=bal*(rPct/100);
   const a=Math.max(1,Math.round(c*100)/100);
-  return{calc:c,actual:a,eff:(a/bal)*100};
+  return{calc:c,actual:a,eff:bal?(a/bal)*100:0};
+}
+
+// Per-trade override at logging time — a trader can type either a dollar
+// amount or a percent of their current balance for this one trade, instead
+// of accepting the default from Settings. Falls back to the default whenever
+// there's no valid override value entered.
+function resolveStakeOverride(overrideMode,overrideValue,defaultStake,bal){
+  const v=parseFloat(overrideValue);
+  if(!Number.isFinite(v)||v<=0)return defaultStake;
+  if(overrideMode==='AMOUNT')return Math.max(1,v);
+  if(overrideMode==='PERCENT')return Math.max(1,Math.round(bal*(v/100)*100)/100);
+  return defaultStake;
 }
 
 function calcPnl(stake,outcome){
@@ -267,7 +306,86 @@ function calcPnl(stake,outcome){
   return 0;
 }
 
-function emptyModeState(){return{dailyLosses:0,isDailyLocked:false,lastEnd:null};}
+// Wilson score interval — a binomial confidence interval that stays sane at
+// small n (unlike the normal/Wald approximation, which can produce bounds
+// outside [0,1] or an implausibly narrow range on <50 trades). z=1.96 is the
+// standard z-score for a 95% interval. Returns fractions (0-1), not percent.
+function wilsonInterval(wins,total,z=1.96){
+  if(!total)return{lower:0,upper:0,center:0,n:0};
+  const p=wins/total;
+  const z2=z*z;
+  const denom=1+z2/total;
+  const center=p+z2/(2*total);
+  const margin=z*Math.sqrt((p*(1-p))/total+z2/(4*total*total));
+  return{lower:Math.max(0,(center-margin)/denom),upper:Math.min(1,(center+margin)/denom),center:p,n:total};
+}
+
+// Review digest — rolling windows rather than calendar week/month, so
+// "This Week" is always a full 7 days of data (a calendar week reviewed on
+// its 2nd day would look almost empty) and the "previous period" comparison
+// is a same-length window, making the delta an apples-to-apples comparison.
+const DAY_MS=86400000;
+function periodRange(period,now=Date.now()){
+  const days=period==='MONTH'?30:7;
+  const end=now,start=now-days*DAY_MS;
+  return{start,end,prevStart:start-days*DAY_MS,prevEnd:start,days};
+}
+
+// Pure — no I/O. Takes already-loaded trades/analyses and a [start,end)
+// window, and returns one mode's digest for that window. No grading logic
+// is touched — this only reads outcomes/fields that already exist.
+function computeDigest({trades,analyses,mode,start,end}){
+  const inRange=t=>t.timestamp>=start&&t.timestamp<end;
+  const periodTrades=trades.filter(t=>getTradeMode(t)===mode&&inRange(t));
+  const done=periodTrades.filter(t=>t.outcome!=='PENDING');
+  const wins=done.filter(t=>t.outcome==='WIN').length;
+  const wr=done.length?(wins/done.length)*100:0;
+
+  const pairMap={};
+  done.forEach(t=>{
+    const key=t.pair||'Unknown';
+    if(!pairMap[key])pairMap[key]={wins:0,total:0};
+    pairMap[key].total++;
+    if(t.outcome==='WIN')pairMap[key].wins++;
+  });
+  // Minimum 3 trades to qualify — otherwise a single lucky trade reads as a "100% pair".
+  const pairStats=Object.entries(pairMap).map(([pair,d])=>({pair,...d,wr:(d.wins/d.total)*100})).filter(p=>p.total>=3);
+  const bestPair=pairStats.length?pairStats.reduce((a,b)=>b.wr>a.wr?b:a):null;
+  const worstPair=pairStats.length?pairStats.reduce((a,b)=>b.wr<a.wr?b:a):null;
+
+  // Gate-failure stat is scoped to analyses actually linked to a trade the
+  // user logged this period (via trade.analysisId) — never every zone ever
+  // analyzed. The analyzer's grading is still being refined, so an unacted-on
+  // analysis shouldn't shape this stat; only zones the user traded on should.
+  const linkedAnalysisIds=new Set(periodTrades.map(t=>t.analysisId).filter(Boolean));
+  const linkedAnalyses=(analyses||[]).filter(a=>linkedAnalysisIds.has(a.id));
+  const gateFailCounts={};
+  linkedAnalyses.forEach(a=>{
+    (a.gateResults||[]).forEach(g=>{if(!g.pass)gateFailCounts[g.label]=(gateFailCounts[g.label]||0)+1;});
+  });
+  const topEntry=Object.entries(gateFailCounts).sort((a,b)=>b[1]-a[1])[0]||null;
+  const topGateFailure=topEntry?{label:topEntry[0],count:topEntry[1],ofAnalyses:linkedAnalyses.length}:null;
+
+  // Analyzer-usage reliance — how many logged trades skipped zone analysis
+  // entirely, using the same isAnalyzed field the Journal/Analytics already
+  // use to distinguish ANALYZER-sourced trades from MANUAL entries. This is
+  // independent of same-day vs backdated, and of session timing altogether.
+  const unanalyzedTrades=periodTrades.filter(t=>!t.isAnalyzed).length;
+
+  return{
+    totalTrades:periodTrades.length,
+    demoCount:trades.filter(t=>getTradeMode(t)==='DEMO'&&inRange(t)).length,
+    realCount:trades.filter(t=>getTradeMode(t)==='REAL'&&inRange(t)).length,
+    wins,total:done.length,wr,ci:wilsonInterval(wins,done.length),
+    bestPair,worstPair,topGateFailure,
+    unanalyzedTrades,
+    // Real P&L is tracked regardless of which mode is toggled — Demo P&L
+    // isn't real money, consistent with Money page treating Demo as practice-only.
+    realPnl:trades.filter(t=>getTradeMode(t)==='REAL'&&inRange(t)&&t.outcome!=='PENDING').reduce((s,t)=>s+t.pnl,0),
+  };
+}
+
+function emptyModeState(){return{dailyLosses:0,isDailyLocked:false,lastEnd:null,consecutiveNoTrade:0};}
 
 function getToday(ss){
   const t=tod();
@@ -298,12 +416,31 @@ function balForMode(settings,trades,wds,mode){
 
 function getActive(ss,mode){return ss?.sessions?.find(s=>s.isActive && s.accountMode===mode)||null;}
 
-function canStart(ss,max,mode){
+function canStart(ss,max,mode,settings){
   const m=ss.perMode?.[mode]||emptyModeState();
   if(m.isDailyLocked)return{ok:false,msg:`Daily ${MAX_DL}-loss limit reached for ${mode==='REAL'?'Real':'Demo'}. Resume tomorrow.`};
   const sessionsForMode=(ss.sessions||[]).filter(s=>s.accountMode===mode);
-  if(sessionsForMode.length>=max)return{ok:false,msg:`Max ${max} sessions reached today.`};
-  if(m.lastEnd){const rem=GAP-(Date.now()-m.lastEnd);if(rem>0){const h=Math.floor(rem/3600000),m2=Math.floor((rem%3600000)/60000);return{ok:false,msg:`Next session in ${h}h ${m2}m`};}}
+  const consecutiveNoTrade=m.consecutiveNoTrade||0;
+  const isFreeNoTrade=consecutiveNoTrade<MAX_NO_TRADE_STREAK;
+  // Sessions that count toward the daily limit: when the streak threshold
+  // is hit ALL sessions count; otherwise only sessions that had trades.
+  const countedSessions=isFreeNoTrade?sessionsForMode.filter(s=>s.trades>0||s.paidOnStart):sessionsForMode;
+  if(countedSessions.length>=max)return{ok:false,msg:`Max ${max} sessions reached today.`};
+  if(m.lastEnd){
+    const last=lastEndedSession(ss,mode);
+    const wasNoTrade=last?.lockCode==='TIME_EXPIRED_NO_TRADE';
+    const gapMs=isFreeNoTrade&&wasNoTrade
+      ?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000
+      :GAP;
+    const rem=gapMs-(Date.now()-m.lastEnd);
+    if(rem>0){
+      const h=Math.floor(rem/3600000),m2=Math.floor((rem%3600000)/60000);
+      let msg=`Next session in ${h}h ${m2}m`;
+      if(isFreeNoTrade&&wasNoTrade)msg=`No qualifying setup found. Next session available in ${h}h ${m2}m.`;
+      else if(!isFreeNoTrade&&wasNoTrade)msg=`${MAX_NO_TRADE_STREAK} sessions without a trade today — treating this as a full session. Next session in ${h}h ${m2}m.`;
+      return{ok:false,msg};
+    }
+  }
   return{ok:true};
 }
 
@@ -330,9 +467,11 @@ function getSessionDuration(settings,styleId){
   return settings?.sessionDurations?.[styleId] ?? DEF_DURATIONS[styleId] ?? DEF_DURATIONS[1];
 }
 function buildSession(ssState,mode,durationMin){
+  const pm=perModeFromSessions(ssState.sessions)[mode]||emptyModeState();
+  const paidOnStart=(pm.consecutiveNoTrade||0)>=MAX_NO_TRADE_STREAK;
   return{id:uid(),num:ssState.sessions.filter(x=>x.accountMode===mode).length+1,accountMode:mode,
     startTime:Date.now(),endTime:null,trades:0,wins:0,losses:0,conLoss:0,conWin:0,netLoss:0,sPnl:0,
-    isActive:true,isLocked:false,lockReason:null,lockCode:null,
+    isActive:true,isLocked:false,lockReason:null,lockCode:null,paidOnStart,
     durationMin,pausedAt:null,pausedMsTotal:0};
 }
 // Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
@@ -356,10 +495,15 @@ function lastEndedSession(ss,mode){
 // A session that timed out (as opposed to hitting a trade-count/streak rule)
 // additionally blocks new Analyzer/Journal activity until the normal 6h gap
 // elapses — trade-triggered lock reasons keep their existing behavior.
-function isTimeExpiredCooldown(ss,mode){
+function isTimeExpiredCooldown(ss,mode,settings){
   const last=lastEndedSession(ss,mode);
-  if(!last||last.lockCode!=='TIME_EXPIRED')return false;
-  return(Date.now()-last.endTime)<GAP;
+  if(!last)return false;
+  if(last.lockCode==='TIME_EXPIRED_NO_TRADE'){
+    const gap=(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000;
+    return(Date.now()-last.endTime)<gap;
+  }
+  if(last.lockCode==='TIME_EXPIRED')return(Date.now()-last.endTime)<GAP;
+  return false;
 }
 function fmtClock(ms){
   const s=Math.max(0,Math.round(ms/1000));
@@ -457,6 +601,20 @@ function AnimatedNumber({value,format=v=>v}){
   return format(disp);
 }
 
+// Renders "95% CI: 54%–76% · 47 trades" plus a small-sample caveat under 50.
+// Shared by the Dashboard tile, Analytics overview, and the per-grade breakdown.
+function WinRateCI({wins,total,style}){
+  if(!total)return null;
+  const{lower,upper}=wilsonInterval(wins,total);
+  const lo=Math.round(lower*100),hi=Math.round(upper*100);
+  return(
+    <span style={style}>
+      95% CI: {lo}%–{hi}% · {total} trade{total===1?'':'s'}
+      {total<50&&<div style={{marginTop:2}}>Sample size is still small — this range will narrow as you log more trades.</div>}
+    </span>
+  );
+}
+
 function Metric({label,value,sub,color,animate,format}){
   return(
     <div className="card-lift" style={{background:'var(--surface-1)',borderRadius:'var(--radius)',padding:'14px 16px',border:'1px solid var(--border)',overflow:'hidden',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
@@ -546,6 +704,28 @@ function Alert({type,title,body,icon,pulse}){
   );
 }
 
+// Styled stand-in for window.confirm — used where a destructive action needs
+// a deliberate second step without breaking out to a native browser dialog.
+function ConfirmDialog({title,body,confirmLabel='Delete',onConfirm,onCancel}){
+  return(
+    <div role="dialog" aria-modal="true" aria-label={title} style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1300}} onClick={onCancel}>
+      <div style={{...card,width:'100%',maxWidth:380,border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+          <div style={{width:32,height:32,borderRadius:'var(--radius-sm)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-danger)',border:'1px solid var(--border-danger)'}}>
+            <TriangleAlert size={16} style={{color:'var(--text-danger)'}}/>
+          </div>
+          <div style={{fontSize:15,fontWeight:600,color:'var(--text-primary)'}}>{title}</div>
+        </div>
+        <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:16}}>{body}</div>
+        <div style={{display:'flex',gap:8}}>
+          <button style={{...btn(),flex:1}} onClick={onCancel}>Cancel</button>
+          <button style={{...btn('dan'),flex:1}} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Gate breakdown for the strict AI validation filter (new 10-gate schema). Criteria
 // below stays for analyses saved under the old loose-criteria schema.
 function Gates({gates,score,grade}){
@@ -600,7 +780,7 @@ function Setup({onDone}){
   const[step,setStep]=useState(1);
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
-  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS});
+  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS,noTradeGapMin:NO_TRADE_GAP_DEFAULT});
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
 
   async function finish(){
@@ -712,7 +892,7 @@ function Setup({onDone}){
                   <button key={n} style={{...btn(f.sessionsPerDay===n?'pri':'def'),flex:1}} onClick={()=>set('sessionsPerDay',n)}>{n} session{n>1?'s':''}</button>
                 ))}
               </div>
-              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between all sessions.</p>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between standard sessions; shorter cooldown for no-trade sessions.</p>
             </div>
           </div>
         )}
@@ -751,21 +931,231 @@ function Setup({onDone}){
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
+// ── Session background music (Jamendo) ─────────────────────────────────────────
+// Pixabay has no public music-search API (only images/videos are documented) —
+// Jamendo's v3 API is the real equivalent: a free client_id, tag search, and a
+// direct streamable "audio" URL per track. Fetched once per session id, never
+// on every render; a missing key or failed fetch degrades to a quiet inline
+// message rather than touching the timer or blocking trading.
+function randTrackIndex(len,exclude){
+  if(len<=1)return 0;
+  let i=Math.floor(Math.random()*len);
+  if(exclude!=null)while(i===exclude)i=Math.floor(Math.random()*len);
+  return i;
+}
+
+// Owns the actual <audio> element's state so it can be rendered once at the
+// App level and survive navigating between Dashboard/Journal/Settings/etc —
+// a component-local player would unmount (and stop) the moment you left
+// whichever page rendered it.
+function useMusicPlayer(active){
+  const[tracks,setTracks]=useState(null); // null = loading, [] = unavailable
+  const[trackIdx,setTrackIdx]=useState(0);
+  const[playing,setPlaying]=useState(false);
+  const[volume,setVolume]=useState(0.5);
+  const[muted,setMuted]=useState(false);
+  const audioRef=useRef(null);
+  const fetchedForRef=useRef(null);
+  const startedRef=useRef(false); // has a track been explicitly picked/started this session yet?
+  const pendingPlayRef=useRef(false); // play() once the just-picked track's src lands in the DOM
+
+  useEffect(()=>{
+    if(!active){fetchedForRef.current=null;startedRef.current=false;return;}
+    if(fetchedForRef.current===active.id)return;
+    fetchedForRef.current=active.id;
+    startedRef.current=false;
+    const clientId=process.env.REACT_APP_JAMENDO_CLIENT_ID;
+    if(!clientId){setTracks([]);return;}
+    setTracks(null);
+    setTrackIdx(0);
+    setPlaying(false);
+    fetch(`https://api.jamendo.com/v3.0/tracks/?client_id=${clientId}&format=json&limit=100&audioformat=mp32&fuzzytags=lofi+ambient`)
+      .then(r=>{if(!r.ok)throw new Error('bad response');return r.json();})
+      .then(d=>{
+        const list=(d.results||[]).filter(t=>t.audio);
+        setTracks(list);
+      })
+      .catch(()=>setTracks([]));
+  },[active]);
+
+  // Stops playback the instant the session ends, for any reason.
+  useEffect(()=>{
+    if(!active&&audioRef.current){audioRef.current.pause();setPlaying(false);}
+  },[active]);
+
+  useEffect(()=>{
+    if(audioRef.current)audioRef.current.volume=muted?0:volume;
+  },[volume,muted]);
+
+  // Plays the freshly-picked (random) track once its src has landed on the <audio> element.
+  useEffect(()=>{
+    if(pendingPlayRef.current&&audioRef.current){
+      pendingPlayRef.current=false;
+      audioRef.current.play().catch(()=>{});
+      setPlaying(true);
+    }
+  },[trackIdx]);
+
+  // Shuffles to a new random track and keeps playing — used for both the
+  // "Next" control and onEnded, so background music runs unattended.
+  function next(){
+    if(!tracks?.length)return;
+    startedRef.current=true;
+    pendingPlayRef.current=true;
+    setTrackIdx(i=>randTrackIndex(tracks.length,i));
+  }
+  function play(){
+    if(!audioRef.current||!tracks?.length)return;
+    if(!startedRef.current)next();
+    else{audioRef.current.play().catch(()=>{});setPlaying(true);}
+  }
+  function pause(){
+    if(!audioRef.current)return;
+    audioRef.current.pause();
+    setPlaying(false);
+  }
+  function toggle(){playing?pause():play();}
+  function selectTrack(i){
+    startedRef.current=true;
+    pendingPlayRef.current=false;
+    setTrackIdx(i);
+    setPlaying(false);
+    if(audioRef.current)audioRef.current.pause();
+  }
+
+  return{tracks,trackIdx,track:tracks?.[trackIdx],playing,volume,setVolume,muted,setMuted,audioRef,toggle,next,selectTrack};
+}
+
+// Full inline player — rendered inside the Dashboard grid while a session is active.
+function MusicPlayerPanel({music}){
+  const{tracks,trackIdx,track,playing,volume,setVolume,muted,setMuted,toggle,next,selectTrack}=music;
+  return(
+    <div className="col-span-12" style={{...card,marginBottom:0}}>
+      <div style={{fontSize:13,fontWeight:600,marginBottom:10,color:'var(--text-primary)'}}>
+        Background music <span style={{fontWeight:400,color:'var(--text-muted)',fontSize:11}}>· via Jamendo</span>
+      </div>
+      {tracks===null?(
+        <div style={{fontSize:12,color:'var(--text-muted)'}}>Loading tracks…</div>
+      ):tracks.length===0?(
+        <div style={{fontSize:12,color:'var(--text-muted)'}}>Music unavailable this session.</div>
+      ):(
+        <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+          <select
+            aria-label="Track"
+            value={trackIdx}
+            onChange={e=>selectTrack(parseInt(e.target.value,10))}
+            style={{...inp,flex:'1 1 220px'}}
+          >
+            {tracks.map((t,i)=><option key={t.id} value={i}>{t.name} — {t.artist_name}</option>)}
+          </select>
+          <button style={btn()} onClick={toggle}>{playing?<Pause size={15}/>:<Play size={15}/>}{playing?'Pause':'Play'}</button>
+          <button style={btn()} onClick={next} aria-label="Next track"><SkipForward size={15}/></button>
+          <button style={btn()} onClick={()=>setMuted(m=>!m)} aria-label={muted?'Unmute':'Mute'}>{muted?<VolumeX size={15}/>:<Volume2 size={15}/>}</button>
+          <input aria-label="Volume" type="range" min="0" max="1" step="0.05" value={volume} onChange={e=>setVolume(parseFloat(e.target.value))} style={{width:100}}/>
+          {track&&<div style={{fontSize:11,color:'var(--text-muted)',width:'100%'}}>Now playing: {track.name} — {track.artist_name}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Draggable hook ──────────────────────────────────────────────────────────────
+const MUSIC_WIDGET_POS_KEY = 'gm_music_widget_pos';
+
+function useDraggable() {
+  const [pos, setPos] = useState(() => {
+    try {
+      const saved = localStorage.getItem(MUSIC_WIDGET_POS_KEY);
+      return saved ? JSON.parse(saved) : { right: 16, bottom: 16 };
+    } catch {
+      return { right: 16, bottom: 16 };
+    }
+  });
+
+  const posRef = useRef(pos);
+  posRef.current = pos;
+  const dragRef = useRef(null);
+
+  const handleMouseDown = useCallback((e) => {
+    // Only primary button, and ignore if clicking interactive elements
+    if (e.button !== 0) return;
+    const tag = e.target.tagName;
+    if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'A') return;
+    e.preventDefault();
+
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startRight: posRef.current.right,
+      startBottom: posRef.current.bottom,
+    };
+
+    const onMove = (ev) => {
+      const dx = dragRef.current.startX - ev.clientX;
+      const dy = dragRef.current.startY - ev.clientY;
+      setPos({
+        right: Math.max(0, dragRef.current.startRight + dx),
+        bottom: Math.max(0, dragRef.current.startBottom + dy),
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      try { localStorage.setItem(MUSIC_WIDGET_POS_KEY, JSON.stringify(posRef.current)); } catch {}
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, []);
+
+  return [pos, handleMouseDown];
+}
+
+// Compact floating control shown on every other page while a session is active,
+// so leaving the Dashboard never silences the music — only the full player
+// (track picker, volume, mute) is Dashboard-only, per the original scope.
+function MusicWidget({music}){
+  const{tracks,track,playing,toggle,next}=music;
+  const [pos, handleMouseDown] = useDraggable();
+
+  if(tracks===null)return(
+    <div style={{position:'fixed',right:pos.right,bottom:pos.bottom,zIndex:900,...card,marginBottom:0,padding:'8px 14px',fontSize:12,color:'var(--text-muted)',boxShadow:'0 8px 24px rgba(0,0,0,0.35)'}}>Loading music…</div>
+  );
+  if(!tracks.length)return null;
+  return(
+    <div
+      onMouseDown={handleMouseDown}
+      style={{position:'fixed',right:pos.right,bottom:pos.bottom,zIndex:900,...card,marginBottom:0,padding:'8px 10px',display:'flex',alignItems:'center',gap:6,cursor:'grab',boxShadow:'0 8px 24px rgba(0,0,0,0.35)',userSelect:'none'}}
+    >
+      <span style={{display:'flex',alignItems:'center',color:'var(--text-muted)',cursor:'grab'}}><GripHorizontal size={14}/></span>
+      <button style={btn()} onClick={toggle} aria-label={playing?'Pause music':'Play music'}>{playing?<Pause size={15}/>:<Play size={15}/>}</button>
+      <button style={btn()} onClick={next} aria-label="Next track"><SkipForward size={15}/></button>
+      {track&&<span style={{fontSize:11,color:'var(--text-muted)',maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{track.name}</span>}
+    </div>
+  );
+}
+
+export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music}){
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
+  // Today-only counts — the full modeTrades/done may span multiple days.
+  const todayDate=ss?.date||tod();
+  const todayDone=modeTrades.filter(t=>t.date===todayDate&&t.outcome!=='PENDING');
+  const todayWins=todayDone.filter(t=>t.outcome==='WIN').length;
+  const todayPnl=todayDone.reduce((s,t)=>s+t.pnl,0);
   const wr=done.length?((wins/done.length)*100):0;
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const startBal=getStartingBalanceForMode(settings,mode);
   const growth=startBal?((bal-startBal)/startBal)*100:0;
-  const stake=calcStake(bal,settings.riskPercent);
+  const stake=calcStake(bal,settings);
   const active=getActive(ss,mode);
   const activeTradesArr = active?modeTrades.filter(t=>t.date===ss?.date && t.sessionNum===active.num):[];
   const activeTradesCount = activeTradesArr.length;
   const activeWins = activeTradesArr.filter(t=>t.outcome==='WIN').length;
   const activeLosses = activeTradesArr.filter(t=>t.outcome==='LOSS').length;
-  const canS=canStart(ss,settings.sessionsPerDay,mode);
+  const canS=canStart(ss,settings.sessionsPerDay,mode,settings);
   const isDailyLocked=ss.perMode?.[mode]?.isDailyLocked||false;
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
   const nextMs=mode==='REAL'?settings.milestones.find(m=>bal<startBal*m.mul):null;
@@ -786,20 +1176,23 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
   const prevActiveRef=useRef(active);
 
   async function startSession(){
-    const s=canStart(ss,settings.sessionsPerDay,mode);
+    const s=canStart(ss,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return;}
     const duration=getSessionDuration(settings,getTradeStyleForMode(settings,mode));
     const ns=buildSession(ss,mode,duration);
-    await saveSS({...ss,sessions:[...ss.sessions,ns]});
+    const nextSessions=[...ss.sessions,ns];
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
   }
   async function pauseSession(){
     if(!active||active.pausedAt)return;
-    await saveSS({...ss,sessions:ss.sessions.map(s=>s.id===active.id?{...s,pausedAt:Date.now()}:s)});
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?{...s,pausedAt:Date.now()}:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
   }
   async function resumeSession(){
     if(!active||!active.pausedAt)return;
     const us={...active,pausedMsTotal:(active.pausedMsTotal||0)+(Date.now()-active.pausedAt),pausedAt:null};
-    await saveSS({...ss,sessions:ss.sessions.map(s=>s.id===active.id?us:s)});
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
   }
   async function endSession(code,reason){
     if(!active)return;
@@ -814,7 +1207,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
   useEffect(()=>{
     if(!active)return;
     if(active.pausedAt&&now-active.pausedAt>=PAUSE_AUTO_RESUME_MS)resumeSession();
-    else if(!active.pausedAt&&isSessionTimeExpired(active,now))endSession('TIME_EXPIRED','Time expired');
+    else if(!active.pausedAt&&isSessionTimeExpired(active,now))endSession(active.trades===0?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',active.trades===0?'No qualifying setup found':'Time expired');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[now]);
 
@@ -824,13 +1217,20 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
     if(prevActiveRef.current&&!active){
       const ended=lastEndedSession(ss,mode);
       if(ended){
-        const rem=GAP-(Date.now()-ended.endTime);
+        const gapMs=ended.lockCode==='TIME_EXPIRED_NO_TRADE'
+          ?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000
+          :GAP;
+        const rem=gapMs-(Date.now()-ended.endTime);
         const h=Math.max(0,Math.floor(rem/3600000)),m2=Math.max(0,Math.floor((rem%3600000)/60000));
-        setEndToast(`Session ended — ${ended.lockReason||'locked'}. Next session in ${h}h ${m2}m.`);
+        const msg=ended.lockCode==='TIME_EXPIRED_NO_TRADE'
+          ?`Session ended — no qualifying setup found. Next session available in ${h}h ${m2}m.`
+          :`Session ended — ${ended.lockReason||'locked'}. Next session in ${h}h ${m2}m.`;
+        setEndToast(msg);
         setTimeout(()=>setEndToast(null),10000);
       }
     }
     prevActiveRef.current=active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[active,ss,mode]);
 
   return(
@@ -935,17 +1335,29 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
               <div style={{fontSize:12,color:'var(--text-muted)'}}>{canS.msg}</div>
             </div>
           )}
-          <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:16}}>
+
+          {/* Today's total — visible in every state so the user always sees their full activity */}
+          {todayDone.length>0&&(
+            <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)',display:'flex',gap:12,fontSize:11,color:'var(--text-muted)'}}>
+              <span>Today: <strong style={{color:'var(--text-primary)'}}>{todayDone.length} trades</strong></span>
+              <span><strong style={{color:'var(--text-success)'}}>{todayWins}W</strong> / <strong style={{color:'var(--text-danger)'}}>{todayDone.length-todayWins}L</strong></span>
+              <span>· {(todayPnl>=0?'+':'')+f$(todayPnl)}</span>
+            </div>
+          )}
+
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:todayDone.length>0?8:16}}>
             <button style={{...btn('pri'),width:'100%'}} onClick={()=>nav('analyzer')}><ScanSearch size={15}/>Analyze zone</button>
             <button style={{...btn(),width:'100%'}} onClick={()=>nav('journal')}><BookOpen size={15}/>Journal{pendingN>0&&<span style={{marginLeft:2,padding:'1px 7px',borderRadius:999,fontSize:11,fontWeight:700,background:'var(--bg-danger)',color:'var(--text-danger)',border:'1px solid var(--border-danger)'}}>{pendingN}</span>}</button>
           </div>
         </div>
 
+        {active&&music&&<MusicPlayerPanel music={music}/>}
+
         {/* Stat tiles */}
         <div className="col-span-6 lg:col-span-3"><Metric label="Win rate" value={fp(wr)} sub={`${wins}W / ${done.length-wins}L · ${done.length} trades`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':done.length?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':'losses'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
-        <div className="col-span-6 lg:col-span-3"><Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/></div>
+        <div className="col-span-6 lg:col-span-3"><Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/></div>
 
         {/* Recent trades */}
         <div className="col-span-12" style={{...card,marginBottom:0}}>
@@ -988,7 +1400,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const cooldown=isTimeExpiredCooldown(ss,mode);
+  const cooldown=isTimeExpiredCooldown(ss,mode,settings);
   const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||cooldown;
 
   async function addImage(file,target='extra'){
@@ -1184,7 +1596,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
   const[mf,smf]=useState(()=>{
     try{const saved=sessionStorage.getItem('gm_draft_mf');if(saved)return JSON.parse(saved);}catch{}
-    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO'};
+    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:''};
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
@@ -1194,6 +1606,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[savingEdit,setSavingEdit]=useState(false);
   const[editErr,setEditErr]=useState(null);
   const[savedFlash,setSavedFlash]=useState(false);
+  const[confirmingDelete,setConfirmingDelete]=useState(false);
+  const[paStakeMode,setPaStakeMode]=useState('DEFAULT');
+  const[paStakeValue,setPaStakeValue]=useState('');
+
+  // A new analyzer result to log always starts back at the default stake —
+  // an override left over from a previous zone shouldn't silently carry forward.
+  useEffect(()=>{if(pa){setPaStakeMode('DEFAULT');setPaStakeValue('');}},[pa]);
 
   // Journal defaults to the matching tab whenever the global Demo/Real toggle
   // changes, but the trader can still flip tabs independently while it's unchanged.
@@ -1204,37 +1623,42 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     try{sessionStorage.setItem('gm_draft_mf',JSON.stringify(mf));}catch{}
   },[mf]);
 
-  const stakeFor=m=>calcStake(balForMode(settings,trades,wds,m),settings.riskPercent);
+  const stakeFor=m=>calcStake(balForMode(settings,trades,wds,m),settings);
   // Analyzer results always log to the global toggle's account (Change 4) —
   // no separate confirmation step. Manual entries log to whichever tab is open.
   const stake=stakeFor(mode);
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||isTimeExpiredCooldown(ss,mode);
+  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||isTimeExpiredCooldown(ss,mode,settings);
 
   const tabActive=getActive(ss,journalTab);
   const tabLk=tabActive?chkLock(tabActive,getTradeStyleForMode(settings,journalTab)):{locked:false};
-  const tabCooldown=isTimeExpiredCooldown(ss,journalTab);
+  const tabCooldown=isTimeExpiredCooldown(ss,journalTab,settings);
   const tabLocked=(ss.perMode?.[journalTab]?.isDailyLocked||false)||tabLk.locked||tabCooldown;
 
   async function mkSession(ssState,mode){
-    const s=canStart(ssState,settings.sessionsPerDay,mode);
+    const s=canStart(ssState,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return null;}
     const ns=buildSession(ssState,mode,getSessionDuration(settings,getTradeStyleForMode(settings,mode)));
-    const upd={...ssState,sessions:[...ssState.sessions,ns]};
+    const nextSessions=[...ssState.sessions,ns];
+    const upd={...ssState,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)};
     await saveSS(upd);
     return{ss:upd,sess:ns};
   }
+
+  const paBal=balForMode(settings,trades,wds,mode);
+  const paStake=resolveStakeOverride(paStakeMode,paStakeValue,stake.actual,paBal);
 
   async function recordPA(){
     if(!pa)return;
     let cur=ss,sess=active;
     if(!sess){const r=await mkSession(cur,mode);if(!r)return;cur=r.ss;sess=r.sess;}
-    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess.num,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:stake.actual,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
+    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess.num,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
     await saveTrades(prev=>[t,...(prev||[])]);
     const us={...sess,trades:sess.trades+1};
-    await saveSS({...cur,sessions:cur.sessions.map(s=>s.id===sess.id?us:s)});
+    const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
+    await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
     setPA(null);
   }
 
@@ -1266,8 +1690,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const tradeDate = mf.tradeDate || tod();
       const isToday = tradeDate === tod();
       let sessionNum = null;
-
       const entryAccountMode=mf.accountMode || journalTab;
+      const pair=(mf.pair||'').trim()||'Manual';
+      addPairOption(pair);
+      const outcome=mf.outcome||'PENDING';
+      const entryBal=balForMode(settings,trades,wds,entryAccountMode);
+      const entryStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,stakeFor(entryAccountMode).actual,entryBal);
+      const pnl=calcPnl(entryStake,outcome);
 
       if (isToday) {
         let cur=ss;
@@ -1278,16 +1707,23 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           cur=r.ss;
           sess=r.sess;
         }
-        const us={...sess,trades:sess.trades+1};
-        await saveSS({...cur,sessions:cur.sessions.map(s=>s.id===sess.id?us:s)});
+        const isW=outcome==='WIN';
+        const isL=outcome==='LOSS';
+        const us={...sess,
+          trades:sess.trades+1,
+          wins:sess.wins+(isW?1:0),
+          losses:sess.losses+(isL?1:0),
+          conLoss:isL?sess.conLoss+1:0,
+          conWin:isW?sess.conWin+1:0,
+          netLoss:sess.netLoss+(isL?1:isW?-1:0),
+          sPnl:sess.sPnl+pnl,
+        };
+        const lk2=chkLock(us,getTradeStyleForMode(settings,entryAccountMode));
+        if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
+        const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
+        await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
         sessionNum = sess.num;
       }
-
-      const pair=(mf.pair||'').trim()||'Manual';
-      addPairOption(pair);
-      const outcome=mf.outcome||'PENDING';
-      const entryStake=stakeFor(entryAccountMode).actual;
-      const pnl=calcPnl(entryStake,outcome);
 
       const now = new Date();
       const tradeDateTime = new Date(tradeDate);
@@ -1299,7 +1735,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab});
+      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:''});
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -1320,6 +1756,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const file=item.getAsFile();
     if(file) addManualImage(file);
   }
+
+  const manualAccountMode=mf.accountMode||journalTab;
+  const manualBal=balForMode(settings,trades,wds,manualAccountMode);
+  const manualDefaultStake=stakeFor(manualAccountMode).actual;
+  const manualStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,manualDefaultStake,manualBal);
 
   const tabTrades=trades.filter(t=>getTradeMode(t)===journalTab);
   const sorted=[...(filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt))].sort((a,b)=>b.timestamp-a.timestamp);
@@ -1376,6 +1817,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       })});
       setEditErr(null);
       setPreview(null);
+      setConfirmingDelete(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedTrade?.id]);
@@ -1387,11 +1829,23 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       {pa&&(
         <div style={{...card,background:'var(--bg-success)',borderColor:'var(--border-success)'}}>
           <div style={{fontSize:14,fontWeight:500,color:'var(--text-success)',marginBottom:6}}>Zone analysis ready to log</div>
-          <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:10}}>{pa.zoneType} · Grade {pa.grade} · {pa.detectedPair&&pa.detectedPair!=='UNKNOWN'?pa.detectedPair:'Pair not set'} · {pa.direction} · Stake {f$(stake.actual)}</div>
+          <div style={{fontSize:13,color:'var(--text-secondary)',marginBottom:10}}>{pa.zoneType} · Grade {pa.grade} · {pa.detectedPair&&pa.detectedPair!=='UNKNOWN'?pa.detectedPair:'Pair not set'} · {pa.direction}</div>
           <div style={{marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,letterSpacing:'0.04em',padding:'3px 9px',borderRadius:999,background:mode==='REAL'?'var(--bg-danger)':'var(--bg-accent)',color:mode==='REAL'?'var(--text-danger)':'var(--text-accent)',border:`1px solid ${mode==='REAL'?'var(--border-danger)':'var(--border-accent)'}`}}>
               Logging to {mode==='REAL'?'REAL':'DEMO'}
             </span>
+          </div>
+          <div style={{marginBottom:10}}>
+            <label style={{...lbl,color:'var(--text-success)'}}>Stake</label>
+            <div style={{display:'flex',gap:8,marginBottom:6}}>
+              {[{id:'DEFAULT',label:`Default (${f$(stake.actual)})`},{id:'AMOUNT',label:'Amount $'},{id:'PERCENT',label:'Percent %'}].map(o=>(
+                <button key={o.id} style={{...btn(paStakeMode===o.id?'pri':'def'),flex:1,fontSize:12}} onClick={()=>setPaStakeMode(o.id)}>{o.label}</button>
+              ))}
+            </div>
+            {paStakeMode!=='DEFAULT'&&(
+              <input style={inp} type="number" min="0" step="0.01" placeholder={paStakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={paStakeValue} onChange={e=>setPaStakeValue(e.target.value)}/>
+            )}
+            <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:4}}>Will log {f$(paStake)}{paStakeMode==='PERCENT'?` (${fp(parseFloat(paStakeValue)||0)} of ${f$(paBal)} balance)`:''}.</div>
           </div>
           <div style={{display:'flex',gap:8}}>
             <button style={{...btn('suc'),flex:1}} onClick={recordPA} disabled={locked}>Create journal entry</button>
@@ -1443,6 +1897,18 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             <div style={{display:'flex',gap:8}}>
               {ACCOUNT_MODES.map(mode=><button key={mode} style={{...btn(mf.accountMode===mode?'pri':'def'),flex:1}} onClick={()=>smf(m=>({...m,accountMode:mode}))}>{mode==='REAL'?'Real':'Demo'}</button>)}
             </div>
+          </div>
+          <div style={{marginTop:10}}>
+            <label style={lbl}>Stake</label>
+            <div style={{display:'flex',gap:8,marginBottom:6}}>
+              {[{id:'DEFAULT',label:`Default (${f$(manualDefaultStake)})`},{id:'AMOUNT',label:'Amount $'},{id:'PERCENT',label:'Percent %'}].map(o=>(
+                <button key={o.id} style={{...btn(mf.stakeMode===o.id?'pri':'def'),flex:1,fontSize:12}} onClick={()=>smf(m=>({...m,stakeMode:o.id}))}>{o.label}</button>
+              ))}
+            </div>
+            {mf.stakeMode!=='DEFAULT'&&(
+              <input style={inp} type="number" min="0" step="0.01" placeholder={mf.stakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={mf.stakeValue} onChange={e=>smf(m=>({...m,stakeValue:e.target.value}))}/>
+            )}
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>This trade will log {f$(manualStake)}{mf.stakeMode==='PERCENT'?` (${fp(parseFloat(mf.stakeValue)||0)} of ${f$(manualBal)} balance)`:''}.</div>
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Zone grade</label>
@@ -1566,7 +2032,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                 <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
                 <button style={btn()} onClick={()=>setSelectedTrade(null)} disabled={savingEdit}>Cancel</button>
-                <button style={btn('dan')} onClick={()=>{if(window.confirm('Delete this trade entry? This cannot be undone.')){deleteTrade(selectedTrade);setSelectedTrade(null);}}}>Delete</button>
+                <button style={btn('dan')} onClick={()=>setConfirmingDelete(true)}>Delete</button>
                 {savedFlash&&<span style={{fontSize:12,color:'var(--text-success)',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Saved</span>}
               </div>
               <div style={card}>
@@ -1587,6 +2053,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             </div>
           </div>
         </div>
+      )}
+
+      {confirmingDelete&&(
+        <ConfirmDialog
+          title="Delete this trade entry?"
+          body="This permanently removes the entry, its notes, and its screenshots. This cannot be undone."
+          confirmLabel="Delete entry"
+          onCancel={()=>setConfirmingDelete(false)}
+          onConfirm={()=>{deleteTrade(selectedTrade);setConfirmingDelete(false);setSelectedTrade(null);}}
+        />
       )}
 
       {preview&&(
@@ -1631,7 +2107,7 @@ function Money({settings,trades,wds,saveWds,mode}){
   const[amt,setAmt]=useState('');
   const[note,setNote]=useState('');
   const[wks,setWks]=useState(12);
-  const stake=calcStake(bal,settings.riskPercent);
+  const stake=calcStake(bal,settings);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
   const actualWr=done.length?wins/done.length:0.65;
@@ -1652,7 +2128,7 @@ function Money({settings,trades,wds,saveWds,mode}){
   }
 
   const proj=[];let b=bal;
-  for(let i=0;i<=wks;i++){proj.push(b);const tw=settings.sessionsPerDay*6,ws=tw*wr,ls=tw-ws,stk=calcStake(b,settings.riskPercent).actual;b=b+(ws*stk*PAYOUT)-(ls*stk);}
+  for(let i=0;i<=wks;i++){proj.push(b);const tw=settings.sessionsPerDay*6,ws=tw*wr,ls=tw-ws,stk=calcStake(b,settings).actual;b=b+(ws*stk*PAYOUT)-(ls*stk);}
   const maxP=Math.max(...proj);
 
   return(
@@ -1665,10 +2141,10 @@ function Money({settings,trades,wds,saveWds,mode}){
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Position sizer</div>
         <div style={g3}>
           <Metric label="Balance" value={f$(bal)}/>
-          <Metric label="Risk %" value={fp(settings.riskPercent)}/>
+          <Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>
           <Metric label="Trade stake" value={f$(stake.actual)} color="var(--text-accent)"/>
         </div>
-        {stake.eff>settings.riskPercent*1.1&&(
+        {settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
           <div style={{fontSize:12,color:'var(--text-warning)',marginTop:8,padding:'6px 10px',background:'var(--bg-warning)',borderRadius:'var(--radius)'}}>
             ⚠ $1 minimum means effective risk is {fp(stake.eff)} — above your target {fp(settings.riskPercent)}. Balance needs {f$(1/(settings.riskPercent/100))} for correct sizing.
           </div>
@@ -1760,7 +2236,20 @@ function Money({settings,trades,wds,saveWds,mode}){
 }
 
 // ── Trading Plan ──────────────────────────────────────────────────────────────
+const ZONE_CHECKLIST=[
+  {k:'base',label:'BASE — 1–3 tight candles?'},
+  {k:'departure',label:'DEPARTURE — One explosive candle (big body, small wick)?'},
+  {k:'structure',label:'BROKEN STRUCTURE — Broke a recent swing high/low?'},
+  {k:'fresh',label:'FRESH — Untouched since formed?'},
+  {k:'trend',label:'TREND — With trend (not counter-trend)?'},
+  {k:'location',label:'LOCATION — At swing point (not chop)?'},
+  {k:'distance',label:'DISTANCE — Clear move away before return?'},
+  {k:'width',label:'WIDTH — One precise price level?'},
+];
+
 function Plan({settings}){
+  const[zoneCheck,setZoneCheck]=useState({});
+  const zoneCheckedCount=Object.values(zoneCheck).filter(Boolean).length;
   const sn={1:'Precision (Style 1)',2:'Active (Style 2)',3:'Structured (Style 3)'};
   const sr={
     1:['1 trade per session maximum','Session ends after that trade regardless of outcome',`Max ${settings.sessionsPerDay} session${settings.sessionsPerDay>1?'s':''}/day`,'6-hour gap between sessions'],
@@ -1770,7 +2259,7 @@ function Plan({settings}){
   const sections=[
     {t:'Zone rules',items:['A+, A, or B graded zones only','Zone must pass the 10-gate AI validation, including all 4 hard filters','Confirm a live Tier 1 trigger on the 10-second chart yourself before entry — the app no longer tracks this','Use zone analyzer before every trade','No C-grade or invalid zones']},
     {t:'Instrument rules',items:['OTC pairs only','Minimum 90%+ ROI payout','Avoid any pair below 90% payout']},
-    {t:'Risk rules',items:[`${settings.riskPercent}% risk per trade`,'$1 minimum trade (broker floor)','No Martingale or loss recovery','No mid-session risk increases']},
+    {t:'Risk rules',items:[settings.riskMode==='FIXED'?`${f$(settings.riskAmount)} fixed stake per trade`:`${settings.riskPercent}% risk per trade`,'$1 minimum trade (broker floor)','No Martingale or loss recovery','No mid-session risk increases']},
     {t:'Daily circuit breaker',items:[`${MAX_DL} total losses locks the day until midnight`,'No exceptions — step away and reset']},
     {t:'Behavioral rules',items:['Win the war, not every battle','No chasing losses — accept session stops','No revenge trading','Weekly trade log review']},
   ];
@@ -1785,6 +2274,19 @@ function Plan({settings}){
           <div key={i} style={{display:'flex',gap:8,fontSize:13,color:'var(--text-secondary)',marginBottom:4}}>
             <i className="ti ti-circle-check" style={{color:'var(--text-accent)',fontSize:14,flexShrink:0,marginTop:2}} aria-hidden="true"/>{r}
           </div>
+        ))}
+      </div>
+      <div style={card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+          <div style={{fontSize:14,fontWeight:500}}>Zone selection checklist <span style={{fontWeight:400,color:'var(--text-muted)'}}>({zoneCheckedCount}/{ZONE_CHECKLIST.length})</span></div>
+          {zoneCheckedCount>0&&<button style={{...btn(),padding:'4px 10px',fontSize:12}} onClick={()=>setZoneCheck({})}>Reset</button>}
+        </div>
+        <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10}}>Run through this before trusting a zone — tick as you confirm each one on the chart.</div>
+        {ZONE_CHECKLIST.map(item=>(
+          <label key={item.k} style={{display:'flex',gap:8,alignItems:'flex-start',fontSize:13,color:zoneCheck[item.k]?'var(--text-primary)':'var(--text-secondary)',marginBottom:6,cursor:'pointer'}}>
+            <input type="checkbox" checked={!!zoneCheck[item.k]} onChange={()=>setZoneCheck(z=>({...z,[item.k]:!z[item.k]}))} style={{marginTop:2}}/>
+            <span style={{textDecoration:zoneCheck[item.k]?'line-through':'none'}}>{item.label}</span>
+          </label>
         ))}
       </div>
       <div style={{...card,background:'var(--bg-warning)'}}>
@@ -1810,8 +2312,86 @@ function Plan({settings}){
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
-export function Analytics({trades,settings,bal}){
+// Auto-compiled "This Week"/"This Month" summary — pure computation over
+// trades/analyses already loaded client-side (see computeDigest), no
+// generated commentary, just numbers and a delta vs the prior equal-length
+// period. Tone is deliberately factual: the trader applies their own judgment.
+function ReviewDigest({trades,analyses}){
+  const[period,setPeriod]=useState('WEEK');
+  const[mode,setMode]=useState('DEMO');
+  const{start,end,prevStart,prevEnd}=periodRange(period);
+  const cur=computeDigest({trades,analyses,mode,start,end});
+  const prev=computeDigest({trades,analyses,mode,start:prevStart,end:prevEnd});
+  const wrDelta=(cur.total&&prev.total)?cur.wr-prev.wr:null;
+  const pnlDelta=cur.realPnl-prev.realPnl;
+  const periodLabel=period==='WEEK'?'This week (last 7 days)':'This month (last 30 days)';
+  const prevLabel=period==='WEEK'?'last week':'last month';
+
+  const tog=(items,val,setVal,colorFor)=>(
+    <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+      {items.map(it=>{
+        const on=val===it.id;
+        return(
+          <button key={it.id} onClick={()=>setVal(it.id)} aria-pressed={on}
+            className="flex items-center justify-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-bold tracking-wide transition-colors"
+            style={on?{background:colorFor?colorFor(it.id):'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>{it.label}</button>
+        );
+      })}
+    </div>
+  );
+
+  return(
+    <div>
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+        {tog([{id:'WEEK',label:'This week'},{id:'MONTH',label:'This month'}],period,setPeriod)}
+        {tog([{id:'DEMO',label:'Demo'},{id:'REAL',label:'Real'}],mode,setMode,id=>id==='REAL'?'var(--fill-danger)':'var(--fill-accent)')}
+      </div>
+
+      <div style={card}>
+        <div style={{fontSize:14,fontWeight:500}}>{periodLabel} · {mode==='REAL'?'Real':'Demo'}</div>
+        <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Auto-compiled from your logged trades — nothing to fill in.</div>
+
+        <div style={g2}>
+          <Metric label="Total trades" value={cur.totalTrades} sub={`${cur.demoCount} Demo / ${cur.realCount} Real (all accounts)`}/>
+          <Metric
+            label="Win rate"
+            value={cur.total?fp(cur.wr):'—'}
+            sub={cur.total?<WinRateCI wins={cur.wins} total={cur.total}/>:'No completed trades yet'}
+            color={cur.total?(cur.wr>=65?'var(--text-success)':cur.wr>=52.6?'var(--text-accent)':'var(--text-danger)'):undefined}
+          />
+        </div>
+
+        {wrDelta!=null&&(
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:10}}>
+            Win rate {wrDelta>=0?'up':'down'} {Math.abs(Math.round(wrDelta))} point{Math.abs(Math.round(wrDelta))===1?'':'s'} from {prevLabel} ({fp(prev.wr)} → {fp(cur.wr)}).
+          </div>
+        )}
+
+        <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border)',display:'grid',gap:8}}>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+            Best pair: {cur.bestPair?<>{cur.bestPair.pair} ({fp(cur.bestPair.wr)}, {cur.bestPair.total} trades)</>:'Not enough trades on any one pair yet (min. 3)'}
+          </div>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+            Worst pair: {cur.worstPair?<>{cur.worstPair.pair} ({fp(cur.worstPair.wr)}, {cur.worstPair.total} trades)</>:'Not enough trades on any one pair yet (min. 3)'}
+          </div>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+            Most common gate failure: {cur.topGateFailure?<>{cur.topGateFailure.label} ({cur.topGateFailure.count} of {cur.topGateFailure.ofAnalyses} analyzed zones you traded)</>:'No zone analyses linked to a logged trade this period'}
+          </div>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+            Trades logged without zone analysis: {cur.unanalyzedTrades} of {cur.totalTrades} this period
+          </div>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>
+            Real account P&L this period: <span style={{fontFamily:'var(--font-mono)',fontWeight:600,color:cur.realPnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(cur.realPnl>=0?'+':'')+f$(cur.realPnl)}</span> ({pnlDelta>=0?'+':''}{f$(pnlDelta)} vs {prevLabel})
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function Analytics({trades,analyses,settings,bal}){
   const[scope,setScope]=useState('ALL');
+  const[tab,setTab]=useState('OVERVIEW');
   const scoped=scope==='ALL'?trades:trades.filter(t=>getTradeMode(t)===scope);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
   const total=done.length,wins=done.filter(t=>t.outcome==='WIN').length;
@@ -1842,23 +2422,37 @@ export function Analytics({trades,settings,bal}){
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:16}}>
         <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Analytics</div>
-        <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
-          {['ALL',...ACCOUNT_MODES].map(m=>{
-            const on=scope===m;
-            const isReal=m==='REAL';
-            return(
-              <button key={m} onClick={()=>setScope(m)} aria-pressed={on}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+            {[{id:'OVERVIEW',label:'Overview'},{id:'REVIEW',label:'Review'}].map(t=>(
+              <button key={t.id} onClick={()=>setTab(t.id)} aria-pressed={tab===t.id}
                 className="flex items-center justify-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-bold tracking-wide transition-colors"
-                style={on?{background:isReal?'var(--fill-danger)':'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>
-                {m==='ALL'?'All':m}
-              </button>
-            );
-          })}
+                style={tab===t.id?{background:'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>{t.label}</button>
+            ))}
+          </div>
+          {tab==='OVERVIEW'&&(
+            <div className="flex rounded-sm p-1" style={{border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+              {['ALL',...ACCOUNT_MODES].map(m=>{
+                const on=scope===m;
+                const isReal=m==='REAL';
+                return(
+                  <button key={m} onClick={()=>setScope(m)} aria-pressed={on}
+                    className="flex items-center justify-center gap-1.5 rounded-sm px-3 py-1.5 text-xs font-bold tracking-wide transition-colors"
+                    style={on?{background:isReal?'var(--fill-danger)':'var(--fill-accent)',color:'#fff'}:{color:'var(--text-muted)'}}>
+                    {m==='ALL'?'All':m}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
+
+      {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses}/>:<>
+
       <div style={g2}>
         <Metric label="Total trades" value={total} sub={`${wins}W / ${total-wins}L`}/>
-        <Metric label="Win rate" value={fp(wr)} sub={`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
+        <Metric label="Win rate" value={fp(wr)} sub={total?<>Break-even: {fp(be*100)}<br/><WinRateCI wins={wins} total={total}/></>:`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
         <Metric label="Expected value/trade" value={(ev>=0?'+':'')+f$(ev)} color={ev>=0?'var(--text-success)':'var(--text-danger)'}/>
         <Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/>
       </div>
@@ -1919,6 +2513,7 @@ export function Analytics({trades,settings,bal}){
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
                 <div style={{height:'100%',background:x.wr>=65?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,x.wr)}%`}}/>
               </div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.total}/></div>
             </div>
           ))}
         </div>
@@ -1942,13 +2537,14 @@ export function Analytics({trades,settings,bal}){
       )}
 
       {total===0&&<div style={{...card,textAlign:'center',padding:'2rem',color:'var(--text-muted)'}}><i className="ti ti-chart-bar" style={{fontSize:28,display:'block',marginBottom:8}} aria-hidden="true"/>No completed trades yet.</div>}
+      </>}
     </div>
   );
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function Cfg({settings,saveSettings,ss,resetAccount}){
-  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0});
+  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5});
   const[saved,setSaved]=useState(false);
   const[sessionWarn,setSessionWarn]=useState(false);
   const[includeBalances,setIncludeBalances]=useState(false);
@@ -2014,7 +2610,26 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
           <div><label style={lbl}>Real starting balance ($)</label><input style={inp} type="number" min="1" value={f.startingBalanceReal} onChange={e=>set('startingBalanceReal',e.target.value)}/></div>
         </div>
         <div><label style={lbl}>Broker min withdrawal ($)</label><input style={inp} type="number" min="1" value={f.brokerMin} onChange={e=>set('brokerMin',parseFloat(e.target.value))}/></div>
-        <div style={{marginTop:10}}><label style={lbl}>Risk per trade: {f.riskPercent}%</label><input type="range" min="1" max="20" step="0.5" value={f.riskPercent} onChange={e=>set('riskPercent',parseFloat(e.target.value))} style={{width:'100%'}}/></div>
+        <div style={{marginTop:10}}>
+          <label style={lbl}>Risk sizing</label>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            {[{id:'PERCENT',label:'% of balance'},{id:'FIXED',label:'Fixed $ amount'}].map(m=>(
+              <button key={m.id} style={{...btn((f.riskMode||'PERCENT')===m.id?'pri':'def'),flex:1}} onClick={()=>set('riskMode',m.id)}>{m.label}</button>
+            ))}
+          </div>
+          {(f.riskMode||'PERCENT')==='PERCENT'?(
+            <>
+              <label style={lbl}>Risk per trade: {f.riskPercent}%</label>
+              <input type="range" min="1" max="20" step="0.5" value={f.riskPercent} onChange={e=>set('riskPercent',parseFloat(e.target.value))} style={{width:'100%'}}/>
+            </>
+          ):(
+            <>
+              <label style={lbl}>Fixed stake per trade ($)</label>
+              <input style={inp} type="number" min="1" step="0.5" value={f.riskAmount} onChange={e=>set('riskAmount',parseFloat(e.target.value))}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Every trade stakes this amount regardless of balance — change it anytime, it applies from your next stake calculation.</p>
+            </>
+          )}
+        </div>
       </div>
 
       <div style={card}>
@@ -2052,7 +2667,7 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
               <button key={n} style={{...btn(f.sessionsPerDay===n?'pri':'def'),flex:1}} onClick={()=>applySessions(n)}>{n} session{n>1?'s':''}</button>
             ))}
           </div>
-          <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between all sessions.</p>
+          <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between standard sessions; shorter cooldown for no-trade sessions.</p>
         </div>
         <div style={{marginTop:14}}>
           <label style={lbl}>Session duration per style</label>
@@ -2071,6 +2686,18 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
             );
           })}
           <p style={{fontSize:11,color:'var(--text-muted)'}}>Applies to new sessions only — an active session keeps the duration it started with.</p>
+        </div>
+
+        {/* ── No-trade session cooldown ────────────────────────────────── */}
+        <div style={{marginTop:14}}>
+          <label style={lbl}>No-trade cooldown <span style={{fontWeight:400,fontSize:11,color:'var(--text-muted)'}}>({f.noTradeGapMin} min)</span></label>
+          <input type="range" min={60} max={120} step="5" value={f.noTradeGapMin}
+            onChange={e=>set('noTradeGapMin',parseInt(e.target.value,10))}
+            style={{width:'100%'}}/>
+          <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+            When a session ends with no trades taken, this shorter cooldown applies instead of the standard 6-hour gap.
+            After {MAX_NO_TRADE_STREAK} consecutive no-trade sessions, the next session reverts to the full 6-hour gap.
+          </p>
         </div>
       </div>
 
@@ -2091,6 +2718,7 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
       </div>
 
       <button style={{...btn('pri'),width:'100%'}} onClick={save}>{saved?'✓ Saved':'Save settings'}</button>
+      <div style={{textAlign:'center',fontSize:11,color:'var(--text-muted)',marginTop:12}}>Music via Jamendo</div>
     </div>
   );
 }
@@ -2117,8 +2745,9 @@ function Landing({onLogin}){
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, zone grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Deep-dive into your win rate by zone grade, pair, and account mode. See if AI analysis actually improves your results.'},
     {icon:Wallet,title:'Money Management',desc:'Position sizing, milestone-based withdrawal tracking, and growth projection based on your actual win rate.'},
-    {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. Pre-trade checklists and discipline guidelines keep you consistent and away from emotional overtrading.'},
-    {icon:Target,title:'Session Control',desc:'Structured trading sessions with built-in circuit breakers. Stop after consecutive losses. Never trade on tilt again.'},
+    {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
+    {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first.'},
+    {icon:Sparkles,title:'Focus Music',desc:'Free lofi and ambient tracks play in the background for the length of your session, then stop automatically when it ends.'},
   ];
 
   const gates=[
@@ -2184,7 +2813,7 @@ function Landing({onLogin}){
           <div className="ld-section-head">
             <div className="ld-section-tag">Features</div>
             <h2 className="ld-section-title">Everything You Need to Trade with Discipline</h2>
-            <p className="ld-section-sub">Six integrated modules that work together to keep you consistent, data-driven, and in control.</p>
+            <p className="ld-section-sub">Seven integrated modules that work together to keep you consistent, data-driven, and in control.</p>
           </div>
           <div className="ld-features-grid">
             {features.map((f,i)=>(
@@ -2542,6 +3171,50 @@ export default function App(){
   const todaySS=settings?getToday(ss):null;
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
+  // Lives here (not inside Dashboard) so the <audio> element is never
+  // unmounted by navigation — leaving the Dashboard used to silence the music.
+  const active=getActive(todaySS,mode);
+  const music=useMusicPlayer(active);
+
+  // Reconciles active sessions against actual trade data whenever trades or
+  // sessions change.  This heals sessions created under the old buggy code where
+  // manual trades didn't update session counters or trigger chkLock, and also
+  // catches any edge case where setOutcome/addManual failed to lock a session.
+  useEffect(()=>{
+    if(!todaySS||!trades.length||!settings)return;
+    let changed=false;
+    const nextSessions=todaySS.sessions.map(sess=>{
+      if(!sess.isActive||sess.isLocked)return sess;
+      const sessionTrades=trades
+        .filter(t=>getTradeMode(t)===sess.accountMode&&t.sessionNum===sess.num)
+        .sort((a,b)=>a.timestamp-b.timestamp);
+      if(!sessionTrades.length)return sess;
+      // Rebuild counters from scratch (in order) so streaks are correct.
+      let w=0,l=0,tc=0,cl=0,cw=0,sp=0;
+      for(const t of sessionTrades){
+        if(t.outcome==='PENDING'){tc++;continue;}
+        tc++;
+        if(t.outcome==='WIN'){w++;cw++;cl=0;}
+        if(t.outcome==='LOSS'){l++;cl++;cw=0;}
+        sp+=t.pnl||0;
+      }
+      const nl=Math.max(0,l-w);
+      const rebuilt={...sess,trades:tc,wins:w,losses:l,conLoss:cl,conWin:cw,netLoss:nl,sPnl:sp};
+      const lk=chkLock(rebuilt,getTradeStyleForMode(settings,sess.accountMode));
+      if(lk.locked){
+        changed=true;
+        // Use the last resolved trade's timestamp as endTime so the 6h
+        // session gap is measured from when trading actually stopped,
+        // not from when this reconciliation runs.
+        const lastTrade=sessionTrades.filter(t=>t.outcome!=='PENDING').pop();
+        const endTime=lastTrade?lastTrade.timestamp:Date.now();
+        return{...rebuilt,isActive:false,isLocked:true,lockReason:lk.reason,lockCode:lk.code,endTime};
+      }
+      return sess;
+    });
+    if(changed)saveSS({...todaySS,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  },[todaySS,trades,settings]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Correctness backstop: commits a TIME_EXPIRED session end even if the user
   // never has the Dashboard mounted to catch it (e.g. sitting in Journal past
   // the timer). The Dashboard's own tick does this immediately when visible;
@@ -2554,7 +3227,8 @@ export default function App(){
       const nextSessions=todaySS.sessions.map(s=>{
         if(s.isActive&&!s.isLocked&&isSessionTimeExpired(s,now)){
           changed=true;
-          return{...s,isActive:false,isLocked:true,lockReason:'Time expired',lockCode:'TIME_EXPIRED',endTime:now};
+          const noTrade=s.trades===0;
+          return{...s,isActive:false,isLocked:true,lockReason:noTrade?'No qualifying setup found':'Time expired',lockCode:noTrade?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',endTime:now};
         }
         return s;
       });
@@ -2750,14 +3424,18 @@ export default function App(){
           )}
 
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
-            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView}/>}
+            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA}/>}
             {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode}/>}
             {view==='plan'&&<Plan settings={settings}/>}
-            {view==='analytics'&&<Analytics trades={trades} settings={settings} bal={bal}/>}
+            {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal}/>}
             {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount}/>}
           </div>
+
+          {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}
+          <audio ref={music.audioRef} src={music.track?.audio} onEnded={music.next}/>
+          {active&&view!=='dashboard'&&<MusicWidget music={music}/>}
         </main>
       </div>
     </div>

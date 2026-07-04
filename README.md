@@ -6,7 +6,7 @@ TheGiftedMan Trading Tool is a desktop-style trading journal and performance pla
 
 This application helps you:
 
-- Analyze supply and demand zones with AI support from Gemini or Groq.
+- Analyze supply and demand zones with AI support from OpenRouter or Groq.
 - Record trades manually or from AI-assisted analysis.
 - Track trades in either Demo or Real mode, with separate performance analytics for each.
 - Apply different trade-management setups to Demo and Real accounts while still enforcing the same daily session and trade-limit rules.
@@ -56,13 +56,21 @@ This application helps you:
   - daily loss breaker
   - session-based trade limits and stop conditions
 
-### 5. Money management and planning
+### 5. Session timer and focus music
+- Each trade style (Precision, Active, Structured) has its own adjustable session duration, set in Settings.
+- Start a session from the Dashboard to get a live countdown, with Pause and End Session controls.
+- Pausing freezes the countdown; leaving it paused auto-resumes after 5 minutes so it can't be used to dodge the timer indefinitely.
+- A session ends the moment EITHER the timer hits zero OR an existing trade-count/win-loss rule triggers — whichever happens first — and the Dashboard shows the specific reason (time expired, stop loss, take profit, or max trades).
+- A timed-out session specifically pauses new Zone Analyzer requests and new manual Journal entries until the normal 6-hour gap elapses; any trade already awaiting a Win/Loss outcome stays fully accessible.
+- While a session is active, the Dashboard shows a background music player (free lofi/ambient tracks via the Jamendo API) with play/pause, track selection, and volume — it stops automatically the moment the session ends, for any reason.
+
+### 6. Money management and planning
 - Calculate a stake based on account balance and risk percentage.
 - Track withdrawals and milestone targets.
 - Review projected growth and balance progression over time.
-- Use the built-in trading plan view to review your risk and session rules.
+- Use the built-in trading plan view to review your risk and session rules, plus an interactive zone-selection checklist for judging a zone before you trust it.
 
-### 6. Analytics dashboard
+### 7. Analytics dashboard
 - View key metrics such as:
   - balance
   - win rate
@@ -76,7 +84,7 @@ This application helps you:
   - trading pair
   - analyzed versus manual trades
 
-### 7. Cloud account and sync
+### 8. Cloud account and sync
 - Email + password authentication (Supabase Auth), including password reset.
 - Settings, trades, sessions, withdrawals, and zone analyses are stored per-account in Supabase Postgres, protected by row-level security (each user can only read/write their own rows).
 - Chart screenshots are uploaded to Supabase Storage instead of being embedded as base64, keeping the database lean.
@@ -88,7 +96,8 @@ This application helps you:
 - Lucide React
 - Tailwind CSS via PostCSS
 - Supabase (Postgres, Auth, Storage)
-- Google Gemini API / Groq API for AI analysis
+- OpenRouter API / Groq API for AI zone analysis
+- Jamendo API for session background music
 
 ## Getting started
 
@@ -120,11 +129,16 @@ This application helps you:
      ```
 
 4. Configure AI provider keys
-   - Sign up in the app, then add your Gemini or Groq API key in Settings.
-   - Gemini: https://aistudio.google.com/app/apikey
+   - Sign up in the app, then add your OpenRouter or Groq API key in Settings.
+   - OpenRouter: https://openrouter.ai/keys
    - Groq: https://console.groq.com/keys
 
-5. Run the app
+5. Configure background music (optional)
+   - Get a free client_id at https://developer.jamendo.com/v3.0.
+   - Add it to `.env.local`: `REACT_APP_JAMENDO_CLIENT_ID=your-client-id`
+   - Without a key, the Dashboard session music player shows "Music unavailable this session" — trading features are unaffected.
+
+6. Run the app
    ```bash
    npm start
    ```

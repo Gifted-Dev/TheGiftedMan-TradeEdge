@@ -24,6 +24,7 @@ jest.mock('./supabaseClient', () => {
       from: () => thenable({ data: [], error: null }),
       storage: { from: () => ({ createSignedUrl: () => Promise.resolve({ data: { signedUrl: 'x' }, error: null }) }) },
     },
+    isSupabaseConfigured: true,
   };
 });
 
