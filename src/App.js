@@ -555,6 +555,27 @@ async function groqAnalyze(b64,mime,key){
   try{return JSON.parse(txt.replace(/```json|```/g,'').trim());}catch{throw new Error('Could not parse Groq response. Try again.');}
 }
 
+const NOTE_POLISH_PROMPT=`You are a trading journal editor. Rewrite the trader's note below to fix grammar and spelling, and use precise, standard trading terminology (e.g. "stop loss", "take profit", "breakout", "support/resistance", "consolidation") where it fits naturally. Preserve the original meaning, facts, numbers, pairs, and outcome exactly — do not add commentary, advice, or details that aren't in the original. Keep it concise and in the same voice. Respond with ONLY the rewritten note text — no preamble, no quotes, no markdown.`;
+
+// Reuses the same provider/key already configured for zone analysis — this
+// is a plain text completion (no image), so it works against either
+// provider's chat-completions endpoint with a text-only message.
+async function polishJournalNote(text,settings){
+  const trimmed=(text||'').trim();
+  if(!trimmed)return trimmed;
+  const provider=settings?.aiProvider||'gemini';
+  const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
+  if(!key)throw new Error(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
+  const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
+  const model=provider==='groq'?'meta-llama/llama-4-scout-17b-16e-instruct':'nvidia/nemotron-nano-12b-v2-vl:free';
+  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model,messages:[{role:'user',content:`${NOTE_POLISH_PROMPT}\n\n---\n${trimmed}`}],temperature:0.3,max_tokens:600})});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
+  const d=await res.json();
+  const out=d.choices?.[0]?.message?.content?.trim();
+  if(!out)throw new Error('No response from AI. Try again.');
+  return out.replace(/^["']|["']$/g,'');
+}
+
 // ── Style helpers ─────────────────────────────────────────────────────────────
 const card={background:'var(--surface-1)',borderRadius:'var(--radius)',border:'1px solid var(--border)',padding:'16px 20px',marginBottom:12,boxShadow:'var(--shadow-card), var(--highlight-top)'};
 const inp={width:'100%',boxSizing:'border-box',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'9px 12px',color:'var(--text-primary)',fontSize:14,outline:'none',transition:'border-color 0.15s ease, box-shadow 0.15s ease'};
@@ -1008,6 +1029,11 @@ function useMusicPlayer(active){
   function playTrackAt(i){
     if(!audioRef.current||!tracks?.length)return;
     audioRef.current.src=tracks[i].audio;
+    // Reassigning .src while a resource is already loaded doesn't reliably
+    // restart the load in every browser without an explicit load() call —
+    // without it, play() can silently resolve against the *old*, now-ended
+    // track and just stay stopped instead of advancing.
+    audioRef.current.load();
     setTrackIdx(i);
     const p=audioRef.current.play();
     if(p&&typeof p.catch==='function')p.catch(()=>setPlaying(false));
@@ -1630,6 +1656,34 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[confirmingDelete,setConfirmingDelete]=useState(false);
   const[paStakeMode,setPaStakeMode]=useState('DEFAULT');
   const[paStakeValue,setPaStakeValue]=useState('');
+  const[polishingManual,setPolishingManual]=useState(false);
+  const[manualPolishErr,setManualPolishErr]=useState(null);
+  const[polishingTrade,setPolishingTrade]=useState(false);
+
+  async function polishManualNotes(){
+    if(polishingManual||!mf.notes?.trim())return;
+    setPolishingManual(true);setManualPolishErr(null);
+    try{
+      const polished=await polishJournalNote(mf.notes,settings);
+      smf(m=>({...m,notes:polished}));
+    }catch(e){
+      setManualPolishErr(e.message||'Could not polish notes. Try again.');
+    }finally{
+      setPolishingManual(false);
+    }
+  }
+  async function polishTradeNotes(){
+    if(polishingTrade||!editDraft.notes?.trim())return;
+    setPolishingTrade(true);setEditErr(null);
+    try{
+      const polished=await polishJournalNote(editDraft.notes,settings);
+      setEditDraft(d=>({...d,notes:polished}));
+    }catch(e){
+      setEditErr(e.message||'Could not polish notes. Try again.');
+    }finally{
+      setPolishingTrade(false);
+    }
+  }
 
   // A new analyzer result to log always starts back at the default stake —
   // an override left over from a previous zone shouldn't silently carry forward.
@@ -1770,13 +1824,24 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     smf(m=>({...m,screenshots:[...(m.screenshots||[]),{url,b,mime:file.type||'image/png'}]}));
   }
 
-  function onManualPaste(e){
-    const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
-    if(!item)return;
-    e.preventDefault();
-    const file=item.getAsFile();
-    if(file) addManualImage(file);
-  }
+  // Global (document-level), matching the Analyzer's paste handling — an
+  // onPaste prop on just the notes textarea only fires while that exact
+  // element has focus, which is easy to miss (open the form, hit Ctrl+V
+  // without clicking in first, nothing happens). Active only while the
+  // manual-entry form is open, and not if the tab is locked.
+  useEffect(()=>{
+    if(!manual||tabLocked)return;
+    function onPaste(e){
+      const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
+      if(!item)return;
+      e.preventDefault();
+      const file=item.getAsFile();
+      if(file)addManualImage(file);
+    }
+    document.addEventListener('paste',onPaste);
+    return()=>document.removeEventListener('paste',onPaste);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[manual,tabLocked]);
 
   const manualAccountMode=mf.accountMode||journalTab;
   const manualBal=balForMode(settings,trades,wds,manualAccountMode);
@@ -1817,14 +1882,31 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     setPreview({items:editDraft.screenshots.map(s=>s.url),index:i});
   }
 
-  function onTradePaste(e){
-    if(!selectedTrade)return;
-    const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
-    if(!item)return;
-    e.preventDefault();
-    const file=item.getAsFile();
-    if(file) addTradeImage(file);
-  }
+  // addTradeImage closes over editDraft/selectedTrade directly (not via a
+  // functional state updater), so it must always be called through a ref
+  // that's refreshed every render — otherwise a paste effect that only
+  // re-attaches when selectedTrade's identity changes could fire a stale
+  // closure and drop screenshots added earlier in the same edit session.
+  const addTradeImageRef=useRef(addTradeImage);
+  addTradeImageRef.current=addTradeImage;
+
+  // Global (document-level), matching the Analyzer's paste handling — an
+  // onPaste prop on just the notes textarea only fires while that exact
+  // element has focus, which is easy to miss. Keyed on presence (not the
+  // object itself) so it attaches once per trade opened, not on every edit.
+  const hasSelectedTrade=!!selectedTrade;
+  useEffect(()=>{
+    if(!hasSelectedTrade)return;
+    function onPaste(e){
+      const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
+      if(!item)return;
+      e.preventDefault();
+      const file=item.getAsFile();
+      if(file)addTradeImageRef.current(file);
+    }
+    document.addEventListener('paste',onPaste);
+    return()=>document.removeEventListener('paste',onPaste);
+  },[hasSelectedTrade]);
 
   // Keyed on trade id (not the whole object) — addTradeImage/removeTradeImage
   // update selectedTrade in place to keep other displays in sync, and re-keying
@@ -1938,8 +2020,14 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             </div>
           </div>
           <div style={{marginTop:10}}>
-            <label style={lbl}>Notes (optional)</label>
-            <textarea style={{...inp,minHeight:50,resize:'vertical'}} value={mf.notes} onChange={e=>smf(m=>({...m,notes:e.target.value}))} onPaste={onManualPaste}/>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <label style={lbl}>Notes (optional)</label>
+              <button type="button" style={{...btn(),padding:'3px 9px',fontSize:11,gap:4}} onClick={polishManualNotes} disabled={polishingManual||!mf.notes?.trim()} title="Fix grammar and use precise trading terms">
+                <Sparkles size={12}/>{polishingManual?'Polishing…':'AI polish'}
+              </button>
+            </div>
+            <textarea style={{...inp,minHeight:50,resize:'vertical'}} value={mf.notes} onChange={e=>smf(m=>({...m,notes:e.target.value}))}/>
+            {manualPolishErr&&<div style={{fontSize:11,color:'var(--text-danger)',marginTop:4}}>{manualPolishErr}</div>}
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Outcome</label>
@@ -1967,7 +2055,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addManualImage(f);}}/>
               </label>
             </div>
-            <div style={{fontSize:12,color:'var(--text-muted)'}}>Paste with Ctrl+V or Cmd+V into the notes box, or browse to add screenshots.</div>
+            <div style={{fontSize:12,color:'var(--text-muted)'}}>Paste with Ctrl+V or Cmd+V anywhere on this form, or browse to add screenshots.</div>
           </div>
           <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Stake: {f$(stake.actual)} · Risk: {fp(stake.eff)}</div>
           <div style={{display:'flex',gap:8,marginTop:10}}>
@@ -2045,11 +2133,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 {(!editDraft.screenshots||editDraft.screenshots.length===0)&&<div style={{padding:'12px 14px',border:'1px dashed var(--border)',borderRadius:8,color:'var(--text-muted)',fontSize:13}}>No screenshots attached to this entry.</div>}
               </div>
               <div style={card}>
-                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Notes</div>
-                <textarea aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} onPaste={onTradePaste} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
-                <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V here to add screenshots quickly.</div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <div style={{fontSize:14,fontWeight:500}}>Notes</div>
+                  <button type="button" style={{...btn(),padding:'3px 9px',fontSize:11,gap:4}} onClick={polishTradeNotes} disabled={polishingTrade||!editDraft.notes?.trim()} title="Fix grammar and use precise trading terms">
+                    <Sparkles size={12}/>{polishingTrade?'Polishing…':'AI polish'}
+                  </button>
+                </div>
+                <textarea aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
+                <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V anywhere on this page to add screenshots quickly.</div>
               </div>
-              {editErr&&<Alert type="dan" title="Could not save" body={editErr}/>}
+              {editErr&&<Alert type="dan" title="Error" body={editErr}/>}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                 <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
                 <button style={btn()} onClick={()=>setSelectedTrade(null)} disabled={savingEdit}>Cancel</button>
@@ -3514,7 +3607,7 @@ export default function App(){
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}
-          <audio ref={music.audioRef} src={music.track?.audio} onEnded={music.next}/>
+          <audio ref={music.audioRef} src={music.track?.audio} onEnded={music.next} onError={music.next}/>
           {active&&view!=='dashboard'&&<MusicWidget music={music}/>}
         </main>
       </div>
