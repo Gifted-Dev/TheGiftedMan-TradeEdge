@@ -1059,8 +1059,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
   const[editDraft,setEditDraft]=useState({notes:'',screenshots:[]});
-  const[previewImage,setPreviewImage]=useState(null);
+  const[preview,setPreview]=useState(null); // {items:[url,...], index}
   const[saving,setSaving]=useState(false);
+  const[savingEdit,setSavingEdit]=useState(false);
+  const[editErr,setEditErr]=useState(null);
+  const[savedFlash,setSavedFlash]=useState(false);
 
   // Journal defaults to the matching tab whenever the global Demo/Real toggle
   // changes, but the trader can still flip tabs independently while it's unchanged.
@@ -1192,11 +1195,20 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const tradeMeta=[['Pair',selectedTrade?.pair],['Direction',selectedTrade?.direction],['Account mode',selectedTrade?.accountMode||'DEMO'],['Stake',selectedTrade?f$(selectedTrade.stake):null],['Outcome',selectedTrade?.outcome],['Session',selectedTrade?.sessionNum],['Zone type',selectedTrade?.zoneType],['Zone grade',selectedTrade?.zoneGrade],['Source',selectedTrade?.source],['Timestamp',selectedTrade?new Date(selectedTrade.timestamp).toLocaleString():null]];
 
   async function saveTradeEdits(){
-    if(!selectedTrade)return;
-    const screenshots=editDraft.screenshots.map(x=>x.b64||x).filter(Boolean);
-    const updated={...selectedTrade,notes:editDraft.notes,screenshots};
-    await saveTrades(prev=>prev.map(t=>t.id===selectedTrade.id?updated:t));
-    setSelectedTrade(updated);
+    if(!selectedTrade||savingEdit)return;
+    setSavingEdit(true);setEditErr(null);
+    try{
+      const screenshots=editDraft.screenshots.map(x=>x.b64||x).filter(Boolean);
+      const updated={...selectedTrade,notes:editDraft.notes,screenshots};
+      await saveTrades(prev=>prev.map(t=>t.id===selectedTrade.id?updated:t));
+      setSelectedTrade(updated);
+      setSavedFlash(true);
+      setTimeout(()=>setSavedFlash(false),1800);
+    }catch(e){
+      setEditErr(e.message||'Could not save edits. Try again.');
+    }finally{
+      setSavingEdit(false);
+    }
   }
 
   async function addTradeImage(file){
@@ -1208,8 +1220,8 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);
   }
 
-  function openTradeImage(src){
-    setPreviewImage(src);
+  function openTradeImage(i){
+    setPreview({items:editDraft.screenshots.map(s=>s.url),index:i});
   }
 
   function onTradePaste(e){
@@ -1221,6 +1233,9 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(file) addTradeImage(file);
   }
 
+  // Keyed on trade id (not the whole object) — addTradeImage/removeTradeImage
+  // update selectedTrade in place to keep other displays in sync, and re-keying
+  // on every such mutation would blow away in-progress notes edits mid-typing.
   useEffect(()=>{
     if(selectedTrade){
       setEditDraft({notes:selectedTrade.notes||'',screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
@@ -1228,8 +1243,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         const raw=isStr?src:(src?.b64||src?.b);
         return{id:i,url:toDataUrl(raw,src?.mime),b64:raw,mime:src?.mime||'image/png'};
       })});
+      setEditErr(null);
+      setPreview(null);
     }
-  },[selectedTrade]);
+  },[selectedTrade?.id]);
 
   return(
     <div>
@@ -1313,16 +1330,21 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Screenshots (optional)</label>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(92px,1fr))',gap:10,marginBottom:8}}>
               {mf.screenshots.map((x,i)=>(
-                <div key={i} style={{position:'relative'}}>
-                  <img src={x.url} alt="" style={{width:72,height:54,objectFit:'cover',borderRadius:6,border:'0.5px solid var(--border)',cursor:'zoom-in'}} onClick={()=>setPreviewImage(x.url)}/>
-                  <button onClick={()=>smf(m=>({...m,screenshots:m.screenshots.filter((_,j)=>j!==i)}))} style={{position:'absolute',top:-5,right:-5,background:'var(--fill-danger)',border:'none',color:'#fff',borderRadius:'50%',width:16,height:16,cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>×</button>
+                <div key={i} className="gm-gallery-tile" style={{position:'relative',aspectRatio:'1',borderRadius:10,overflow:'hidden',border:'1px solid var(--border)',background:'var(--surface-0)',cursor:'zoom-in'}} onClick={()=>setPreview({items:mf.screenshots.map(s=>s.url),index:i})}>
+                  <img src={x.url} alt={`Screenshot ${i+1}`} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                  <div className="gm-gallery-overlay" style={{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,0.55) 100%)',opacity:0,transition:'opacity 0.15s'}}/>
+                  <button
+                    aria-label={`Remove screenshot ${i+1}`}
+                    onClick={e=>{e.stopPropagation();smf(m=>({...m,screenshots:m.screenshots.filter((_,j)=>j!==i)}));}}
+                    style={{position:'absolute',top:5,right:5,background:'rgba(2,6,23,0.65)',border:'none',color:'#fff',borderRadius:6,width:22,height:22,cursor:'pointer',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}
+                  ><i className="ti ti-trash" aria-hidden="true"/></button>
                 </div>
               ))}
-              <label style={{width:72,height:54,border:'1px dashed var(--border)',borderRadius:6,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:2}}>
-                <span style={{fontSize:20,lineHeight:1}}>+</span>
-                <span style={{fontSize:9}}>browse</span>
+              <label style={{aspectRatio:'1',border:'1px dashed var(--border)',borderRadius:10,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:4}}>
+                <i className="ti ti-photo-plus" style={{fontSize:20}} aria-hidden="true"/>
+                <span style={{fontSize:11}}>Add</span>
                 <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addManualImage(f);}}/>
               </label>
             </div>
@@ -1382,17 +1404,22 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             </div>
             <div style={{display:'grid',gap:12}}>
               <div>
-                <label style={lbl}>Screenshots</label>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+                <label style={lbl}>Screenshots {editDraft.screenshots?.length>0&&<span style={{color:'var(--text-muted)',fontWeight:400}}>({editDraft.screenshots.length})</span>}</label>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(92px,1fr))',gap:10,marginBottom:8}}>
                   {editDraft.screenshots?.map((src,i)=>(
-                    <div key={i} style={{position:'relative'}}>
-                      <img src={src.url} alt="" style={{width:72,height:54,objectFit:'cover',borderRadius:6,border:'0.5px solid var(--border)',cursor:'zoom-in'}} onClick={()=>openTradeImage(src.url)}/>
-                      <button onClick={()=>{const next=editDraft.screenshots.filter((_,j)=>j!==i);setEditDraft(d=>({...d,screenshots:next}));setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);}} style={{position:'absolute',top:-5,right:-5,background:'var(--fill-danger)',border:'none',color:'#fff',borderRadius:'50%',width:16,height:16,cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}>×</button>
+                    <div key={i} className="gm-gallery-tile" style={{position:'relative',aspectRatio:'1',borderRadius:10,overflow:'hidden',border:'1px solid var(--border)',background:'var(--surface-0)',cursor:'zoom-in'}} onClick={()=>openTradeImage(i)}>
+                      <img src={src.url} alt={`Screenshot ${i+1}`} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                      <div className="gm-gallery-overlay" style={{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,0.55) 100%)',opacity:0,transition:'opacity 0.15s'}}/>
+                      <button
+                        aria-label={`Remove screenshot ${i+1}`}
+                        onClick={e=>{e.stopPropagation();const next=editDraft.screenshots.filter((_,j)=>j!==i);setEditDraft(d=>({...d,screenshots:next}));setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);}}
+                        style={{position:'absolute',top:5,right:5,background:'rgba(2,6,23,0.65)',border:'none',color:'#fff',borderRadius:6,width:22,height:22,cursor:'pointer',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}
+                      ><i className="ti ti-trash" aria-hidden="true"/></button>
                     </div>
                   ))}
-                  <label style={{width:72,height:54,border:'1px dashed var(--border)',borderRadius:6,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:2}}>
-                    <span style={{fontSize:20,lineHeight:1}}>+</span>
-                    <span style={{fontSize:9}}>browse</span>
+                  <label style={{aspectRatio:'1',border:'1px dashed var(--border)',borderRadius:10,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:4}}>
+                    <i className="ti ti-photo-plus" style={{fontSize:20}} aria-hidden="true"/>
+                    <span style={{fontSize:11}}>Add</span>
                     <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addTradeImage(f);}}/>
                   </label>
                 </div>
@@ -1403,10 +1430,12 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 <textarea aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} onPaste={onTradePaste} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
                 <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V here to add screenshots quickly.</div>
               </div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits}>Save edits</button>
-                <button style={btn()} onClick={()=>setSelectedTrade(null)}>Cancel</button>
+              {editErr&&<Alert type="dan" title="Could not save" body={editErr}/>}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
+                <button style={btn()} onClick={()=>setSelectedTrade(null)} disabled={savingEdit}>Cancel</button>
                 <button style={btn('dan')} onClick={()=>{if(window.confirm('Delete this trade entry? This cannot be undone.')){deleteTrade(selectedTrade);setSelectedTrade(null);}}}>Delete</button>
+                {savedFlash&&<span style={{fontSize:12,color:'var(--text-success)',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Saved</span>}
               </div>
               <div style={card}>
                 <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>{selectedTrade.gateResults?.length?'Gate check':'Zone analysis criteria'}</div>
@@ -1428,11 +1457,30 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         </div>
       )}
 
-      {previewImage&&(
-        <div role="dialog" aria-label="Image preview" style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.92)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1100}} onClick={()=>setPreviewImage(null)}>
+      {preview&&(
+        <div
+          role="dialog" aria-label="Image preview"
+          style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.92)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1100}}
+          onClick={()=>setPreview(null)}
+          tabIndex={-1}
+          ref={el=>el?.focus()}
+          onKeyDown={e=>{
+            const n=preview.items.length;
+            if(e.key==='Escape')setPreview(null);
+            if(e.key==='ArrowRight')setPreview(p=>({...p,index:(p.index+1)%n}));
+            if(e.key==='ArrowLeft')setPreview(p=>({...p,index:(p.index-1+n)%n}));
+          }}
+        >
           <div style={{position:'relative',maxWidth:'92vw',maxHeight:'92vh',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={e=>e.stopPropagation()}>
-            <button type="button" style={{...btn('dan'),position:'absolute',top:8,right:8}} onClick={()=>setPreviewImage(null)}>Close</button>
-            <img src={previewImage} alt="Previewed trade screenshot" style={{maxWidth:'100%',maxHeight:'92vh',objectFit:'contain',borderRadius:16,border:'1px solid var(--border)',boxShadow:'0 20px 60px rgba(0,0,0,0.45)'}}/>
+            <button type="button" style={{...btn('dan'),position:'absolute',top:8,right:8}} onClick={()=>setPreview(null)}>Close</button>
+            {preview.items.length>1&&(
+              <div style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',fontSize:12,color:'#fff',background:'rgba(2,6,23,0.65)',borderRadius:999,padding:'3px 10px'}}>{preview.index+1} / {preview.items.length}</div>
+            )}
+            {preview.items.length>1&&(<>
+              <button type="button" aria-label="Previous screenshot" style={{...btn(),position:'absolute',left:8,top:'50%',transform:'translateY(-50%)'}} onClick={()=>setPreview(p=>({...p,index:(p.index-1+p.items.length)%p.items.length}))}><i className="ti ti-chevron-left" aria-hidden="true"/></button>
+              <button type="button" aria-label="Next screenshot" style={{...btn(),position:'absolute',right:8,top:'50%',transform:'translateY(-50%)'}} onClick={()=>setPreview(p=>({...p,index:(p.index+1)%p.items.length}))}><i className="ti ti-chevron-right" aria-hidden="true"/></button>
+            </>)}
+            <img src={preview.items[preview.index]} alt={`Screenshot ${preview.index+1} of ${preview.items.length}`} style={{maxWidth:'100%',maxHeight:'92vh',objectFit:'contain',borderRadius:16,border:'1px solid var(--border)',boxShadow:'0 20px 60px rgba(0,0,0,0.45)'}}/>
           </div>
         </div>
       )}

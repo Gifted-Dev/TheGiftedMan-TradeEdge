@@ -133,7 +133,7 @@ test('shows a large preview when a manual screenshot is clicked before saving', 
   fireEvent.click(container.querySelector('img[src]'));
 
   expect(await screen.findByRole('dialog', { name: /image preview/i })).toBeInTheDocument();
-  expect(screen.getByAltText('Previewed trade screenshot')).toBeInTheDocument();
+  expect(screen.getByAltText('Screenshot 1 of 1')).toBeInTheDocument();
 });
 
 test('shows a large preview when a journal screenshot is clicked', async () => {
@@ -170,10 +170,10 @@ test('shows a large preview when a journal screenshot is clicked', async () => {
   );
 
   fireEvent.click(screen.getByText('EUR/USD OTC'));
-  fireEvent.click(await screen.findByAltText('Trade screenshot 1'));
+  fireEvent.click(await screen.findByAltText('Screenshot 1'));
 
   expect(await screen.findByRole('dialog', { name: /image preview/i })).toBeInTheDocument();
-  expect(screen.getByAltText('Previewed trade screenshot')).toBeInTheDocument();
+  expect(screen.getByAltText('Screenshot 1 of 1')).toBeInTheDocument();
 });
 
 test('lets you edit notes for a saved journal entry', async () => {
