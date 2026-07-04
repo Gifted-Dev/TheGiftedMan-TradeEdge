@@ -5,6 +5,8 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  Bell,
+  BellOff,
   BookOpen,
   CircleCheck,
   CircleX,
@@ -38,6 +40,10 @@ const OLD_SK = { S:'gm_s_v1', T:'gm_t_v1', A:'gm_a_v1', W:'gm_w_v1', SS:'gm_ss_v
 const GAP = 6 * 3600 * 1000;
 const NO_TRADE_GAP_DEFAULT = 90; // minutes for no-trade session cooldown
 const MAX_NO_TRADE_STREAK = 3;   // consecutive no-trade sessions before full gap applies
+const ALERT_VOLUME_DEFAULT = 0.85;
+// Two-tone chime (synthesized, not a music track) played the instant a session locks —
+// self-contained data URI so it works offline with no external asset/hosting dependency.
+const ALERT_CHIME_SRC = "data:audio/wav;base64,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";
 const PAYOUT = 0.92;
 const MAX_DL = 4;
 const ACCOUNT_MODES = ['DEMO','REAL'];
@@ -137,7 +143,7 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,noTradeGapMin:s.noTradeGapMin}};
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,noTradeGapMin:s.noTradeGapMin,alertVolume:s.alertVolume}};
 }
 function fromSettingsRow(r){
   return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
@@ -674,23 +680,88 @@ function EmptyState({icon:Icon=Inbox,title,body}){
   );
 }
 
-function SparklineChart({values,color}){
-  if(!values.length)return null;
-  const width=280,height=120,padding=12;
-  const max=Math.max(...values.map(v=>Math.abs(v)),1);
-  const min=Math.min(...values.map(v=>v),0);
-  const range=max-min || 1;
-  const points=values.map((v,i)=>{
-    const x=padding+(i/(Math.max(values.length-1,1)))*(width-padding*2);
-    const y=height-padding-((v-min)/range)*(height-padding*2);
-    return `${x},${y}`;
-  });
-  const area=`M ${points[0]} L ${points.slice(1).join(' L ')} L ${width-padding},${height-padding} L ${padding},${height-padding} Z`;
+// points: [{t:timestamp, v:cumulative P&L}], sorted ascending by t.
+// Renders as inline SVG (no charting library — every chart in this app is
+// hand-rolled) with real axes/gridlines/reference line/hover tooltip.
+// Note: color must be a solid paint value (e.g. var(--text-success)), not a
+// CSS linear-gradient() — SVG fill/stroke attributes don't accept gradient()
+// syntax, they need a color or a url(#id) reference to an SVG <linearGradient>.
+function TrendChart({points,color}){
+  const gradIdRef=useRef(`trendFill-${Math.random().toString(36).slice(2)}`);
+  const[hoverIdx,setHoverIdx]=useState(null);
+  if(points.length<3)return<div style={{padding:'2rem 0',textAlign:'center',color:'var(--text-muted)',fontSize:13}}>Not enough completed trades yet to show a trend.</div>;
+
+  const width=560,height=200,padL=54,padR=14,padT=14,padB=26;
+  const innerW=width-padL-padR,innerH=height-padT-padB;
+  const values=points.map(p=>p.v);
+  // Always include 0 in the range so the breakeven reference line is never clipped off-chart.
+  const rawMax=Math.max(...values,0),rawMin=Math.min(...values,0);
+  const span=(rawMax-rawMin)||1,pad=span*0.1;
+  const yMax=rawMax+pad,yMin=rawMin-pad,yRange=yMax-yMin||1;
+
+  const x=i=>padL+(i/(points.length-1))*innerW;
+  const y=v=>padT+innerH-((v-yMin)/yRange)*innerH;
+
+  const linePath=points.map((p,i)=>`${i===0?'M':'L'} ${x(i).toFixed(2)} ${y(p.v).toFixed(2)}`).join(' ');
+  const areaPath=`${linePath} L ${x(points.length-1).toFixed(2)} ${(padT+innerH).toFixed(2)} L ${x(0).toFixed(2)} ${(padT+innerH).toFixed(2)} Z`;
+
+  const yTickCount=4;
+  const yTicks=Array.from({length:yTickCount+1},(_,i)=>yMin+yRange*i/yTickCount);
+  const fmtAxisAmount=v=>(v>=0?'':'-')+'$'+Math.abs(Math.round(v));
+
+  // Caps how many date labels render so a large trade history doesn't
+  // produce one unreadable label per point.
+  const maxXTicks=Math.min(6,points.length);
+  const xTickIdxs=[...new Set(Array.from({length:maxXTicks},(_,i)=>Math.round(i*(points.length-1)/(maxXTicks-1||1))))];
+  const fmtDate=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  const y0=y(0);
+
+  function handleMove(e){
+    const rect=e.currentTarget.getBoundingClientRect();
+    const px=(e.clientX-rect.left)/rect.width*width;
+    let nearest=0,best=Infinity;
+    points.forEach((p,i)=>{const d=Math.abs(x(i)-px);if(d<best){best=d;nearest=i;}});
+    setHoverIdx(nearest);
+  }
+
+  const hp=hoverIdx!=null?points[hoverIdx]:null;
+
   return(
-    <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%',height:140,display:'block'}}>
-      <path d={area} fill={color} opacity="0.16"/>
-      <polyline points={points.join(' ')} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>
-    </svg>
+    <div style={{position:'relative'}}>
+      <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%',height:200,display:'block',cursor:'crosshair'}}
+        onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
+        <defs>
+          <linearGradient id={gradIdRef.current} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.3"/>
+            <stop offset="100%" stopColor={color} stopOpacity="0.04"/>
+          </linearGradient>
+        </defs>
+        {yTicks.map((v,i)=>(
+          <g key={i}>
+            <line x1={padL} x2={width-padR} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="1" strokeDasharray="3 4"/>
+            <text x={padL-8} y={y(v)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="var(--text-muted)">{fmtAxisAmount(v)}</text>
+          </g>
+        ))}
+        {xTickIdxs.map(i=>(
+          <text key={i} x={x(i)} y={height-8} textAnchor="middle" fontSize="10" fill="var(--text-muted)">{fmtDate(points[i].t)}</text>
+        ))}
+        <line x1={padL} x2={width-padR} y1={y0} y2={y0} stroke="var(--text-muted)" strokeWidth="1" strokeDasharray="4 3" opacity="0.6"/>
+        <path d={areaPath} fill={`url(#${gradIdRef.current})`} stroke="none"/>
+        <path d={linePath} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+        {hp&&(
+          <>
+            <line x1={x(hoverIdx)} x2={x(hoverIdx)} y1={padT} y2={padT+innerH} stroke="var(--border-strong)" strokeWidth="1"/>
+            <circle cx={x(hoverIdx)} cy={y(hp.v)} r="4" fill={color} stroke="var(--surface-0)" strokeWidth="1.5"/>
+          </>
+        )}
+      </svg>
+      {hp&&(
+        <div style={{position:'absolute',top:4,left:`${Math.min(Math.max((x(hoverIdx)/width)*100,12),88)}%`,transform:'translateX(-50%)',background:'var(--surface-1)',border:'1px solid var(--border-strong)',borderRadius:8,padding:'6px 10px',fontSize:11,pointerEvents:'none',whiteSpace:'nowrap',boxShadow:'0 4px 14px rgba(0,0,0,0.25)'}}>
+          <div style={{color:'var(--text-muted)'}}>{new Date(hp.t).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div>
+          <div style={{fontFamily:'var(--font-mono)',fontWeight:600,color:hp.v>=0?'var(--text-success)':'var(--text-danger)'}}>{(hp.v>=0?'+':'-')+f$(hp.v)}</div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -814,7 +885,7 @@ function Setup({onDone}){
   const[step,setStep]=useState(1);
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
-  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS,noTradeGapMin:NO_TRADE_GAP_DEFAULT});
+  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS,noTradeGapMin:NO_TRADE_GAP_DEFAULT,alertVolume:ALERT_VOLUME_DEFAULT});
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
 
   async function finish(){
@@ -991,6 +1062,7 @@ function useMusicPlayer(active){
   const audioRef=useRef(null);
   const fetchedForRef=useRef(null);
   const startedRef=useRef(false); // has a track been explicitly picked/started this session yet?
+  const alertPlayingRef=useRef(false); // true while the shared <audio> element is borrowed for a lock alert
 
   useEffect(()=>{
     if(!active){fetchedForRef.current=null;startedRef.current=false;return;}
@@ -1042,9 +1114,52 @@ function useMusicPlayer(active){
   // Shuffles to a new random track and keeps playing — used for both the
   // "Next" control and onEnded, so background music runs unattended.
   function next(){
+    // The lock-alert chime borrows this same <audio> element and also ends/errors —
+    // without this guard, the chime finishing would be misread as a track ending
+    // and skip to a random track right as (or instead of) the alert plays.
+    if(alertPlayingRef.current)return;
     if(!tracks?.length)return;
     startedRef.current=true;
     playTrackAt(randTrackIndex(tracks.length,trackIdx));
+  }
+  // Plays a short alert over the SAME <audio> element background music uses —
+  // a tab that's already been granted audio autoplay (because music is/has been
+  // playing there) is far more likely to be allowed to play further sounds than
+  // a fresh, never-interacted element would be. If music was playing, it's paused,
+  // swapped out, and resumed from where it left off once the chime finishes; if
+  // music was off, this just attempts direct playback on the idle element (still
+  // subject to the browser's autoplay policy — see playAlert's caller for the
+  // toast/email fallback that covers the case where this gets silently blocked).
+  function playAlert(url,vol){
+    const el=audioRef.current;
+    if(!el)return Promise.resolve(false);
+    const wasPlaying=playing;
+    const resumeSrc=el.src;
+    const resumeTime=el.currentTime;
+    const resumeVolume=el.volume;
+    alertPlayingRef.current=true;
+    el.pause();
+    el.src=url;
+    el.load();
+    el.volume=vol;
+    const cleanup=()=>{
+      el.removeEventListener('ended',cleanup);
+      el.removeEventListener('error',cleanup);
+      alertPlayingRef.current=false;
+      if(wasPlaying&&resumeSrc){
+        el.src=resumeSrc;
+        el.load();
+        el.currentTime=resumeTime;
+        el.volume=resumeVolume;
+        const p=el.play();
+        if(p&&typeof p.catch==='function')p.catch(()=>setPlaying(false));
+      }
+    };
+    el.addEventListener('ended',cleanup);
+    el.addEventListener('error',cleanup);
+    const p=el.play();
+    if(p&&typeof p.catch==='function')return p.then(()=>true).catch(()=>{cleanup();return false;});
+    return Promise.resolve(true);
   }
   function play(){
     if(!audioRef.current||!tracks?.length)return;
@@ -1070,7 +1185,7 @@ function useMusicPlayer(active){
     if(audioRef.current)audioRef.current.pause();
   }
 
-  return{tracks,trackIdx,track:tracks?.[trackIdx],playing,volume,setVolume,muted,setMuted,audioRef,toggle,next,selectTrack};
+  return{tracks,trackIdx,track:tracks?.[trackIdx],playing,volume,setVolume,muted,setMuted,audioRef,toggle,next,selectTrack,playAlert};
 }
 
 // Full inline player — rendered inside the Dashboard grid while a session is active.
@@ -2566,7 +2681,7 @@ export function Analytics({trades,analyses,settings,bal}){
   const pairsMap={};done.forEach(t=>{if(!pairsMap[t.pair])pairsMap[t.pair]={wins:0,total:0};pairsMap[t.pair].total++;if(t.outcome==='WIN')pairsMap[t.pair].wins++;});
   const pairs=Object.entries(pairsMap).map(([p,d])=>({p,wr:(d.wins/d.total)*100,...d})).sort((a,b)=>b.total-a.total).slice(0,6);
   const be=(100/(100+PAYOUT*100));
-  const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)||0;acc.push(prev+t.pnl);return acc;},[]);
+  const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)?.v||0;acc.push({t:t.timestamp,v:prev+t.pnl});return acc;},[]);
   const gradeBars=grades.map(x=>({label:x.g,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
   const pairBars=pairs.map(x=>({label:x.p.length>8?x.p.slice(0,8)+'…':x.p,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'})).slice(0,5);
   const doneAll=trades.filter(t=>t.outcome!=='PENDING');
@@ -2641,7 +2756,7 @@ export function Analytics({trades,analyses,settings,bal}){
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Performance trend</div>
         <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8}}>Cumulative P&L across completed trades</div>
-        <SparklineChart values={pnlTrend} color={pnl>=0?'var(--fill-success)':'var(--fill-danger)'} />
+        <TrendChart points={pnlTrend} color={pnl>=0?'var(--text-success)':'var(--text-danger)'} />
         <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:6}}>Latest balance impact: <span style={{fontFamily:'var(--font-mono)',fontWeight:600,color:pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(pnl>=0?'+':'')+f$(pnl)}</span></div>
       </div>
 
@@ -2705,8 +2820,9 @@ export function Analytics({trades,analyses,settings,bal}){
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function Cfg({settings,saveSettings,ss,resetAccount}){
-  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5});
+  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT});
   const[saved,setSaved]=useState(false);
+  const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
   const[sessionWarn,setSessionWarn]=useState(false);
   const[includeBalances,setIncludeBalances]=useState(false);
   const[confirmReset,setConfirmReset]=useState(null); // {scope,label,body}
@@ -2715,6 +2831,16 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
   const activeSession=ss?getActive(ss):null;
 
   async function save(){await saveSettings({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0)});setSaved(true);setTimeout(()=>setSaved(false),2000);}
+
+  function requestDesktopAlerts(){
+    if(typeof Notification==='undefined')return;
+    Notification.requestPermission().then(setNotifPerm);
+  }
+  function previewAlert(){
+    const el=new Audio(ALERT_CHIME_SRC);
+    el.volume=f.alertVolume??ALERT_VOLUME_DEFAULT;
+    el.play().catch(()=>{});
+  }
 
   function askReset(scope){
     const modes=scope==='BOTH'?['DEMO','REAL']:[scope];
@@ -2875,6 +3001,32 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
             When a session ends with no trades taken, this shorter cooldown applies instead of the standard 6-hour gap.
             After {MAX_NO_TRADE_STREAK} consecutive no-trade sessions, the next session reverts to the full 6-hour gap.
           </p>
+        </div>
+
+        {/* ── Session-lock alert ───────────────────────────────────────── */}
+        <div style={{marginTop:14}}>
+          <label style={lbl}>Session-lock alert volume <span style={{fontWeight:400,fontSize:11,color:'var(--text-muted)'}}>({Math.round((f.alertVolume??ALERT_VOLUME_DEFAULT)*100)}%)</span></label>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <input type="range" min={0} max={1} step="0.05" value={f.alertVolume??ALERT_VOLUME_DEFAULT}
+              onChange={e=>set('alertVolume',parseFloat(e.target.value))}
+              style={{width:'100%'}}/>
+            <button type="button" style={btn()} onClick={previewAlert} title="Preview the alert sound">Test</button>
+          </div>
+          <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+            A short chime plays the instant a session locks (time expired, stop loss, take profit, or max trades) — separate from the background music volume.
+          </p>
+          <div style={{marginTop:8}}>
+            {notifPerm==='granted'?(
+              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--text-success)'}}><Bell size={14}/>Desktop alerts enabled</div>
+            ):notifPerm==='denied'?(
+              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--text-muted)'}}><BellOff size={14}/>Desktop alerts blocked — allow notifications for this site in your browser settings.</div>
+            ):notifPerm==='unsupported'?null:(
+              <button type="button" style={{...btn(),gap:6}} onClick={requestDesktopAlerts}><Bell size={14}/>Enable desktop alerts</button>
+            )}
+            <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+              If a session locks while this tab is in the background, a desktop notification backs up the sound in case your browser blocks background-tab audio.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -3455,6 +3607,34 @@ export default function App(){
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[todaySS,authUser]);
+
+  // Plays the session-lock chime the instant any session (either mode) ends —
+  // separate from the email effect above so it isn't gated on having an email
+  // on file. If the tab is in the background at that moment, also fires an OS
+  // desktop notification (visible even when this tab isn't focused/active),
+  // since an in-page toast can't be seen in a tab that isn't on screen.
+  const alertedRef=useRef(new Set());
+  const prevSessionsForAlertRef=useRef([]);
+  useEffect(()=>{
+    if(!todaySS)return;
+    const prev=prevSessionsForAlertRef.current;
+    const justEnded=todaySS.sessions.filter(s=>{
+      if(s.isActive||!s.endTime||alertedRef.current.has(s.id))return false;
+      const before=prev.find(p=>p.id===s.id);
+      return !before||before.isActive;
+    });
+    prevSessionsForAlertRef.current=todaySS.sessions;
+    justEnded.forEach(s=>{
+      alertedRef.current.add(s.id);
+      music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);
+      if(document.hidden&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
+        try{
+          new Notification('Session locked',{body:`${s.accountMode==='REAL'?'Real':'Demo'} session ended — ${s.lockReason||'locked'}.`,tag:`session-lock-${s.id}`});
+        }catch{}
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[todaySS]);
 
   if(authLoading)return<Loading/>;
   if(!isSupabaseConfigured)return(
