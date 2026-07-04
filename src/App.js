@@ -33,6 +33,12 @@ const GAP = 6 * 3600 * 1000;
 const PAYOUT = 0.92;
 const MAX_DL = 4;
 const ACCOUNT_MODES = ['DEMO','REAL'];
+// Session timer — duration is a property of the trade style itself (like its
+// win/loss rules), not of the account mode, so it's stored once globally and
+// keyed by style id, same as sn/sr in Plan and STYLES in Cfg.
+const DEF_DURATIONS = {1:15,2:45,3:30}; // {Precision, Active, Structured} minutes
+const DURATION_BOUNDS = {1:[10,20],2:[30,60],3:[20,40]};
+const PAUSE_AUTO_RESUME_MS = 5*60*1000;
 
 // Theme swatches — each id maps to a [data-theme] block in index.css ('dark' = :root defaults)
 const THEMES = [
@@ -119,7 +125,7 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider}};
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations}};
 }
 function fromSettingsRow(r){
   return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
@@ -142,13 +148,14 @@ function toSessionRow(userId,date,s){
   return{id:s.id,user_id:userId,date,num:s.num,account_mode:s.accountMode,start_time:new Date(s.startTime).toISOString(),
     end_time:s.endTime?new Date(s.endTime).toISOString():null,trades:s.trades,wins:s.wins,losses:s.losses,
     con_loss:s.conLoss,con_win:s.conWin,net_loss:s.netLoss,session_pnl:s.sPnl,is_active:s.isActive,
-    is_locked:s.isLocked,lock_reason:s.lockReason};
+    is_locked:s.isLocked,lock_reason:s.lockReason,
+    extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
     endTime:r.end_time?new Date(r.end_time).getTime():null,trades:r.trades,wins:r.wins,losses:r.losses,
     conLoss:r.con_loss,conWin:r.con_win,netLoss:r.net_loss,sPnl:r.session_pnl,isActive:r.is_active,
-    isLocked:r.is_locked,lockReason:r.lock_reason};
+    isLocked:r.is_locked,lockReason:r.lock_reason,...(r.extra||{})};
 }
 function toWdRow(userId,w){
   return{id:w.id,user_id:userId,timestamp:new Date(w.timestamp).toISOString(),date:w.date,amount:w.amount,
@@ -302,20 +309,70 @@ function canStart(ss,max,mode){
 
 function chkLock(sess,style){
   if(!sess)return{locked:false,adv:null};
-  if(style===1&&sess.trades>=1)return{locked:true,reason:'Session complete — 1 trade taken',adv:null};
+  if(style===1&&sess.trades>=1)return{locked:true,reason:'Session complete — 1 trade taken',code:'MAX_TRADES',adv:null};
   if(style===2){
-    if(sess.wins>=3)return{locked:true,reason:'Take profit — 3 wins',adv:null};
-    if(sess.conLoss>=2)return{locked:true,reason:'Stop loss — 2 consecutive losses',adv:null};
-    if(sess.netLoss>=2)return{locked:true,reason:'Stop loss — net -2 on session',adv:null};
-    if(sess.trades>=5)return{locked:true,reason:'Max trades reached — 5',adv:null};
+    if(sess.wins>=3)return{locked:true,reason:'Take profit — 3 wins',code:'TAKE_PROFIT',adv:null};
+    if(sess.conLoss>=2)return{locked:true,reason:'Stop loss — 2 consecutive losses',code:'STOP_LOSS',adv:null};
+    if(sess.netLoss>=2)return{locked:true,reason:'Stop loss — net -2 on session',code:'STOP_LOSS',adv:null};
+    if(sess.trades>=5)return{locked:true,reason:'Max trades reached — 5',code:'MAX_TRADES',adv:null};
   }
   if(style===3){
-    if(sess.wins>=3)return{locked:true,reason:'Take profit — 3 wins',adv:null};
-    if(sess.losses>=2)return{locked:true,reason:'Stop loss — 2 losses',adv:null};
-    if(sess.trades>=3)return{locked:true,reason:'Max trades reached — 3',adv:null};
+    if(sess.wins>=3)return{locked:true,reason:'Take profit — 3 wins',code:'TAKE_PROFIT',adv:null};
+    if(sess.losses>=2)return{locked:true,reason:'Stop loss — 2 losses',code:'STOP_LOSS',adv:null};
+    if(sess.trades>=3)return{locked:true,reason:'Max trades reached — 3',code:'MAX_TRADES',adv:null};
     if(sess.conWin>=2)return{locked:false,adv:`${sess.conWin} consecutive wins (+${f$(sess.sPnl)}). Consider securing this session — trade ${sess.trades+1} risks giving it back.`};
   }
   return{locked:false,adv:null};
+}
+
+// ── Session timer helpers ──────────────────────────────────────────────────────
+function getSessionDuration(settings,styleId){
+  return settings?.sessionDurations?.[styleId] ?? DEF_DURATIONS[styleId] ?? DEF_DURATIONS[1];
+}
+function buildSession(ssState,mode,durationMin){
+  return{id:uid(),num:ssState.sessions.filter(x=>x.accountMode===mode).length+1,accountMode:mode,
+    startTime:Date.now(),endTime:null,trades:0,wins:0,losses:0,conLoss:0,conWin:0,netLoss:0,sPnl:0,
+    isActive:true,isLocked:false,lockReason:null,lockCode:null,
+    durationMin,pausedAt:null,pausedMsTotal:0};
+}
+// Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
+function sessionElapsedMs(sess,now){
+  if(!sess)return 0;
+  const pausedNow=sess.pausedAt?now-sess.pausedAt:0;
+  return(now-sess.startTime)-(sess.pausedMsTotal||0)-pausedNow;
+}
+// Sessions created before this feature shipped have no durationMin — never time-expire those.
+function sessionRemainingMs(sess,now){
+  if(!sess?.durationMin)return Infinity;
+  return Math.max(0,sess.durationMin*60000-sessionElapsedMs(sess,now));
+}
+function isSessionTimeExpired(sess,now){
+  if(!sess?.durationMin)return false;
+  return sessionRemainingMs(sess,now)<=0;
+}
+function lastEndedSession(ss,mode){
+  return[...(ss?.sessions||[])].filter(s=>s.accountMode===mode&&s.endTime).sort((a,b)=>b.endTime-a.endTime)[0]||null;
+}
+// A session that timed out (as opposed to hitting a trade-count/streak rule)
+// additionally blocks new Analyzer/Journal activity until the normal 6h gap
+// elapses — trade-triggered lock reasons keep their existing behavior.
+function isTimeExpiredCooldown(ss,mode){
+  const last=lastEndedSession(ss,mode);
+  if(!last||last.lockCode!=='TIME_EXPIRED')return false;
+  return(Date.now()-last.endTime)<GAP;
+}
+function fmtClock(ms){
+  const s=Math.max(0,Math.round(ms/1000));
+  const m=Math.floor(s/60),r=s%60;
+  return`${m}:${String(r).padStart(2,'0')}`;
+}
+function useNowTick(intervalMs){
+  const[now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{
+    const id=setInterval(()=>setNow(Date.now()),intervalMs);
+    return()=>clearInterval(id);
+  },[intervalMs]);
+  return now;
 }
 
 function validateZoneDirection(r){
@@ -694,7 +751,7 @@ function Setup({onDone}){
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-export function Dashboard({settings,trades,wds,ss,bal,mode,nav}){
+export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav}){
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
@@ -720,12 +777,70 @@ export function Dashboard({settings,trades,wds,ss,bal,mode,nav}){
   const gUp=growth>=0;
   const isReal=mode==='REAL';
 
+  // ── Session timer ──────────────────────────────────────────────────────────
+  const now=useNowTick(1000);
+  const isPaused=!!active?.pausedAt;
+  const remainingMs=active?sessionRemainingMs(active,now):Infinity;
+  const pauseRemainingMs=isPaused?Math.max(0,PAUSE_AUTO_RESUME_MS-(now-active.pausedAt)):0;
+  const[endToast,setEndToast]=useState(null);
+  const prevActiveRef=useRef(active);
+
+  async function startSession(){
+    const s=canStart(ss,settings.sessionsPerDay,mode);
+    if(!s.ok){alert(s.msg);return;}
+    const duration=getSessionDuration(settings,getTradeStyleForMode(settings,mode));
+    const ns=buildSession(ss,mode,duration);
+    await saveSS({...ss,sessions:[...ss.sessions,ns]});
+  }
+  async function pauseSession(){
+    if(!active||active.pausedAt)return;
+    await saveSS({...ss,sessions:ss.sessions.map(s=>s.id===active.id?{...s,pausedAt:Date.now()}:s)});
+  }
+  async function resumeSession(){
+    if(!active||!active.pausedAt)return;
+    const us={...active,pausedMsTotal:(active.pausedMsTotal||0)+(Date.now()-active.pausedAt),pausedAt:null};
+    await saveSS({...ss,sessions:ss.sessions.map(s=>s.id===active.id?us:s)});
+  }
+  async function endSession(code,reason){
+    if(!active)return;
+    const us={...active,isActive:false,isLocked:true,lockReason:reason,lockCode:code,endTime:Date.now()};
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  }
+
+  // Local, immediate handling of pause auto-resume and time expiry while the
+  // Dashboard is mounted — the App-level interval is just the backstop for
+  // when it isn't (see the effect near saveSS in App).
+  useEffect(()=>{
+    if(!active)return;
+    if(active.pausedAt&&now-active.pausedAt>=PAUSE_AUTO_RESUME_MS)resumeSession();
+    else if(!active.pausedAt&&isSessionTimeExpired(active,now))endSession('TIME_EXPIRED','Time expired');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[now]);
+
+  // Fires the "Session ended — [reason]" toast the moment an active session
+  // for this mode disappears (locked by a trade rule or the timer above).
+  useEffect(()=>{
+    if(prevActiveRef.current&&!active){
+      const ended=lastEndedSession(ss,mode);
+      if(ended){
+        const rem=GAP-(Date.now()-ended.endTime);
+        const h=Math.max(0,Math.floor(rem/3600000)),m2=Math.max(0,Math.floor((rem%3600000)/60000));
+        setEndToast(`Session ended — ${ended.lockReason||'locked'}. Next session in ${h}h ${m2}m.`);
+        setTimeout(()=>setEndToast(null),10000);
+      }
+    }
+    prevActiveRef.current=active;
+  },[active,ss,mode]);
+
   return(
     <div>
       <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:16}}>
         <div style={{fontSize:18,fontWeight:600,letterSpacing:'-0.01em',color:'var(--text-primary)'}}>Dashboard</div>
         <div style={{fontSize:12,color:'var(--text-muted)'}}>{new Date().toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div>
       </div>
+
+      {endToast&&<Alert type="warn" title="Session ended" body={endToast}/>}
 
       <div className="grid grid-cols-12 gap-3">
 
@@ -788,6 +903,19 @@ export function Dashboard({settings,trades,wds,ss,bal,mode,nav}){
                   </div>
                 ))}
               </div>
+              {Number.isFinite(remainingMs)&&(
+                <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6}}>
+                    <span style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em'}}>Session timer</span>
+                    <span style={{fontSize:20,fontWeight:700,fontFamily:'var(--font-mono)',color:remainingMs<=60000?'var(--text-danger)':'var(--text-primary)'}}>{fmtClock(remainingMs)}</span>
+                  </div>
+                  {isPaused&&<div style={{fontSize:12,color:'var(--text-warning)',marginBottom:8}}>Paused — resumes automatically in {fmtClock(pauseRemainingMs)}</div>}
+                  <div style={{display:'flex',gap:8}}>
+                    <button style={{...btn(),flex:1}} onClick={isPaused?resumeSession:pauseSession}>{isPaused?'Resume':'Pause'}</button>
+                    <button style={{...btn('dan'),flex:1}} onClick={()=>endSession('MANUAL','Ended manually')}>End session</button>
+                  </div>
+                </div>
+              )}
             </div>
           ):canS.ok?(
             <div style={{flex:1}}>
@@ -795,7 +923,8 @@ export function Dashboard({settings,trades,wds,ss,bal,mode,nav}){
                 <Target size={17} style={{color:'var(--text-accent)'}}/>
               </div>
               <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Ready for session {ss.sessions.length+1}</div>
-              <div style={{fontSize:12,color:'var(--text-muted)'}}>Analyze a zone or open the journal to begin.</div>
+              <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Start a session to begin the timer, or analyze a zone / open the journal directly.</div>
+              <button style={{...btn('suc'),width:'100%'}} onClick={startSession}><Timer size={15}/>Start session ({getSessionDuration(settings,getTradeStyleForMode(settings,mode))}m)</button>
             </div>
           ):(
             <div style={{flex:1}}>
@@ -859,7 +988,8 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked;
+  const cooldown=isTimeExpiredCooldown(ss,mode);
+  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||cooldown;
 
   async function addImage(file,target='extra'){
     if(!file)return;
@@ -942,7 +1072,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
     <div>
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Zone analyzer</div>
 
-      {locked&&<Alert type="dan" title="🔒 Analyzer locked" body={(lk.reason||'Daily limit reached')+'. Zone analysis resumes next session.'}/>}
+      {locked&&<Alert type="dan" title="🔒 Analyzer locked" body={(lk.reason||(cooldown?'Session time expired':'Daily limit reached'))+'. Zone analysis resumes next session.'}/>}
       {lk.adv&&!locked&&<Alert type="warn" title="Advisory" body={lk.adv}/>}
       {!activeKey&&<Alert type="warn" title="No API key" body={`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings to enable zone analysis.`}/>}
 
@@ -1081,16 +1211,17 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked;
+  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||isTimeExpiredCooldown(ss,mode);
 
   const tabActive=getActive(ss,journalTab);
   const tabLk=tabActive?chkLock(tabActive,getTradeStyleForMode(settings,journalTab)):{locked:false};
-  const tabLocked=(ss.perMode?.[journalTab]?.isDailyLocked||false)||tabLk.locked;
+  const tabCooldown=isTimeExpiredCooldown(ss,journalTab);
+  const tabLocked=(ss.perMode?.[journalTab]?.isDailyLocked||false)||tabLk.locked||tabCooldown;
 
   async function mkSession(ssState,mode){
     const s=canStart(ssState,settings.sessionsPerDay,mode);
     if(!s.ok){alert(s.msg);return null;}
-    const ns={id:uid(),num:ssState.sessions.filter(x=>x.accountMode===mode).length+1,accountMode:mode,startTime:Date.now(),endTime:null,trades:0,wins:0,losses:0,conLoss:0,conWin:0,netLoss:0,sPnl:0,isActive:true,isLocked:false,lockReason:null};
+    const ns=buildSession(ssState,mode,getSessionDuration(settings,getTradeStyleForMode(settings,mode)));
     const upd={...ssState,sessions:[...ssState.sessions,ns]};
     await saveSS(upd);
     return{ss:upd,sess:ns};
@@ -1116,7 +1247,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const isW=outcome==='WIN';
       const us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
       const lk2=chkLock(us,getTradeStyleForMode(settings,getTradeMode(t)));
-      if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.endTime=Date.now();}
+      if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
       const nextSessions=ss.sessions.map(s=>s.id===sess.id?us:s);
       await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
     }
@@ -1246,6 +1377,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       setEditErr(null);
       setPreview(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedTrade?.id]);
 
   return(
@@ -1275,7 +1407,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         ))}
       </div>
 
-      {tabLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={tabLk.reason||`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`}/>}
+      {tabLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={tabLk.reason||(tabCooldown?'Session time expired. Manual entries resume after the gap.':`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`)}/>}
 
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
         <button style={btn()} onClick={()=>{setManual(v=>!v);smf(m=>({...m,accountMode:journalTab}));}} disabled={tabLocked}>{manual?'Cancel':'+ Manual entry'}</button>
@@ -1922,6 +2054,24 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>6-hour gap enforced between all sessions.</p>
         </div>
+        <div style={{marginTop:14}}>
+          <label style={lbl}>Session duration per style</label>
+          {STYLES.map(st=>{
+            const[dmin,dmax]=DURATION_BOUNDS[st.id];
+            const val=f.sessionDurations?.[st.id] ?? DEF_DURATIONS[st.id];
+            return(
+              <div key={st.id} style={{marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--text-secondary)',marginBottom:4}}>
+                  <span>{st.name}</span><span>{val} min</span>
+                </div>
+                <input type="range" min={dmin} max={dmax} step="1" value={val}
+                  onChange={e=>set('sessionDurations',{...(f.sessionDurations||DEF_DURATIONS),[st.id]:parseInt(e.target.value,10)})}
+                  style={{width:'100%'}}/>
+              </div>
+            );
+          })}
+          <p style={{fontSize:11,color:'var(--text-muted)'}}>Applies to new sessions only — an active session keeps the duration it started with.</p>
+        </div>
       </div>
 
       <div style={{...card,background:'var(--bg-danger)',borderColor:'var(--border-danger)',marginTop:16}}>
@@ -2392,6 +2542,27 @@ export default function App(){
   const todaySS=settings?getToday(ss):null;
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
+  // Correctness backstop: commits a TIME_EXPIRED session end even if the user
+  // never has the Dashboard mounted to catch it (e.g. sitting in Journal past
+  // the timer). The Dashboard's own tick does this immediately when visible;
+  // this just guarantees it eventually happens so endTime/isActive never dangle.
+  useEffect(()=>{
+    if(!todaySS)return;
+    const id=setInterval(()=>{
+      const now=Date.now();
+      let changed=false;
+      const nextSessions=todaySS.sessions.map(s=>{
+        if(s.isActive&&!s.isLocked&&isSessionTimeExpired(s,now)){
+          changed=true;
+          return{...s,isActive:false,isLocked:true,lockReason:'Time expired',lockCode:'TIME_EXPIRED',endTime:now};
+        }
+        return s;
+      });
+      if(changed)saveSS({...todaySS,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    },15000);
+    return()=>clearInterval(id);
+  },[todaySS]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if(authLoading)return<Loading/>;
   if(!isSupabaseConfigured)return(
     <div style={{maxWidth:440,margin:'4rem auto',padding:'1rem',textAlign:'center'}}>
@@ -2579,7 +2750,7 @@ export default function App(){
           )}
 
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
-            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} bal={bal} mode={mode} nav={setView}/>}
+            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA}/>}
             {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode}/>}
