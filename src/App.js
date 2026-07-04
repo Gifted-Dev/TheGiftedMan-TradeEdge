@@ -326,7 +326,7 @@ function validateZoneDirection(r){
 }
 
 async function openRouterAnalyze(b64,mime,key){
-  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'qwen/qwen2.5-vl-72b-instruct:free',messages:[{role:'user',content:[{type:'text',text:PROMPT},{type:'image_url',image_url:{url:`data:${mime};base64,${b64}`}}]}],temperature:0.1,max_tokens:2000,response_format:{type:'json_object'}})});
+  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'nvidia/nemotron-nano-12b-v2-vl:free',messages:[{role:'user',content:[{type:'text',text:PROMPT},{type:'image_url',image_url:{url:`data:${mime};base64,${b64}`}}]}],temperature:0.1,max_tokens:2000,response_format:{type:'json_object'}})});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`OpenRouter API error ${res.status}`);}
   const d=await res.json();
   const txt=d.choices?.[0]?.message?.content||'{}';
@@ -1816,7 +1816,7 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
           <div>
             <label style={lbl}>OpenRouter API key</label>
             <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey||''} onChange={e=>set('apiKey',e.target.value)}/>
-            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://openrouter.ai/keys" style={{color:'var(--text-accent)'}}>openrouter.ai</a> · Model: qwen2.5-vl-72b (free)</div>
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://openrouter.ai/keys" style={{color:'var(--text-accent)'}}>openrouter.ai</a> · Model: nemotron-nano-12b-vl (free)</div>
           </div>
         ):(
           <div>
