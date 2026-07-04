@@ -64,6 +64,7 @@ This application helps you:
 - A timed-out session specifically pauses new Zone Analyzer requests and new manual Journal entries until the normal 6-hour gap elapses; any trade already awaiting a Win/Loss outcome stays fully accessible.
 - **Zero-trade timeouts get a separate, shorter cooldown** (1-2 hours, adjustable in Settings) instead of the full 6-hour gap, and don't count toward your daily session limit — so correctly skipping a session with no qualifying setup isn't penalized like a real trading session. After 3 consecutive no-trade sessions in a day, the next session reverts to the standard 6-hour gap and does count toward the limit, to prevent unlimited restart-and-scan behavior. Tracked independently per Demo/Real.
 - While a session is active, the Dashboard (and a compact widget on every other page) plays free lofi/ambient background music via the Jamendo API — play/pause, skip to a random track, track selection, and volume on the Dashboard — and it stops automatically the moment the session ends, for any reason.
+- **Email notification when the gap ends**: the moment any session ends, a serverless function schedules a one-off delayed job (via Upstash QStash) for exactly when that session's cooldown will elapse, then emails you (via Resend) with the end reason and a link back into the app — so you find out you can start again without needing the app open. Works even if you're not actively using the app, and is deduplicated server-side so a retry never double-emails.
 
 ### 6. Money management and planning
 - Risk sizing is either a percent of your current balance or a fixed dollar amount per trade — switch anytime in Settings.
@@ -101,6 +102,7 @@ This application helps you:
 - Supabase (Postgres, Auth, Storage)
 - OpenRouter API / Groq API for AI zone analysis
 - Jamendo API for session background music
+- Vercel Functions + Upstash QStash + Resend for session-gap email notifications
 
 ## Getting started
 
@@ -141,7 +143,15 @@ This application helps you:
    - Add it to `.env.local`: `REACT_APP_JAMENDO_CLIENT_ID=your-client-id`
    - Without a key, the Dashboard session music player shows "Music unavailable this session" — trading features are unaffected.
 
-6. Run the app
+6. Configure session-gap email notifications (optional, requires a Vercel deployment)
+   - This runs as two Vercel Functions (`api/schedule-gap-notification.js`, `api/send-gap-notification.js`), not locally in `npm start`.
+   - Install the Upstash QStash/Workflow integration on your Vercel project (Marketplace → free plan) — provisions `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` automatically.
+   - Sign up free at https://resend.com, create an API key, and add it as `RESEND_API_KEY` in Vercel's Environment Variables (no domain needed — it sends from Resend's shared `onboarding@resend.dev` sender until you verify your own domain).
+   - Requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` as plain (non-`REACT_APP_`) Vercel env vars — already provisioned automatically if you installed Supabase via the Vercel Marketplace.
+   - Run the new migration (`supabase/migrations/20260705000000_session_email_notified.sql`) to add the `email_notified_at` dedup column.
+   - Without this configured, session timing/locking works exactly the same — the schedule call just fails silently (fire-and-forget from the client).
+
+7. Run the app
    ```bash
    npm start
    ```

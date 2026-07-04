@@ -496,6 +496,15 @@ function isSessionTimeExpired(sess,now){
 function lastEndedSession(ss,mode){
   return[...(ss?.sessions||[])].filter(s=>s.accountMode===mode&&s.endTime).sort((a,b)=>b.endTime-a.endTime)[0]||null;
 }
+// Same gap-duration branch canStart uses to decide the wait — extracted so
+// the "email me when the gap ends" scheduler (see the useEffect in App) can
+// compute the identical duration without a second copy of the streak logic.
+function gapDurationMs(ss,mode,settings){
+  const m=ss.perMode?.[mode]||emptyModeState();
+  const isFreeNoTrade=(m.consecutiveNoTrade||0)<MAX_NO_TRADE_STREAK;
+  const wasNoTrade=lastEndedSession(ss,mode)?.lockCode==='TIME_EXPIRED_NO_TRADE';
+  return(isFreeNoTrade&&wasNoTrade)?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000:GAP;
+}
 // A session that timed out (as opposed to hitting a trade-count/streak rule)
 // additionally blocks new Analyzer/Journal activity until the normal 6h gap
 // elapses — trade-triggered lock reasons keep their existing behavior.
@@ -961,7 +970,6 @@ function useMusicPlayer(active){
   const audioRef=useRef(null);
   const fetchedForRef=useRef(null);
   const startedRef=useRef(false); // has a track been explicitly picked/started this session yet?
-  const pendingPlayRef=useRef(false); // play() once the just-picked track's src lands in the DOM
 
   useEffect(()=>{
     if(!active){fetchedForRef.current=null;startedRef.current=false;return;}
@@ -991,27 +999,37 @@ function useMusicPlayer(active){
     if(audioRef.current)audioRef.current.volume=muted?0:volume;
   },[volume,muted]);
 
-  // Plays the freshly-picked (random) track once its src has landed on the <audio> element.
-  useEffect(()=>{
-    if(pendingPlayRef.current&&audioRef.current){
-      pendingPlayRef.current=false;
-      audioRef.current.play().catch(()=>{});
-      setPlaying(true);
-    }
-  },[trackIdx]);
-
+  // Sets src and calls play() in the same synchronous tick — critical for
+  // mobile Safari/Chrome, which only allow audio.play() to succeed when it's
+  // called directly inside a user-gesture handler. Going through setState and
+  // playing from a useEffect (the previous approach) puts play() a render
+  // cycle away from the click/tap, so mobile browsers silently reject it —
+  // the UI would show "Pause" but nothing actually played.
+  function playTrackAt(i){
+    if(!audioRef.current||!tracks?.length)return;
+    audioRef.current.src=tracks[i].audio;
+    setTrackIdx(i);
+    const p=audioRef.current.play();
+    if(p&&typeof p.catch==='function')p.catch(()=>setPlaying(false));
+    setPlaying(true);
+  }
   // Shuffles to a new random track and keeps playing — used for both the
   // "Next" control and onEnded, so background music runs unattended.
   function next(){
     if(!tracks?.length)return;
     startedRef.current=true;
-    pendingPlayRef.current=true;
-    setTrackIdx(i=>randTrackIndex(tracks.length,i));
+    playTrackAt(randTrackIndex(tracks.length,trackIdx));
   }
   function play(){
     if(!audioRef.current||!tracks?.length)return;
-    if(!startedRef.current)next();
-    else{audioRef.current.play().catch(()=>{});setPlaying(true);}
+    if(!startedRef.current){
+      startedRef.current=true;
+      playTrackAt(randTrackIndex(tracks.length,trackIdx));
+      return;
+    }
+    const p=audioRef.current.play();
+    if(p&&typeof p.catch==='function')p.catch(()=>setPlaying(false));
+    setPlaying(true);
   }
   function pause(){
     if(!audioRef.current)return;
@@ -1021,7 +1039,6 @@ function useMusicPlayer(active){
   function toggle(){playing?pause():play();}
   function selectTrack(i){
     startedRef.current=true;
-    pendingPlayRef.current=false;
     setTrackIdx(i);
     setPlaying(false);
     if(audioRef.current)audioRef.current.pause();
@@ -3269,6 +3286,35 @@ export default function App(){
     },15000);
     return()=>clearInterval(id);
   },[todaySS]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fires once, the instant any session (either mode) transitions to ended —
+  // regardless of which of the several code paths above caused it — and asks
+  // the server to schedule a "your gap has ended" email for exactly when the
+  // gap actually elapses. Best-effort: a failed fetch never blocks the UI.
+  // The in-memory notifiedRef only prevents duplicate calls within this tab
+  // session; the server-side email_notified_at column is the real dedup guard.
+  const notifiedRef=useRef(new Set());
+  const prevSessionsForEmailRef=useRef([]);
+  useEffect(()=>{
+    if(!todaySS||!authUser?.email)return;
+    const prev=prevSessionsForEmailRef.current;
+    const justEnded=todaySS.sessions.filter(s=>{
+      if(s.isActive||!s.endTime||notifiedRef.current.has(s.id))return false;
+      const before=prev.find(p=>p.id===s.id);
+      return !before||before.isActive;
+    });
+    prevSessionsForEmailRef.current=todaySS.sessions;
+    justEnded.forEach(s=>{
+      notifiedRef.current.add(s.id);
+      const gapMs=gapDurationMs(todaySS,s.accountMode,settings);
+      fetch('/api/schedule-gap-notification',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({sessionId:s.id,mode:s.accountMode,email:authUser.email,endReason:s.lockCode,gapMs}),
+      }).catch(()=>{});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[todaySS,authUser]);
 
   if(authLoading)return<Loading/>;
   if(!isSupabaseConfigured)return(
