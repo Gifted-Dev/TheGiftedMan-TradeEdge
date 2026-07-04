@@ -1658,31 +1658,57 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[paStakeValue,setPaStakeValue]=useState('');
   const[polishingManual,setPolishingManual]=useState(false);
   const[manualPolishErr,setManualPolishErr]=useState(null);
+  const[manualSuggestion,setManualSuggestion]=useState(null);
   const[polishingTrade,setPolishingTrade]=useState(false);
+  const[tradeSuggestion,setTradeSuggestion]=useState(null);
+  const manualNotesRef=useRef(null);
+  const tradeNotesRef=useRef(null);
+
+  // Directly overwriting a controlled textarea's React state clears the
+  // browser's native undo stack (Ctrl+Z stops working). Using execCommand
+  // routes the change through the same input pipeline as real typing, so
+  // undo/redo keeps working after an AI suggestion is accepted.
+  function applyTextWithUndo(ref,text){
+    const el=ref.current;
+    if(el&&document.execCommand){
+      el.focus();
+      el.select();
+      if(document.execCommand('insertText',false,text))return true;
+    }
+    return false;
+  }
 
   async function polishManualNotes(){
     if(polishingManual||!mf.notes?.trim())return;
     setPolishingManual(true);setManualPolishErr(null);
     try{
-      const polished=await polishJournalNote(mf.notes,settings);
-      smf(m=>({...m,notes:polished}));
+      setManualSuggestion(await polishJournalNote(mf.notes,settings));
     }catch(e){
       setManualPolishErr(e.message||'Could not polish notes. Try again.');
     }finally{
       setPolishingManual(false);
     }
   }
+  function acceptManualPolish(){
+    if(manualSuggestion==null)return;
+    if(!applyTextWithUndo(manualNotesRef,manualSuggestion))smf(m=>({...m,notes:manualSuggestion}));
+    setManualSuggestion(null);
+  }
   async function polishTradeNotes(){
     if(polishingTrade||!editDraft.notes?.trim())return;
     setPolishingTrade(true);setEditErr(null);
     try{
-      const polished=await polishJournalNote(editDraft.notes,settings);
-      setEditDraft(d=>({...d,notes:polished}));
+      setTradeSuggestion(await polishJournalNote(editDraft.notes,settings));
     }catch(e){
       setEditErr(e.message||'Could not polish notes. Try again.');
     }finally{
       setPolishingTrade(false);
     }
+  }
+  function acceptTradePolish(){
+    if(tradeSuggestion==null)return;
+    if(!applyTextWithUndo(tradeNotesRef,tradeSuggestion))setEditDraft(d=>({...d,notes:tradeSuggestion}));
+    setTradeSuggestion(null);
   }
 
   // A new analyzer result to log always starts back at the default stake —
@@ -1810,7 +1836,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:''});
+      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:''});setManualSuggestion(null);
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -1921,6 +1947,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       setEditErr(null);
       setPreview(null);
       setConfirmingDelete(false);
+      setTradeSuggestion(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedTrade?.id]);
@@ -2026,8 +2053,18 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 <Sparkles size={12}/>{polishingManual?'Polishing…':'AI polish'}
               </button>
             </div>
-            <textarea style={{...inp,minHeight:50,resize:'vertical'}} value={mf.notes} onChange={e=>smf(m=>({...m,notes:e.target.value}))}/>
+            <textarea ref={manualNotesRef} style={{...inp,minHeight:50,resize:'vertical'}} value={mf.notes} onChange={e=>smf(m=>({...m,notes:e.target.value}))}/>
             {manualPolishErr&&<div style={{fontSize:11,color:'var(--text-danger)',marginTop:4}}>{manualPolishErr}</div>}
+            {manualSuggestion!=null&&(
+              <div style={{marginTop:8,padding:10,borderRadius:8,border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>AI suggestion</div>
+                <div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{manualSuggestion}</div>
+                <div style={{display:'flex',gap:8,marginTop:8}}>
+                  <button type="button" style={btn('pri')} onClick={acceptManualPolish}>Accept</button>
+                  <button type="button" style={btn()} onClick={()=>setManualSuggestion(null)}>Discard</button>
+                </div>
+              </div>
+            )}
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Outcome</label>
@@ -2139,7 +2176,17 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                     <Sparkles size={12}/>{polishingTrade?'Polishing…':'AI polish'}
                   </button>
                 </div>
-                <textarea aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
+                <textarea ref={tradeNotesRef} aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
+                {tradeSuggestion!=null&&(
+                  <div style={{marginTop:8,padding:10,borderRadius:8,border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+                    <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>AI suggestion</div>
+                    <div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{tradeSuggestion}</div>
+                    <div style={{display:'flex',gap:8,marginTop:8}}>
+                      <button type="button" style={btn('pri')} onClick={acceptTradePolish}>Accept</button>
+                      <button type="button" style={btn()} onClick={()=>setTradeSuggestion(null)}>Discard</button>
+                    </div>
+                  </div>
+                )}
                 <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V anywhere on this page to add screenshots quickly.</div>
               </div>
               {editErr&&<Alert type="dan" title="Error" body={editErr}/>}
