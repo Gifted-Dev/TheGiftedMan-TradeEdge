@@ -2552,10 +2552,26 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
   const[saved,setSaved]=useState(false);
   const[sessionWarn,setSessionWarn]=useState(false);
   const[includeBalances,setIncludeBalances]=useState(false);
+  const[confirmReset,setConfirmReset]=useState(null); // {scope,label,body}
+  const[resetDone,setResetDone]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   const activeSession=ss?getActive(ss):null;
 
   async function save(){await saveSettings({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0)});setSaved(true);setTimeout(()=>setSaved(false),2000);}
+
+  function askReset(scope){
+    const modes=scope==='BOTH'?['DEMO','REAL']:[scope];
+    const label=scope==='BOTH'?'Demo and Real':(scope==='REAL'?'Real':'Demo');
+    const extra=includeBalances?', and reset the starting balance to $0'+(modes.includes('REAL')?' (withdrawal history for Real will also be cleared)':''):'';
+    setConfirmReset({scope,label,body:`This permanently deletes all ${label} trades and session history${extra}. This cannot be undone.`});
+  }
+  async function confirmResetNow(){
+    const{scope}=confirmReset;
+    setConfirmReset(null);
+    await resetAccount(scope,includeBalances);
+    setResetDone(true);
+    setTimeout(()=>setResetDone(false),3000);
+  }
 
   async function applyStyle(id,mode){
     if(activeSession)setSessionWarn(true);
@@ -2711,15 +2727,26 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
           Choose a scope below, then decide whether you also want to reset starting balances. Real reset with balances also clears withdrawal history.
         </div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('DEMO',includeBalances)}>Reset Demo{includeBalances?' + balances':''}</button>
-          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('REAL',includeBalances)}>Reset Real{includeBalances?' + balances':''}</button>
-          <button style={{...btn('dan'),flex:1}} onClick={()=>resetAccount('BOTH',includeBalances)}>Reset All{includeBalances?' + balances':''}</button>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>askReset('DEMO')}>Reset Demo{includeBalances?' + balances':''}</button>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>askReset('REAL')}>Reset Real{includeBalances?' + balances':''}</button>
+          <button style={{...btn('dan'),flex:1}} onClick={()=>askReset('BOTH')}>Reset All{includeBalances?' + balances':''}</button>
         </div>
         <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,color:'var(--text-secondary)'}}>
           <input type="checkbox" checked={includeBalances} onChange={e=>setIncludeBalances(e.target.checked)} />
           Also reset starting balances and clear Real withdrawal history
         </label>
+        {resetDone&&<div style={{fontSize:12,color:'var(--text-success)',marginTop:10,display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Account reset.</div>}
       </div>
+
+      {confirmReset&&(
+        <ConfirmDialog
+          title={`Reset ${confirmReset.label} data?`}
+          body={confirmReset.body}
+          confirmLabel="Reset"
+          onCancel={()=>setConfirmReset(null)}
+          onConfirm={confirmResetNow}
+        />
+      )}
 
       <button style={{...btn('pri'),width:'100%'}} onClick={save}>{saved?'✓ Saved':'Save settings'}</button>
       <div style={{textAlign:'center',fontSize:11,color:'var(--text-muted)',marginTop:12}}>Music via Jamendo</div>
@@ -3144,13 +3171,11 @@ export default function App(){
   // account's session history; "everything" also zeroes the starting balance
   // and (Real only) withdrawals, since old withdrawals would otherwise be
   // subtracted from a balance that no longer has the trades that earned it.
+  // Confirmation is the caller's responsibility (Cfg shows a ConfirmDialog
+  // before calling this) — this function just performs the reset.
   const resetAccount=async(scope,includeBalances)=>{
     if(!authUser)return;
     const modes=scope==='BOTH'?['DEMO','REAL']:[scope];
-    const label=scope==='BOTH'?'Demo and Real':(scope==='REAL'?'Real':'Demo');
-    const extra=includeBalances?', and reset the starting balance to $0'+(modes.includes('REAL')?' (withdrawal history for Real will also be cleared)':''):'';
-    if(!window.confirm(`This permanently deletes all ${label} trades and session history${extra}. This cannot be undone. Continue?`))return;
-
     const idsToDelete=trades.filter(t=>modes.includes(getTradeMode(t))).map(t=>t.id);
     setTrades(prev=>prev.filter(t=>!modes.includes(getTradeMode(t))));
     if(idsToDelete.length)await supabase.from('trades').delete().in('id',idsToDelete);
@@ -3169,7 +3194,6 @@ export default function App(){
         await supabase.from('withdrawals').delete().eq('user_id',authUser.id);
       }
     }
-    alert(`${label} account reset.`);
   };
 
   // Global Demo/Real toggle — persisted in Supabase settings so it syncs across devices.
