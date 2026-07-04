@@ -4,6 +4,13 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
 /* ── Design tokens ─────────────────────────────────────────────────────────
    Layers   : bg (page) → surface-0 (inset well) → surface-1 (card) → surface-2 (raised/input)
    Accent   : single indigo family; gradient reserved for primary actions + hero moments
@@ -149,6 +156,174 @@
   --border-accent: rgba(200, 206, 222, 0.26);
 }
 
+/* Aurora — animated theme: deep violet base, a slower-moving multi-hue glow (see .app-glow below) */
+[data-theme='aurora'] {
+  color-scheme: dark;
+  --bg: #0a0713;
+  --surface-0: #0d0a1a;
+  --surface-1: #131024;
+  --surface-2: #1b1730;
+  --border: rgba(200, 160, 255, 0.1);
+  --border-strong: rgba(200, 160, 255, 0.18);
+
+  --text-primary: #f1edff;
+  --text-secondary: #b6aed6;
+  --text-muted: #7c74a0;
+
+  --accent: #b45cf7;
+  --text-accent: #d9a4ff;
+  --fill-accent: linear-gradient(135deg, #b45cf7, #38d4f0);
+
+  --bg-accent: rgba(180, 92, 247, 0.16);
+  --border-accent: rgba(217, 164, 255, 0.32);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ── Animated app background ──────────────────────────────────────────────
+   One drifting glow layer, tinted per-theme via --bg-accent so every theme
+   gets subtle motion for free; Aurora overrides it with a bolder multi-hue
+   version. Fixed + negative z-index so it never affects layout or scroll. */
+.app-glow {
+  position: fixed;
+  inset: -15%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(650px 380px at 25% 15%, var(--bg-accent), transparent 70%),
+    radial-gradient(550px 320px at 78% 82%, var(--bg-accent), transparent 70%);
+  animation: appGlowFloat 28s ease-in-out infinite alternate;
+}
+@keyframes appGlowFloat {
+  0%   { transform: translate(0, 0) scale(1); }
+  50%  { transform: translate(3%, 4%) scale(1.06); }
+  100% { transform: translate(-3%, -2%) scale(1); }
+}
+[data-theme='aurora'] .app-glow {
+  background:
+    radial-gradient(700px 420px at 20% 10%, rgba(180, 92, 247, 0.22), transparent 70%),
+    radial-gradient(650px 400px at 80% 30%, rgba(56, 212, 240, 0.16), transparent 70%),
+    radial-gradient(600px 380px at 50% 90%, rgba(236, 78, 180, 0.14), transparent 70%);
+  animation: auroraDrift 18s ease-in-out infinite alternate;
+}
+@keyframes auroraDrift {
+  0%   { transform: translate(0, 0) scale(1) rotate(0deg); }
+  50%  { transform: translate(4%, 3%) scale(1.08) rotate(2deg); }
+  100% { transform: translate(-3%, 2%) scale(1.03) rotate(-1deg); }
+}
+
+/* Nebula — deep space indigo, a slow rotating conic sweep instead of drifting blobs */
+[data-theme='nebula'] {
+  color-scheme: dark;
+  --bg: #05070f;
+  --surface-0: #070a15;
+  --surface-1: #0c0f1e;
+  --surface-2: #121629;
+  --border: rgba(140, 170, 255, 0.09);
+  --border-strong: rgba(140, 170, 255, 0.16);
+
+  --text-primary: #eef1ff;
+  --text-secondary: #a8b0d6;
+  --text-muted: #6c73a0;
+
+  --accent: #5b7cfa;
+  --text-accent: #8fa6ff;
+  --fill-accent: linear-gradient(135deg, #5b7cfa, #38d4f0);
+
+  --bg-accent: rgba(91, 124, 250, 0.14);
+  --border-accent: rgba(143, 166, 255, 0.3);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+[data-theme='nebula'] .app-glow {
+  background: conic-gradient(from 0deg at 30% 20%,
+    transparent 0deg, rgba(91, 124, 250, 0.16) 70deg, transparent 160deg,
+    rgba(56, 212, 240, 0.12) 240deg, transparent 320deg, rgba(91, 124, 250, 0.16) 360deg);
+  filter: blur(50px);
+  animation: nebulaSpin 55s linear infinite;
+}
+@keyframes nebulaSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Waves — teal/ocean, a diagonal gradient band flowing across instead of a fixed glow */
+[data-theme='waves'] {
+  color-scheme: dark;
+  --bg: #051417;
+  --surface-0: #071a1e;
+  --surface-1: #0b2227;
+  --surface-2: #102c32;
+  --border: rgba(120, 220, 220, 0.09);
+  --border-strong: rgba(120, 220, 220, 0.16);
+
+  --text-primary: #e8fbfa;
+  --text-secondary: #9fc9c9;
+  --text-muted: #63908f;
+
+  --accent: #1fb8a8;
+  --text-accent: #5be0cf;
+  --fill-accent: linear-gradient(135deg, #0e9c8e, #38f0d4);
+
+  --bg-accent: rgba(31, 184, 168, 0.14);
+  --border-accent: rgba(91, 224, 207, 0.3);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+[data-theme='waves'] .app-glow {
+  background: linear-gradient(120deg,
+    rgba(31, 184, 168, 0.18) 0%, transparent 20%,
+    rgba(56, 212, 240, 0.14) 40%, transparent 60%,
+    rgba(31, 184, 168, 0.16) 80%, transparent 100%);
+  background-size: 250% 250%;
+  animation: wavesPan 22s ease-in-out infinite alternate;
+}
+@keyframes wavesPan {
+  0%   { background-position: 0% 30%; }
+  100% { background-position: 100% 70%; }
+}
+
+/* Ember — warm amber/red, a breathing pulse instead of continuous drift */
+[data-theme='ember'] {
+  color-scheme: dark;
+  --bg: #120806;
+  --surface-0: #170b08;
+  --surface-1: #1f110c;
+  --surface-2: #291710;
+  --border: rgba(255, 170, 120, 0.09);
+  --border-strong: rgba(255, 170, 120, 0.16);
+
+  --text-primary: #fdf1ea;
+  --text-secondary: #d8ac96;
+  --text-muted: #9c7666;
+
+  --accent: #f2762e;
+  --text-accent: #ff9d5c;
+  --fill-accent: linear-gradient(135deg, #e5484d, #f2762e);
+
+  --bg-accent: rgba(242, 118, 46, 0.14);
+  --border-accent: rgba(255, 157, 92, 0.3);
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --shadow-card-hover: 0 2px 4px rgba(0, 0, 0, 0.4), 0 16px 32px -12px rgba(0, 0, 0, 0.6);
+  --highlight-top: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+[data-theme='ember'] .app-glow {
+  background: radial-gradient(650px 500px at 50% 100%, rgba(242, 118, 46, 0.22), transparent 70%),
+              radial-gradient(400px 300px at 15% 20%, rgba(229, 72, 77, 0.14), transparent 70%);
+  animation: emberPulse 8s ease-in-out infinite alternate;
+}
+@keyframes emberPulse {
+  0%   { opacity: 0.7; transform: scale(1); }
+  100% { opacity: 1; transform: scale(1.08); }
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -222,7 +397,7 @@ button:active:not(:disabled) { transform: scale(0.98); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .skeleton, .pulse-dot { animation: none; }
+  .skeleton, .pulse-dot, .app-glow { animation: none; }
   .card-lift, button { transition: none; }
 }
 
@@ -539,6 +714,52 @@ button:active:not(:disabled) { transform: scale(0.98); }
 .ld-btn-lg { padding: 12px 28px; font-size: 15px; border-radius: 12px; }
 .ld-btn-xl { padding: 16px 40px; font-size: 16px; border-radius: 14px; }
 
+/* Full-page motion graphics — fixed behind the entire landing page (not just
+   the hero) so it reads the whole way down as you scroll. Kept deliberately
+   light: one soft glow (no blur filter — that's what made scrolling feel
+   janky) tinted with the theme's own accent instead of a hardcoded color, a
+   static fine grid for a modern/technical feel, and a static grain texture
+   for depth. No competing animations, no filter: blur() on a full-viewport
+   layer — that's the actual cost, not the motion itself. */
+.ld-motion-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ld-motion-glow {
+  position: absolute;
+  inset: -20%;
+  background: radial-gradient(900px 560px at 50% 0%, var(--bg-accent), transparent 65%);
+  animation: ldGlowDrift 40s ease-in-out infinite alternate;
+}
+@keyframes ldGlowDrift {
+  0%   { transform: translate(-6%, 0) scale(1); }
+  100% { transform: translate(6%, 4%) scale(1.1); }
+}
+.ld-motion-grid {
+  position: absolute;
+  inset: -20%;
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  opacity: 0.3;
+  mask-image: radial-gradient(circle at 50% 20%, black, transparent 65%);
+  -webkit-mask-image: radial-gradient(circle at 50% 20%, black, transparent 65%);
+}
+.ld-motion-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+@media (prefers-reduced-motion: reduce) {
+  .ld-motion-glow { animation: none; }
+}
+
 /* Hero */
 .ld-hero {
   position: relative;
@@ -680,6 +901,7 @@ button:active:not(:disabled) { transform: scale(0.98); }
 /* Sections */
 .ld-section {
   padding: 100px 24px;
+  scroll-margin-top: 60px; /* fixed .ld-nav height — keeps anchor-scrolled sections from landing under it */
 }
 .ld-section-alt {
   background: var(--surface-0);

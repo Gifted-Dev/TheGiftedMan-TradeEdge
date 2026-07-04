@@ -62,10 +62,12 @@ This application helps you:
 - Pausing freezes the countdown; leaving it paused auto-resumes after 5 minutes so it can't be used to dodge the timer indefinitely.
 - A session ends the moment EITHER the timer hits zero OR an existing trade-count/win-loss rule triggers — whichever happens first — and the Dashboard shows the specific reason (time expired, stop loss, take profit, or max trades).
 - A timed-out session specifically pauses new Zone Analyzer requests and new manual Journal entries until the normal 6-hour gap elapses; any trade already awaiting a Win/Loss outcome stays fully accessible.
-- While a session is active, the Dashboard shows a background music player (free lofi/ambient tracks via the Jamendo API) with play/pause, track selection, and volume — it stops automatically the moment the session ends, for any reason.
+- **Zero-trade timeouts get a separate, shorter cooldown** (1-2 hours, adjustable in Settings) instead of the full 6-hour gap, and don't count toward your daily session limit — so correctly skipping a session with no qualifying setup isn't penalized like a real trading session. After 3 consecutive no-trade sessions in a day, the next session reverts to the standard 6-hour gap and does count toward the limit, to prevent unlimited restart-and-scan behavior. Tracked independently per Demo/Real.
+- While a session is active, the Dashboard (and a compact widget on every other page) plays free lofi/ambient background music via the Jamendo API — play/pause, skip to a random track, track selection, and volume on the Dashboard — and it stops automatically the moment the session ends, for any reason.
 
 ### 6. Money management and planning
-- Calculate a stake based on account balance and risk percentage.
+- Risk sizing is either a percent of your current balance or a fixed dollar amount per trade — switch anytime in Settings.
+- Override the stake for any single trade at logging time (Journal manual entry, or when logging an Analyzer result) — type a custom dollar amount or percent instead of accepting the default.
 - Track withdrawals and milestone targets.
 - Review projected growth and balance progression over time.
 - Use the built-in trading plan view to review your risk and session rules, plus an interactive zone-selection checklist for judging a zone before you trust it.
@@ -73,7 +75,7 @@ This application helps you:
 ### 7. Analytics dashboard
 - View key metrics such as:
   - balance
-  - win rate
+  - win rate, with a 95% confidence interval (Wilson score interval, reliable even at low trade counts) shown alongside it and by zone grade
   - total P&L
   - expected value per trade
   - current streak
@@ -83,6 +85,7 @@ This application helps you:
   - zone grade
   - trading pair
   - analyzed versus manual trades
+- **Review tab**: an auto-generated "This Week" / "This Month" digest per Demo/Real — trade counts, win rate with confidence interval, delta vs. the prior period, best/worst pair (minimum 3 trades to qualify), most common gate failure (only from zone analyses linked to a trade you actually logged), trades logged without zone analysis, and Real-account P&L. Pure numbers and deltas, computed on the fly from your existing trades — no manual entry, no generated commentary.
 
 ### 8. Cloud account and sync
 - Email + password authentication (Supabase Auth), including password reset.

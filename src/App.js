@@ -54,6 +54,10 @@ const THEMES = [
   {id:'ocean',label:'Ocean',bg:'#0c1f2b',accent:'#38d4f0'},
   {id:'graphite',label:'Graphite',bg:'#141416',accent:'#b8becd'},
   {id:'light',label:'Light',bg:'#ffffff',accent:'#4f5ae8'},
+  {id:'aurora',label:'Aurora',bg:'#131024',accent:'#b45cf7'},
+  {id:'nebula',label:'Nebula',bg:'#0c0f1e',accent:'#5b7cfa'},
+  {id:'waves',label:'Waves',bg:'#0b2227',accent:'#1fb8a8'},
+  {id:'ember',label:'Ember',bg:'#1f110c',accent:'#f2762e'},
 ];
 
 const PAIRS = [
@@ -2743,10 +2747,10 @@ function Landing({onLogin}){
   const features=[
     {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 10 strict structural gates, 4 of them hard filters, before you enter a trade.'},
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, zone grades, and outcomes. Track your execution quality over time.'},
-    {icon:BarChart3,title:'Performance Analytics',desc:'Deep-dive into your win rate by zone grade, pair, and account mode. See if AI analysis actually improves your results.'},
-    {icon:Wallet,title:'Money Management',desc:'Position sizing, milestone-based withdrawal tracking, and growth projection based on your actual win rate.'},
+    {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by zone grade, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
+    {icon:Wallet,title:'Money Management',desc:'Risk sizing as a percent of balance or a fixed dollar amount, overridable per trade, with milestone-based withdrawal tracking and growth projection.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
-    {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first.'},
+    {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first. Skipping a session with no qualifying setup gets a shorter cooldown instead of the full gap.'},
     {icon:Sparkles,title:'Focus Music',desc:'Free lofi and ambient tracks play in the background for the length of your session, then stop automatically when it ends.'},
   ];
 
@@ -2772,6 +2776,11 @@ function Landing({onLogin}){
 
   return(
     <div className="ld-wrap">
+      <div className="ld-motion-bg" aria-hidden="true">
+        <div className="ld-motion-glow"/>
+        <div className="ld-motion-grid"/>
+        <div className="ld-motion-noise"/>
+      </div>
       {/* ── Nav ── */}
       <nav className="ld-nav">
         <div className="ld-nav-inner">
@@ -3261,7 +3270,8 @@ export default function App(){
   ];
 
   return(
-    <div className="flex h-screen flex-col overflow-hidden bg-base text-ink" data-theme={theme} style={{background:'radial-gradient(600px 300px at 20% -5%, rgba(98,112,243,0.07), transparent 70%), var(--bg)'}}>
+    <div className="flex h-screen flex-col overflow-hidden bg-base text-ink" data-theme={theme} style={{background:'var(--bg)'}}>
+      <div className="app-glow" aria-hidden="true"/>
       <div className="mx-auto flex w-full flex-1 overflow-hidden">
 
         <aside className="hidden w-60 flex-shrink-0 flex-col border-r p-3 lg:flex" style={{borderColor:'var(--border)',background:'var(--surface-0)'}}>
