@@ -325,13 +325,12 @@ function validateZoneDirection(r){
   return r.direction==='BUY'&&/^Demand/.test(r.zoneType||'');
 }
 
-async function gemini(b64,mime,key){
-  const url=`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`;
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:PROMPT},{inline_data:{mime_type:mime,data:b64}}]}],generationConfig:{temperature:0.1,maxOutputTokens:2000,responseMimeType:'application/json'}})});
-  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`Gemini API error ${res.status}`);}
+async function openRouterAnalyze(b64,mime,key){
+  const res=await fetch('https://openrouter.ai/api/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'qwen/qwen2.5-vl-72b-instruct:free',messages:[{role:'user',content:[{type:'text',text:PROMPT},{type:'image_url',image_url:{url:`data:${mime};base64,${b64}`}}]}],temperature:0.1,max_tokens:2000,response_format:{type:'json_object'}})});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`OpenRouter API error ${res.status}`);}
   const d=await res.json();
-  const txt=d.candidates?.[0]?.content?.parts?.[0]?.text||'{}';
-  try{return JSON.parse(txt.replace(/```json|```/g,'').trim());}catch{throw new Error('Could not parse Gemini response. Try again.');}
+  const txt=d.choices?.[0]?.message?.content||'{}';
+  try{return JSON.parse(txt.replace(/```json|```/g,'').trim());}catch{throw new Error('Could not parse OpenRouter response. Try again.');}
 }
 
 async function groqAnalyze(b64,mime,key){
@@ -593,8 +592,8 @@ function Setup({onDone}){
             <h2 style={{fontSize:16,fontWeight:500,marginBottom:12,margin:'0 0 12px'}}>AI provider for zone analysis</h2>
             <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:14}}>Choose your AI provider. You can switch or add keys at any time in Settings.</p>
             <div style={{marginBottom:14}}>
-              <label style={lbl}>Gemini API key <span style={{color:'var(--text-muted)'}}>(Google AI Studio — free tier)</span></label>
-              <input style={inp} type="password" placeholder="AIzaSy..." value={f.apiKey} onChange={e=>set('apiKey',e.target.value)}/>
+              <label style={lbl}>OpenRouter API key <span style={{color:'var(--text-muted)'}}>(openrouter.ai — free tier)</span></label>
+              <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey} onChange={e=>set('apiKey',e.target.value)}/>
             </div>
             <div>
               <label style={lbl}>Groq API key <span style={{color:'var(--text-muted)'}}>(console.groq.com — free tier)</span></label>
@@ -924,7 +923,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
     if(!b64||!activeKey)return;
     setBusy(true);setErr(null);
     try{
-      const r=provider==='groq'?await groqAnalyze(b64,mime,activeKey):await gemini(b64,mime,activeKey);
+      const r=provider==='groq'?await groqAnalyze(b64,mime,activeKey):await openRouterAnalyze(b64,mime,activeKey);
       if(!validateZoneDirection(r))throw new Error('Zone direction could not be reliably determined — please verify manually before trading');
       const a={id:uid(),timestamp:Date.now(),date:tod(),screenshot:b64,screenshotMime:mime,linkedTradeId:null,...r};
       await saveAnalyses([a,...analyses]);
@@ -945,7 +944,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 
       {locked&&<Alert type="dan" title="🔒 Analyzer locked" body={(lk.reason||'Daily limit reached')+'. Zone analysis resumes next session.'}/>}
       {lk.adv&&!locked&&<Alert type="warn" title="Advisory" body={lk.adv}/>}
-      {!activeKey&&<Alert type="warn" title="No API key" body={`Add your ${provider==='groq'?'Groq':'Gemini'} API key in Settings to enable zone analysis.`}/>}
+      {!activeKey&&<Alert type="warn" title="No API key" body={`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings to enable zone analysis.`}/>}
 
       <div
         role="button"
@@ -1809,15 +1808,15 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>AI provider</div>
         <div style={{display:'flex',gap:8,marginBottom:14}}>
-          {[{id:'gemini',label:'Gemini'},{id:'groq',label:'Groq'}].map(p=>(
+          {[{id:'gemini',label:'OpenRouter'},{id:'groq',label:'Groq'}].map(p=>(
             <button key={p.id} style={{...btn((f.aiProvider||'gemini')===p.id?'pri':'def'),flex:1}} onClick={()=>set('aiProvider',p.id)}>{p.label}</button>
           ))}
         </div>
         {(f.aiProvider||'gemini')==='gemini'?(
           <div>
-            <label style={lbl}>Gemini API key</label>
-            <input style={inp} type="password" placeholder="AIzaSy..." value={f.apiKey||''} onChange={e=>set('apiKey',e.target.value)}/>
-            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://aistudio.google.com/app/apikey" style={{color:'var(--text-accent)'}}>aistudio.google.com</a></div>
+            <label style={lbl}>OpenRouter API key</label>
+            <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey||''} onChange={e=>set('apiKey',e.target.value)}/>
+            <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://openrouter.ai/keys" style={{color:'var(--text-accent)'}}>openrouter.ai</a> · Model: qwen2.5-vl-72b (free)</div>
           </div>
         ):(
           <div>
@@ -1976,7 +1975,7 @@ function Landing({onLogin}){
               <div className="ld-proof-dot" style={{background:'var(--accent)'}}/>
               <div className="ld-proof-dot" style={{background:'var(--text-warning)'}}/>
             </div>
-            <span>Free AI via Gemini &amp; Groq — no paid API needed</span>
+            <span>Free AI via OpenRouter &amp; Groq — no paid API needed</span>
           </div>
         </div>
       </section>
