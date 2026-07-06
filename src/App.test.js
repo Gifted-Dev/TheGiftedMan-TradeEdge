@@ -2,25 +2,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Analytics, Analyzer, Journal, Dashboard, getToday } from './App';
 
 describe('getToday (midnight rollover)', () => {
-  test('carries lastEnd/lastEndLockCode/consecutiveNoTrade forward across a date change instead of wiping them', () => {
+  test('resets sessions for a new calendar date, keeps them for the same date', () => {
     const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
-    const lastEnd = Date.now() - 30 * 60000; // locked 30 minutes ago, gap still owed
-    const staleSS = {
-      date: yesterday,
-      sessions: [{ id: 's1', num: 1, accountMode: 'DEMO', trades: 1, wins: 0, losses: 1, conLoss: 1, conWin: 0, netLoss: 1, sPnl: -2, isActive: false, isLocked: true, lockCode: 'MAX_TRADES', endTime: lastEnd, startTime: lastEnd - 60000 }],
-      perMode: { DEMO: { dailyLosses: 1, isDailyLocked: false, lastEnd, lastEndLockCode: 'MAX_TRADES', consecutiveNoTrade: 0 }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null, lastEndLockCode: null, consecutiveNoTrade: 0 } },
-    };
+    const staleSS = { date: yesterday, sessions: [{ id: 's1', num: 1, accountMode: 'DEMO' }] };
 
     const today = getToday(staleSS);
-
     expect(today.date).not.toBe(yesterday);
     expect(today.sessions).toEqual([]); // numbering correctly starts fresh
-    expect(today.perMode.DEMO.dailyLosses).toBe(0); // daily limit correctly resets
-    // The gap itself must NOT reset just because the calendar date did —
-    // this is the fix: previously lastEnd went to null here, making
-    // canStart() think the cooldown was already over.
-    expect(today.perMode.DEMO.lastEnd).toBe(lastEnd);
-    expect(today.perMode.DEMO.lastEndLockCode).toBe('MAX_TRADES');
+
+    const sameDaySS = { date: today.date, sessions: [{ id: 's1', num: 1, accountMode: 'DEMO' }] };
+    expect(getToday(sameDaySS)).toBe(sameDaySS); // unchanged when already today
   });
 });
 
@@ -37,6 +28,54 @@ test('shows separate demo and real win-rate analytics for completed trades', () 
   expect(screen.getByText('Real')).toBeInTheDocument();
   expect(screen.getAllByText('50.0%').length).toBeGreaterThan(0);
   expect(screen.getAllByText('100.0%').length).toBeGreaterThan(0);
+});
+
+test('Discipline Impact reports off-plan counts, P&L, and the direct balance-subtraction line', () => {
+  const now = Date.now();
+  const trade = (id, outcome, pnl, offPlan) => ({
+    id, timestamp: now, date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD', direction: 'BUY',
+    zoneType: '', zoneGrade: 'A', stake: 2, outcome, pnl, source: 'MANUAL',
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', offPlan,
+  });
+  const trades = [
+    trade('on1', 'WIN', 1.84, false),
+    trade('on2', 'LOSS', -2, false),
+    trade('off1', 'LOSS', -2, true),
+  ];
+
+  render(<Analytics trades={trades} analyses={[]} settings={{ startingBalanceDemo: 20, startingBalanceReal: 20 }} bal={20} wds={[]}/>);
+  fireEvent.click(screen.getByRole('button', { name: /^review$/i }));
+  fireEvent.click(screen.getByRole('button', { name: /all time/i }));
+
+  expect(screen.getByText('Off-plan trades')).toBeInTheDocument();
+  expect(screen.getByText('1')).toBeInTheDocument(); // off-plan count
+  // f$ shows magnitude only (sign is conveyed by color elsewhere in this app)
+  expect(screen.getByText('$2.00')).toBeInTheDocument(); // off-plan P&L (the one off-plan trade)
+  // modeBal = 20 (starting) + 1.84 - 2 - 2 = 17.84; minus off-plan pnl (-2) = 19.84
+  expect(screen.getByText(/would be \$19\.84 instead of \$17\.84/)).toBeInTheDocument();
+});
+
+test('Analytics breaks performance down by strategy, equally alongside grade and pair', () => {
+  const trade = (id, strategy, outcome, pnl) => ({
+    id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC',
+    direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2, outcome, pnl, source: 'MANUAL',
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategy,
+  });
+  const trades = [
+    trade('z1', 'ZONE', 'WIN', 1.84),
+    trade('z2', 'ZONE', 'LOSS', -2),
+    trade('t1', 'TREND', 'WIN', 1.84),
+    trade('t2', 'TREND', 'WIN', 1.84),
+  ];
+
+  render(<Analytics trades={trades} analyses={[]} settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }} bal={100} wds={[]}/>);
+
+  expect(screen.getByText('Performance by strategy')).toBeInTheDocument();
+  expect(screen.getByText('Zone (S&D)')).toBeInTheDocument();
+  expect(screen.getByText('Trend/Pattern')).toBeInTheDocument();
+  // ZONE: 1W/1L = 50%; TREND: 2W/0L = 100%
+  expect(screen.getByText('50.0%')).toBeInTheDocument();
+  expect(screen.getByText('100.0%')).toBeInTheDocument();
 });
 
 describe('Journal interactions', () => {
@@ -82,6 +121,73 @@ describe('Journal interactions', () => {
   });
 });
 
+test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L', async () => {
+  const saveTrades = jest.fn();
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={[]}
+      saveTrades={saveTrades}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
+  fireEvent.click(screen.getByRole('button', { name: /zone \(s&d\)/i })); // strategy is required before saving
+  // "WIN" also matches the ALL/PENDING/WIN/LOSS filter row — the outcome
+  // button is the one rendered inside the manual-entry form, later in the DOM.
+  const winButtons = screen.getAllByRole('button', { name: /^win$/i });
+  fireEvent.click(winButtons[winButtons.length - 1]);
+  fireEvent.click(screen.getByRole('button', { name: /amount \$/i }));
+  fireEvent.change(screen.getByPlaceholderText(/e\.g\. 10/i), { target: { value: '10' } });
+  fireEvent.change(screen.getByPlaceholderText(String(92)), { target: { value: '80' } });
+  fireEvent.click(screen.getByRole('button', { name: /save entry/i }));
+
+  await waitFor(() => expect(saveTrades).toHaveBeenCalled());
+  const updater = saveTrades.mock.calls[0][0];
+  const [saved] = updater([]);
+  expect(saved.stake).toBe(10);
+  expect(saved.pnl).toBe(8); // 10 * 0.80, not the default 10 * 0.92 = 9.2
+  expect(saved.strategy).toBe('ZONE');
+  expect(saved.payoutPct).toBe(80);
+});
+
+test('manual entry refuses to save without an explicit strategy selection', async () => {
+  const saveTrades = jest.fn();
+  const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => {});
+  // Clear both the "remembered last strategy" AND the in-progress-draft
+  // recovery — a prior test's draft would otherwise carry its strategy
+  // choice into this "fresh, no selection yet" scenario.
+  try { window.localStorage.removeItem('gm_last_strategy'); } catch {}
+  try { window.sessionStorage.removeItem('gm_draft_mf'); } catch {}
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={[]}
+      saveTrades={saveTrades}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
+  expect(screen.getByText(/required — pick whichever was actually used/i)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: /save entry/i }));
+
+  expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Select a strategy'));
+  expect(saveTrades).not.toHaveBeenCalled();
+
+  alertSpy.mockRestore();
+});
+
 test('adds a custom pair to the suggestion list when typed', async () => {
   render(
     <Journal
@@ -104,31 +210,85 @@ test('adds a custom pair to the suggestion list when typed', async () => {
   expect(pairInput).toHaveValue('XAU/USD OTC');
 });
 
-test('disables manual entry while a mode is inside its post-session gap', () => {
-  const saveTrades = jest.fn();
-  const saveSS = jest.fn();
-
+test('manual entry stays enabled with a stale lastEnd — the session gap was removed entirely', () => {
+  // Rules as a mirror, not a gate: a leftover lastEnd (the old gap-tracking
+  // field) must no longer disable anything — only the daily circuit breaker
+  // (computed from trades, not session state) does.
   render(
     <Journal
       settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
       trades={[]}
-      saveTrades={saveTrades}
-      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: { dailyLosses: 0, isDailyLocked: false, lastEnd: Date.now() - 1000 * 60 }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null } } }}
-      saveSS={saveSS}
+      saveTrades={jest.fn()}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: { lastEnd: Date.now() - 1000 * 60 }, REAL: {} } }}
+      saveSS={jest.fn()}
       pa={null}
       setPA={jest.fn()}
       wds={[]}
     />
   );
 
-  // The gap check used to only recognize TIME_EXPIRED/TIME_EXPIRED_NO_TRADE
-  // lock codes, so a mode with a recent lastEnd but no matching ended-session
-  // record (as here) fell through as "not gapped" and let the form open —
-  // only to have the save silently discard the trade once mkSession's own
-  // gate rejected it. It should be disabled up front instead.
+  expect(screen.getByRole('button', { name: /\+ manual entry/i })).not.toBeDisabled();
+});
+
+test('Strict Session Locking blocks the normal manual-entry button but offers an off-plan override', () => {
+  const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+  const strictSession = {
+    id: 's1', num: 1, accountMode: 'DEMO', trades: 1, wins: 1, losses: 0,
+    conLoss: 0, conWin: 1, netLoss: -1, sPnl: 1.84, isActive: true, isLocked: false,
+    strictAtStart: true, startTime: Date.now(),
+  };
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, tradeStyleDemo: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={[]}
+      saveTrades={jest.fn()}
+      ss={{ date: '2026-07-01', sessions: [strictSession], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+      mode="DEMO"
+    />
+  );
+
+  // Precision style (id 1) locks after 1 trade — the session already has
+  // one, and strictAtStart is true, so the normal path must be blocked.
   expect(screen.getByRole('button', { name: /\+ manual entry/i })).toBeDisabled();
-  expect(saveTrades).not.toHaveBeenCalled();
-  expect(saveSS).not.toHaveBeenCalled();
+  const overrideBtn = screen.getByRole('button', { name: /log an off-plan trade anyway/i });
+  expect(overrideBtn).toBeInTheDocument();
+
+  fireEvent.click(overrideBtn);
+  expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('outside your locked session'));
+  expect(screen.getByText(/logging as off-plan/i)).toBeInTheDocument();
+  // The manual-entry form itself is now open, off-plan-tagged.
+  expect(screen.getByPlaceholderText(/type any pair/i)).toBeInTheDocument();
+
+  confirmSpy.mockRestore();
+});
+
+test('disables manual entry once the daily loss circuit breaker is hit', () => {
+  const today = new Date().toLocaleDateString('en-CA');
+  const trades = Array.from({ length: 4 }, (_, i) => ({
+    id: `loss-${i}`, timestamp: Date.now(), date: today, sessionNum: null,
+    pair: 'EUR/USD', direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
+    outcome: 'LOSS', pnl: -2, source: 'MANUAL', screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO',
+  }));
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={trades}
+      saveTrades={jest.fn()}
+      ss={{ date: today, sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  expect(screen.getByRole('button', { name: /\+ manual entry/i })).toBeDisabled();
 });
 
 test('shows a large preview when a manual screenshot is clicked before saving', async () => {
@@ -235,6 +395,38 @@ test('lets you edit notes for a saved journal entry', async () => {
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
 
   expect(await screen.findByText('Updated notes')).toBeInTheDocument();
+});
+
+test('lets you fix a wrong pair and change the strategy on a saved journal entry', async () => {
+  const trades = [{
+    id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
+    pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
+    stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
+    screenshots: [], notes: '', isAnalyzed: true, strategy: 'ZONE',
+  }];
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={trades}
+      saveTrades={jest.fn()}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  const pairInput = await screen.findByDisplayValue('EUR/USD OTC');
+  fireEvent.change(pairInput, { target: { value: 'GBP/USD OTC' } });
+  fireEvent.click(screen.getByRole('button', { name: /trend\/pattern/i }));
+  fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
+
+  // The modal header renders pair+direction as one combined text node
+  // ("GBP/USD OTC · BUY"), so match by substring rather than exact text.
+  expect(await screen.findByText(/GBP\/USD OTC/)).toBeInTheDocument();
 });
 
 describe('Analyzer screenshot upload', () => {

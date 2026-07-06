@@ -21,7 +21,14 @@ test('dashboard renders with an active session and trades', () => {
 });
 
 test('dashboard renders day-locked state', () => {
-  const ss = { ...ssEmpty, perMode: { ...ssEmpty.perMode, DEMO: { dailyLosses: 4, isDailyLocked: true, lastEnd: null } } };
-  render(<Dashboard settings={settings} trades={[]} wds={[]} ss={ss} bal={12} mode="DEMO" nav={jest.fn()} />);
+  // Daily circuit breaker is now computed straight from today's trades, not
+  // from session/perMode state — 4 losses dated today trips it.
+  const today = new Date().toLocaleDateString('en-CA');
+  const trades = Array.from({ length: 4 }, (_, i) => ({
+    id: `loss-${i}`, timestamp: Date.now(), date: today, sessionNum: null,
+    pair: 'EUR/USD OTC', direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
+    outcome: 'LOSS', pnl: -2, source: 'MANUAL', screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO',
+  }));
+  render(<Dashboard settings={settings} trades={trades} wds={[]} ss={ssEmpty} bal={12} mode="DEMO" nav={jest.fn()} />);
   expect(screen.getByText('Day locked')).toBeInTheDocument();
 });
