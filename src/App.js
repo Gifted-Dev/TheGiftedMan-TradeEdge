@@ -182,6 +182,18 @@ async function fetchLiveSession(userId,sessionId){
   const{data}=await supabase.from('sessions').select('*').eq('user_id',userId).eq('id',sessionId).maybeSingle();
   return data?fromSessionRow(data):null;
 }
+// The late-log candidate must be found this way rather than via
+// lastEndedSession(ss,mode) on the local day-scoped array: ss.sessions only
+// ever holds TODAY's sessions (getToday resets it to [] on a date rollover),
+// so a session that ended before midnight — the exact case late-log exists
+// for — would already be invisible to that array by the time its gap is
+// checked the next day. Querying Supabase directly by account_mode/end_time
+// finds it regardless of which calendar day it ended on.
+async function fetchLastEndedSession(userId,mode){
+  const{data}=await supabase.from('sessions').select('*').eq('user_id',userId).eq('account_mode',mode)
+    .not('end_time','is',null).order('end_time',{ascending:false}).limit(1).maybeSingle();
+  return data?fromSessionRow(data):null;
+}
 function toWdRow(userId,w){
   return{id:w.id,user_id:userId,timestamp:new Date(w.timestamp).toISOString(),date:w.date,amount:w.amount,
     balance_before:w.balanceBefore,balance_after:w.balanceAfter,notes:w.notes};
@@ -208,7 +220,16 @@ function perModeFromSessions(sessions){
   for(const mode of ACCOUNT_MODES){
     const modeSessions=sessions.filter(s=>s.accountMode===mode);
     const dailyLosses=modeSessions.reduce((s,x)=>s+x.losses,0);
-    const lastEnd=modeSessions.reduce((m,x)=>x.endTime&&x.endTime>m?x.endTime:m,0)||null;
+    // Track the lock code alongside lastEnd (not just the timestamp) so gap
+    // math (canStart/gapDurationMs) can pick the right gap length without
+    // re-deriving "the last-ended session" from the sessions array — the
+    // array gets wiped on a new calendar day (getToday), but lastEnd/
+    // lastEndLockCode get carried forward across that reset so a cooldown
+    // in progress at midnight isn't silently erased.
+    let lastEnd=null,lastEndLockCode=null;
+    for(const x of modeSessions){
+      if(x.endTime&&x.endTime>(lastEnd||0)){lastEnd=x.endTime;lastEndLockCode=x.lockCode||null;}
+    }
     // Count consecutive no-trade sessions (most recent first) — a session
     // with trades > 0 resets the streak.
     const sorted=[...modeSessions].sort((a,b)=>b.startTime-a.startTime);
@@ -218,7 +239,7 @@ function perModeFromSessions(sessions){
       if(s.lockCode==='TIME_EXPIRED_NO_TRADE')consecutiveNoTrade++;
       else break;
     }
-    perMode[mode]={dailyLosses,isDailyLocked:dailyLosses>=MAX_DL,lastEnd,consecutiveNoTrade};
+    perMode[mode]={dailyLosses,isDailyLocked:dailyLosses>=MAX_DL,lastEnd,lastEndLockCode,consecutiveNoTrade};
   }
   return perMode;
 }
@@ -402,11 +423,35 @@ function computeDigest({trades,analyses,mode,start,end}){
   };
 }
 
-function emptyModeState(){return{dailyLosses:0,isDailyLocked:false,lastEnd:null,consecutiveNoTrade:0};}
+function emptyModeState(){return{dailyLosses:0,isDailyLocked:false,lastEnd:null,lastEndLockCode:null,consecutiveNoTrade:0};}
 
-function getToday(ss){
+// Formats tod()'s date-key for display without taking a second, independent
+// clock reading — the header and every "today" filter must derive from the
+// exact same instant, not two separate `new Date()` calls that merely agree
+// most of the time.
+function fmtHeaderDate(dateKey){
+  const[y,m,d]=dateKey.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+}
+// A gap/cooldown is a rolling real-time window (Date.now()-lastEnd), not a
+// calendar-day concept — a session that locks at 11:58pm still owes its full
+// 6h gap at 12:01am. Wiping lastEnd/lastEndLockCode/consecutiveNoTrade on the
+// date rollover (as this used to) erased that cooldown at the stroke of
+// midnight, letting canStart() see lastEnd=null and wave a brand-new session
+// through immediately — silently bypassing the stop-loss/circuit-breaker gap
+// enforcement. dailyLosses/isDailyLocked are genuinely calendar-day concepts
+// (the daily loss limit resets each day) and correctly go back to zero;
+// sessions:[] also correctly resets so today's numbering starts at 1 — only
+// the gap-timing fields carry forward.
+export function getToday(ss){
   const t=tod();
-  if(!ss||ss.date!==t)return{date:t,sessions:[],perMode:{DEMO:emptyModeState(),REAL:emptyModeState()}};
+  if(!ss||ss.date!==t){
+    const carry=mode=>{
+      const prev=ss?.perMode?.[mode];
+      return{...emptyModeState(),lastEnd:prev?.lastEnd??null,lastEndLockCode:prev?.lastEndLockCode??null,consecutiveNoTrade:prev?.consecutiveNoTrade??0};
+    };
+    return{date:t,sessions:[],perMode:{DEMO:carry('DEMO'),REAL:carry('REAL')}};
+  }
   return ss;
 }
 
@@ -444,8 +489,11 @@ function canStart(ss,max,mode,settings){
   const countedSessions=isFreeNoTrade?sessionsForMode.filter(s=>s.trades>0||s.paidOnStart):sessionsForMode;
   if(countedSessions.length>=max)return{ok:false,msg:`Max ${max} sessions reached today.`};
   if(m.lastEnd){
-    const last=lastEndedSession(ss,mode);
-    const wasNoTrade=last?.lockCode==='TIME_EXPIRED_NO_TRADE';
+    // m.lastEndLockCode (not lastEndedSession(ss,mode)) — the sessions array
+    // is day-scoped and empty right after midnight, but lastEndLockCode is
+    // carried forward by getToday specifically so this still resolves
+    // correctly for a gap that started before midnight.
+    const wasNoTrade=m.lastEndLockCode==='TIME_EXPIRED_NO_TRADE';
     const gapMs=isFreeNoTrade&&wasNoTrade
       ?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000
       :GAP;
@@ -515,7 +563,7 @@ function lastEndedSession(ss,mode){
 function gapDurationMs(ss,mode,settings){
   const m=ss.perMode?.[mode]||emptyModeState();
   const isFreeNoTrade=(m.consecutiveNoTrade||0)<MAX_NO_TRADE_STREAK;
-  const wasNoTrade=lastEndedSession(ss,mode)?.lockCode==='TIME_EXPIRED_NO_TRADE';
+  const wasNoTrade=m.lastEndLockCode==='TIME_EXPIRED_NO_TRADE';
   return(isFreeNoTrade&&wasNoTrade)?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000:GAP;
 }
 // A session that timed out (as opposed to hitting a trade-count/streak rule)
@@ -532,10 +580,11 @@ function gapDurationMs(ss,mode,settings){
 function isInSessionGap(ss,mode,settings){
   const m=ss.perMode?.[mode];
   if(!m?.lastEnd)return false;
-  const last=lastEndedSession(ss,mode);
+  // m.lastEndLockCode, not lastEndedSession(ss,mode) — see canStart's comment;
+  // same day-scoping problem, same fix.
   const consecutiveNoTrade=m.consecutiveNoTrade||0;
   const isFreeNoTrade=consecutiveNoTrade<MAX_NO_TRADE_STREAK;
-  const wasNoTrade=last?.lockCode==='TIME_EXPIRED_NO_TRADE';
+  const wasNoTrade=m.lastEndLockCode==='TIME_EXPIRED_NO_TRADE';
   const gapMs=isFreeNoTrade&&wasNoTrade?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000:GAP;
   return(Date.now()-m.lastEnd)<gapMs;
 }
@@ -1425,7 +1474,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music}){
     <div>
       <div style={{display:'flex',alignItems:'baseline',justifyContent:'space-between',marginBottom:16}}>
         <div style={{fontSize:18,fontWeight:600,letterSpacing:'-0.01em',color:'var(--text-primary)'}}>Dashboard</div>
-        <div style={{fontSize:12,color:'var(--text-muted)'}}>{new Date().toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div>
+        <div style={{fontSize:12,color:'var(--text-muted)'}}>{fmtHeaderDate(todayDate)}</div>
       </div>
 
       {endToast&&<Alert type="warn" title="Session ended" body={endToast}/>}
@@ -1510,7 +1559,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music}){
               <div style={{width:36,height:36,borderRadius:'var(--radius-sm)',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-accent)',border:'1px solid var(--border-accent)',marginBottom:10}}>
                 <Target size={17} style={{color:'var(--text-accent)'}}/>
               </div>
-              <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Ready for session {ss.sessions.length+1}</div>
+              <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Ready for session {ss.sessions.filter(s=>s.accountMode===mode).length+1}</div>
               <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Start a session to begin the timer, or analyze a zone / open the journal directly.</div>
               <button style={{...btn('suc'),width:'100%'}} onClick={startSession}><Timer size={15}/>Start session ({getSessionDuration(settings,getTradeStyleForMode(settings,mode))}m)</button>
             </div>
@@ -1896,24 +1945,36 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const tabLocked=(ss.perMode?.[journalTab]?.isDailyLocked||false)||tabLk.locked||tabCooldown;
 
   // Late-log: exactly one eligible target — the session that just ended for
-  // this mode, and only while its gap is still active. Re-derived from the
-  // session's LIVE Supabase counters (not ss, which can be stale) every time
-  // the gap/tab/session set changes, so it disappears the instant the real
-  // limit is reached — same chkLock the live session UI uses, no second copy.
+  // this mode, and only while its gap is still active. Found via a direct
+  // Supabase query (fetchLastEndedSession), not lastEndedSession(ss,mode) on
+  // the local array — ss.sessions is day-scoped (empty right after
+  // midnight), so a session that ended before midnight — exactly the case
+  // late-log exists for — would be invisible to that array by the time its
+  // gap is checked the next day. The query result is already live, so no
+  // separate "candidate then fetch live" round trip is needed.
   const[lateLog,setLateLog]=useState(null);
-  const lateLogCandidate=tabCooldown&&!(ss.perMode?.[journalTab]?.isDailyLocked)?lastEndedSession(ss,journalTab):null;
+  const lateLogEligible=tabCooldown&&!(ss.perMode?.[journalTab]?.isDailyLocked);
   useEffect(()=>{
     let cancelled=false;
-    if(!lateLogCandidate||!userId){setLateLog(null);return;}
+    if(!lateLogEligible||!userId){setLateLog(null);return;}
     (async()=>{
-      const live=await fetchLiveSession(userId,lateLogCandidate.id);
-      if(cancelled)return;
-      const lk=chkLock(live||lateLogCandidate,getTradeStyleForMode(settings,journalTab));
-      setLateLog(lk.locked?null:{session:live||lateLogCandidate,mode:journalTab});
+      const candidate=await fetchLastEndedSession(userId,journalTab);
+      if(cancelled||!candidate)return;
+      const lk=chkLock(candidate,getTradeStyleForMode(settings,journalTab));
+      setLateLog(lk.locked?null:{session:candidate,mode:journalTab});
     })();
     return()=>{cancelled=true};
-  },[lateLogCandidate,userId,journalTab,settings]);
+  },[lateLogEligible,userId,journalTab,settings]);
 
+  // Writes straight to the session's own Supabase row by id, rather than
+  // going through ss.sessions/saveSS: saveSS upserts every session in
+  // ss.sessions under ONE shared date (ss.date, i.e. today) — fine for
+  // sessions that actually started today, but it would silently relabel a
+  // pre-midnight session's date column, and if the session isn't even IN
+  // ss.sessions (the exact cross-midnight case), the update to it is just
+  // dropped on the floor with no error. A direct .update().eq('id',...) has
+  // neither problem. ss.sessions still gets patched too, for same-day gaps,
+  // so the UI reflects the change without waiting on a refetch.
   async function logLateTrade(sessionTarget,{outcome,pnl}){
     const live=await fetchLiveSession(userId,sessionTarget.id)||sessionTarget;
     const styleId=getTradeStyleForMode(settings,sessionTarget.accountMode);
@@ -1925,8 +1986,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       conLoss:isL?live.conLoss+1:0,conWin:isW?live.conWin+1:0,netLoss:live.netLoss+(isL?1:isW?-1:0),sPnl:live.sPnl+pnl};
     const lk2=chkLock(us,styleId);
     if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=us.endTime||Date.now();}
-    const nextSessions=ss.sessions.map(s=>s.id===us.id?us:s);
-    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    await supabase.from('sessions').update({
+      trades:us.trades,wins:us.wins,losses:us.losses,con_loss:us.conLoss,con_win:us.conWin,net_loss:us.netLoss,
+      session_pnl:us.sPnl,is_active:us.isActive,is_locked:us.isLocked,lock_reason:us.lockReason,
+      end_time:us.endTime?new Date(us.endTime).toISOString():null,
+      extra:{lockCode:us.lockCode,durationMin:us.durationMin,pausedAt:us.pausedAt,pausedMsTotal:us.pausedMsTotal,paidOnStart:us.paidOnStart},
+    }).eq('id',us.id).eq('user_id',userId);
+    if(ss.sessions.some(s=>s.id===us.id)){
+      const nextSessions=ss.sessions.map(s=>s.id===us.id?us:s);
+      await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    }
     setLateLog(lk2.locked?null:{session:us,mode:sessionTarget.accountMode});
     return{ok:true,sessionNum:live.num};
   }
@@ -1978,7 +2047,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const t=trades.find(x=>x.id===tid);if(!t)return;
     const pnl=calcPnl(t.stake,outcome);
     await saveTrades(prev=>prev.map(x=>x.id===tid?{...x,outcome,pnl}:x));
-    const sess=ss.sessions.find(s=>s.num===t.sessionNum && s.accountMode===getTradeMode(t));
+    // t.date must match too — sessionNum recycles every day per mode, so
+    // resolving an old PENDING trade from a prior day could otherwise match
+    // today's same-numbered session and corrupt its counters (same class of
+    // bug as the reconciliation effect above).
+    const sess=t.date===ss.date && ss.sessions.find(s=>s.num===t.sessionNum && s.accountMode===getTradeMode(t));
     if(sess){
       const isW=outcome==='WIN';
       const us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
@@ -3665,8 +3738,14 @@ export default function App(){
     let changed=false;
     const nextSessions=todaySS.sessions.map(sess=>{
       if(!sess.isActive||sess.isLocked)return sess;
+      // sessionNum is only unique per (day, mode) — buildSession restarts it
+      // at 1 every calendar day, so matching on accountMode+sessionNum alone
+      // against the full, all-time trades array pulls in a PRIOR day's
+      // same-numbered session too. That's exactly how a brand-new, genuinely
+      // empty session ended up inheriting another day's trade count/pnl/lock
+      // wholesale. t.date must match today's date as well.
       const sessionTrades=trades
-        .filter(t=>getTradeMode(t)===sess.accountMode&&t.sessionNum===sess.num)
+        .filter(t=>getTradeMode(t)===sess.accountMode&&t.sessionNum===sess.num&&t.date===todaySS.date)
         .sort((a,b)=>a.timestamp-b.timestamp);
       if(!sessionTrades.length)return sess;
       // Rebuild counters from scratch (in order) so streaks are correct.

@@ -1,5 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { Analytics, Analyzer, Journal, Dashboard } from './App';
+import { Analytics, Analyzer, Journal, Dashboard, getToday } from './App';
+
+describe('getToday (midnight rollover)', () => {
+  test('carries lastEnd/lastEndLockCode/consecutiveNoTrade forward across a date change instead of wiping them', () => {
+    const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
+    const lastEnd = Date.now() - 30 * 60000; // locked 30 minutes ago, gap still owed
+    const staleSS = {
+      date: yesterday,
+      sessions: [{ id: 's1', num: 1, accountMode: 'DEMO', trades: 1, wins: 0, losses: 1, conLoss: 1, conWin: 0, netLoss: 1, sPnl: -2, isActive: false, isLocked: true, lockCode: 'MAX_TRADES', endTime: lastEnd, startTime: lastEnd - 60000 }],
+      perMode: { DEMO: { dailyLosses: 1, isDailyLocked: false, lastEnd, lastEndLockCode: 'MAX_TRADES', consecutiveNoTrade: 0 }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null, lastEndLockCode: null, consecutiveNoTrade: 0 } },
+    };
+
+    const today = getToday(staleSS);
+
+    expect(today.date).not.toBe(yesterday);
+    expect(today.sessions).toEqual([]); // numbering correctly starts fresh
+    expect(today.perMode.DEMO.dailyLosses).toBe(0); // daily limit correctly resets
+    // The gap itself must NOT reset just because the calendar date did —
+    // this is the fix: previously lastEnd went to null here, making
+    // canStart() think the cooldown was already over.
+    expect(today.perMode.DEMO.lastEnd).toBe(lastEnd);
+    expect(today.perMode.DEMO.lastEndLockCode).toBe('MAX_TRADES');
+  });
+});
 
 test('shows separate demo and real win-rate analytics for completed trades', () => {
   const trades = [
@@ -289,5 +312,24 @@ describe("Dashboard's Today count", () => {
     expect(screen.getByText('1 trades')).toBeInTheDocument();
     expect(screen.getByText('1W')).toBeInTheDocument();
     expect(screen.getByText('0L')).toBeInTheDocument();
+  });
+
+  // Reproduces the exact reported scenario: most recent actual trade dated
+  // yesterday, a REAL session already completed today (so ss.sessions for
+  // TODAY is genuinely non-empty), but zero DEMO trades/sessions today.
+  // "Ready for session" used to read ss.sessions.length+1 with no mode
+  // filter, so a same-day session in the OTHER mode leaked into DEMO's count.
+  test('zero trades/sessions today for this mode shows "Today: 0" and "Ready for session 1", unaffected by a same-day session in the other mode', () => {
+    const ssToday = {
+      date: localDate(0),
+      sessions: [{ id: 'r1', num: 1, accountMode: 'REAL', startTime: Date.now(), endTime: Date.now(), trades: 1, wins: 1, losses: 0, conLoss: 0, conWin: 1, netLoss: -1, sPnl: 1.84, isActive: false, isLocked: true, lockReason: 'Session complete', lockCode: 'MAX_TRADES' }],
+      perMode: { DEMO: { dailyLosses: 0, isDailyLocked: false, lastEnd: null }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: Date.now() } },
+    };
+    render(
+      <Dashboard settings={baseSettings} trades={[trade('y1', localDate(1))]} wds={[]}
+        ss={ssToday} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
+    );
+    expect(screen.queryByText(/Today:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Ready for session 1')).toBeInTheDocument();
   });
 });
