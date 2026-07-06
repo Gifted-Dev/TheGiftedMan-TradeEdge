@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { Analytics, Analyzer, Journal } from './App';
+import { Analytics, Analyzer, Journal, Dashboard } from './App';
 
 test('shows separate demo and real win-rate analytics for completed trades', () => {
   const trades = [
@@ -81,11 +81,9 @@ test('adds a custom pair to the suggestion list when typed', async () => {
   expect(pairInput).toHaveValue('XAU/USD OTC');
 });
 
-test('blocks a manual entry when the session gate would normally prevent a new session', async () => {
+test('disables manual entry while a mode is inside its post-session gap', () => {
   const saveTrades = jest.fn();
   const saveSS = jest.fn();
-
-  const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => {});
 
   render(
     <Journal
@@ -100,14 +98,14 @@ test('blocks a manual entry when the session gate would normally prevent a new s
     />
   );
 
-  fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
-  fireEvent.change(screen.getByPlaceholderText(/type any pair/i), { target: { value: 'XAU/USD OTC' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Save entry' }));
-
-  await waitFor(() => expect(alertSpy).toHaveBeenCalled());
+  // The gap check used to only recognize TIME_EXPIRED/TIME_EXPIRED_NO_TRADE
+  // lock codes, so a mode with a recent lastEnd but no matching ended-session
+  // record (as here) fell through as "not gapped" and let the form open —
+  // only to have the save silently discard the trade once mkSession's own
+  // gate rejected it. It should be disabled up front instead.
+  expect(screen.getByRole('button', { name: /\+ manual entry/i })).toBeDisabled();
   expect(saveTrades).not.toHaveBeenCalled();
   expect(saveSS).not.toHaveBeenCalled();
-  alertSpy.mockRestore();
 });
 
 test('shows a large preview when a manual screenshot is clicked before saving', async () => {
@@ -236,5 +234,60 @@ describe('Analyzer screenshot upload', () => {
     fireEvent.paste(target, { clipboardData: { items: [imageItem] } });
 
     await waitFor(() => expect(screen.getByAltText('Chart screenshot')).toBeInTheDocument());
+  });
+});
+
+describe("Dashboard's Today count", () => {
+  const baseSettings = { riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 };
+  const basePerMode = { DEMO: { dailyLosses: 0, isDailyLocked: false, lastEnd: null }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null } };
+  // Independent of tod()'s internal implementation — just real calendar-day
+  // subtraction, matching what a date-only en-CA string would produce.
+  const localDate = daysAgo => {
+    const d = new Date();
+    d.setDate(d.getDate() - daysAgo);
+    return d.toLocaleDateString('en-CA');
+  };
+  const trade = (id, date, overrides = {}) => ({
+    id, timestamp: Date.now(), date, sessionNum: null, pair: 'EUR/USD OTC', direction: 'BUY',
+    zoneType: '', zoneGrade: 'A', stake: 2, outcome: 'WIN', pnl: 1.84, source: 'MANUAL',
+    analysisId: null, screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', ...overrides,
+  });
+  // ss.date is deliberately stale/mismatched in every case below — the fix
+  // must not read "today" from it.
+  const staleSS = { date: localDate(5), sessions: [], perMode: basePerMode };
+
+  test('backdated-only trade shows zero for Today, not the backdated date', () => {
+    render(
+      <Dashboard settings={baseSettings} trades={[trade('y1', localDate(1))]} wds={[]}
+        ss={staleSS} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
+    );
+    expect(screen.queryByText(/Today:/)).not.toBeInTheDocument();
+  });
+
+  test('a trade dated today counts alone, excluding an earlier backdated entry', () => {
+    render(
+      <Dashboard settings={baseSettings}
+        trades={[trade('y1', localDate(1)), trade('t1', localDate(0))]} wds={[]}
+        ss={staleSS} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
+    );
+    expect(screen.getByText('1 trades')).toBeInTheDocument();
+    expect(screen.getByText('1W')).toBeInTheDocument();
+    expect(screen.getByText('0L')).toBeInTheDocument();
+  });
+
+  test('gap-day scenario: Monday trade + a Monday trade backdated on Wednesday only count Wednesday itself', () => {
+    const monday = localDate(2), wednesday = localDate(0);
+    render(
+      <Dashboard settings={baseSettings}
+        trades={[
+          trade('mon-original', monday),
+          trade('mon-backdated-on-wed', monday, { outcome: 'LOSS', pnl: -2 }),
+          trade('wed-actual', wednesday),
+        ]}
+        wds={[]} ss={staleSS} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
+    );
+    expect(screen.getByText('1 trades')).toBeInTheDocument();
+    expect(screen.getByText('1W')).toBeInTheDocument();
+    expect(screen.getByText('0L')).toBeInTheDocument();
   });
 });

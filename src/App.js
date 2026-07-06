@@ -143,7 +143,7 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,noTradeGapMin:s.noTradeGapMin,alertVolume:s.alertVolume}};
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,noTradeGapMin:s.noTradeGapMin,alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn}};
 }
 function fromSettingsRow(r){
   return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
@@ -174,6 +174,13 @@ function fromSessionRow(r){
     endTime:r.end_time?new Date(r.end_time).getTime():null,trades:r.trades,wins:r.wins,losses:r.losses,
     conLoss:r.con_loss,conWin:r.con_win,netLoss:r.net_loss,sPnl:r.session_pnl,isActive:r.is_active,
     isLocked:r.is_locked,lockReason:r.lock_reason,...(r.extra||{})};
+}
+// Late-log eligibility must be checked against the session's CURRENT
+// server-side counters, not the client's cached ss state — the client copy
+// can be stale (another tab/device already logged against it, etc).
+async function fetchLiveSession(userId,sessionId){
+  const{data}=await supabase.from('sessions').select('*').eq('user_id',userId).eq('id',sessionId).maybeSingle();
+  return data?fromSessionRow(data):null;
 }
 function toWdRow(userId,w){
   return{id:w.id,user_id:userId,timestamp:new Date(w.timestamp).toISOString(),date:w.date,amount:w.amount,
@@ -514,15 +521,23 @@ function gapDurationMs(ss,mode,settings){
 // A session that timed out (as opposed to hitting a trade-count/streak rule)
 // additionally blocks new Analyzer/Journal activity until the normal 6h gap
 // elapses — trade-triggered lock reasons keep their existing behavior.
-function isTimeExpiredCooldown(ss,mode,settings){
+// Mirrors canStart's gap math (below) as a plain boolean, covering every lock
+// code — not just TIME_EXPIRED/TIME_EXPIRED_NO_TRADE. The previous version of
+// this check (isTimeExpiredCooldown) only recognized those two codes, so a
+// session that locked via STOP_LOSS, TAKE_PROFIT, or MAX_TRADES fell through
+// it as "not on cooldown" — Analyzer/Journal stayed enabled even though
+// canStart() would still correctly refuse to start a new session, letting a
+// trade attempt reach mkSession, fail there, and (before that was fixed too)
+// get silently discarded.
+function isInSessionGap(ss,mode,settings){
+  const m=ss.perMode?.[mode];
+  if(!m?.lastEnd)return false;
   const last=lastEndedSession(ss,mode);
-  if(!last)return false;
-  if(last.lockCode==='TIME_EXPIRED_NO_TRADE'){
-    const gap=(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000;
-    return(Date.now()-last.endTime)<gap;
-  }
-  if(last.lockCode==='TIME_EXPIRED')return(Date.now()-last.endTime)<GAP;
-  return false;
+  const consecutiveNoTrade=m.consecutiveNoTrade||0;
+  const isFreeNoTrade=consecutiveNoTrade<MAX_NO_TRADE_STREAK;
+  const wasNoTrade=last?.lockCode==='TIME_EXPIRED_NO_TRADE';
+  const gapMs=isFreeNoTrade&&wasNoTrade?(settings?.noTradeGapMin??NO_TRADE_GAP_DEFAULT)*60000:GAP;
+  return(Date.now()-m.lastEnd)<gapMs;
 }
 function fmtClock(ms){
   const s=Math.max(0,Math.round(ms/1000));
@@ -1303,7 +1318,12 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music}){
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
   // Today-only counts — the full modeTrades/done may span multiple days.
-  const todayDate=ss?.date||tod();
+  // Computed straight from the system clock (tod()), never from ss.date —
+  // ss is session STATE, not a date source. Falling back to it (as this used
+  // to) makes "today" indirectly depend on whatever a session happened to be
+  // stamped with rather than the actual calendar date, which is exactly the
+  // kind of indirection that let a backdated entry's date leak into "today".
+  const todayDate=tod();
   const todayDone=modeTrades.filter(t=>t.date===todayDate&&t.outcome!=='PENDING');
   const todayWins=todayDone.filter(t=>t.outcome==='WIN').length;
   const todayPnl=todayDone.reduce((s,t)=>s+t.pnl,0);
@@ -1313,10 +1333,16 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music}){
   const growth=startBal?((bal-startBal)/startBal)*100:0;
   const stake=calcStake(bal,settings);
   const active=getActive(ss,mode);
-  const activeTradesArr = active?modeTrades.filter(t=>t.date===ss?.date && t.sessionNum===active.num):[];
-  const activeTradesCount = activeTradesArr.length;
-  const activeWins = activeTradesArr.filter(t=>t.outcome==='WIN').length;
-  const activeLosses = activeTradesArr.filter(t=>t.outcome==='LOSS').length;
+  // Read straight off the session's own counters — the same trades/wins/losses
+  // fields chkLock and every save path maintain — instead of re-deriving them
+  // by joining trades back to the session via date+sessionNum. That join is a
+  // second copy of the same count that can silently drift from the real one
+  // (e.g. a trade whose date/sessionNum doesn't line up for any reason), which
+  // is exactly how the displayed count could show 0 after a save that actually
+  // incremented active.trades correctly.
+  const activeTradesCount = active?.trades||0;
+  const activeWins = active?.wins||0;
+  const activeLosses = active?.losses||0;
   const canS=canStart(ss,settings.sessionsPerDay,mode,settings);
   const isDailyLocked=ss.perMode?.[mode]?.isDailyLocked||false;
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
@@ -1562,7 +1588,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const cooldown=isTimeExpiredCooldown(ss,mode,settings);
+  const cooldown=isInSessionGap(ss,mode,settings);
   const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||cooldown;
 
   async function addImage(file,target='extra'){
@@ -1752,12 +1778,26 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA}){
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────────
-export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode}){
+export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId}){
   const[filt,setFilt]=useState('ALL');
   const[manual,setManual]=useState(false);
+  const[isLateLog,setIsLateLog]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
   const[mf,smf]=useState(()=>{
-    try{const saved=sessionStorage.getItem('gm_draft_mf');if(saved)return JSON.parse(saved);}catch{}
+    try{
+      const saved=sessionStorage.getItem('gm_draft_mf');
+      if(saved){
+        const d=JSON.parse(saved);
+        // sessionStorage survives a reload within the same tab, so a draft
+        // left open across midnight silently keeps yesterday's tradeDate.
+        // addManual() treats any tradeDate !== today as an intentional
+        // backdated entry and skips linking it to today's active session
+        // entirely — so a stale draft looks like "my trade count didn't
+        // update" with no indication why. Self-correct it back to today.
+        if(d.tradeDate!==tod())d.tradeDate=tod();
+        return d;
+      }
+    }catch{}
     return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:''};
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
@@ -1768,6 +1808,8 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[savingEdit,setSavingEdit]=useState(false);
   const[editErr,setEditErr]=useState(null);
   const[savedFlash,setSavedFlash]=useState(false);
+  const[journalNotice,setJournalNotice]=useState(null);
+  function flashNotice(msg){setJournalNotice(msg);setTimeout(()=>setJournalNotice(null),6000);}
   const[confirmingDelete,setConfirmingDelete]=useState(false);
   const[paStakeMode,setPaStakeMode]=useState('DEFAULT');
   const[paStakeValue,setPaStakeValue]=useState('');
@@ -1846,13 +1888,55 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||isTimeExpiredCooldown(ss,mode,settings);
+  const locked=(ss.perMode?.[mode]?.isDailyLocked||false)||lk.locked||isInSessionGap(ss,mode,settings);
 
   const tabActive=getActive(ss,journalTab);
   const tabLk=tabActive?chkLock(tabActive,getTradeStyleForMode(settings,journalTab)):{locked:false};
-  const tabCooldown=isTimeExpiredCooldown(ss,journalTab,settings);
+  const tabCooldown=isInSessionGap(ss,journalTab,settings);
   const tabLocked=(ss.perMode?.[journalTab]?.isDailyLocked||false)||tabLk.locked||tabCooldown;
 
+  // Late-log: exactly one eligible target — the session that just ended for
+  // this mode, and only while its gap is still active. Re-derived from the
+  // session's LIVE Supabase counters (not ss, which can be stale) every time
+  // the gap/tab/session set changes, so it disappears the instant the real
+  // limit is reached — same chkLock the live session UI uses, no second copy.
+  const[lateLog,setLateLog]=useState(null);
+  const lateLogCandidate=tabCooldown&&!(ss.perMode?.[journalTab]?.isDailyLocked)?lastEndedSession(ss,journalTab):null;
+  useEffect(()=>{
+    let cancelled=false;
+    if(!lateLogCandidate||!userId){setLateLog(null);return;}
+    (async()=>{
+      const live=await fetchLiveSession(userId,lateLogCandidate.id);
+      if(cancelled)return;
+      const lk=chkLock(live||lateLogCandidate,getTradeStyleForMode(settings,journalTab));
+      setLateLog(lk.locked?null:{session:live||lateLogCandidate,mode:journalTab});
+    })();
+    return()=>{cancelled=true};
+  },[lateLogCandidate,userId,journalTab,settings]);
+
+  async function logLateTrade(sessionTarget,{outcome,pnl}){
+    const live=await fetchLiveSession(userId,sessionTarget.id)||sessionTarget;
+    const styleId=getTradeStyleForMode(settings,sessionTarget.accountMode);
+    // Re-check against live state right before writing — closes the race
+    // where another tab logged against this same session moments ago.
+    if(chkLock(live,styleId).locked){setLateLog(null);return{ok:false};}
+    const isW=outcome==='WIN',isL=outcome==='LOSS';
+    const us={...live,trades:live.trades+1,wins:live.wins+(isW?1:0),losses:live.losses+(isL?1:0),
+      conLoss:isL?live.conLoss+1:0,conWin:isW?live.conWin+1:0,netLoss:live.netLoss+(isL?1:isW?-1:0),sPnl:live.sPnl+pnl};
+    const lk2=chkLock(us,styleId);
+    if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=us.endTime||Date.now();}
+    const nextSessions=ss.sessions.map(s=>s.id===us.id?us:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    setLateLog(lk2.locked?null:{session:us,mode:sessionTarget.accountMode});
+    return{ok:true,sessionNum:live.num};
+  }
+
+  // Both callers below (recordPA and addManual) only ever call this when the
+  // trader hasn't explicitly pressed "Start Session" — the notice belongs
+  // here, once, so neither path can silently create a session with no trace.
+  // recordPA previously had no notice at all, which is exactly how a session
+  // could get created invisibly and make the next explicit "Start Session"
+  // press land on Session 2 with nothing in the UI explaining why.
   async function mkSession(ssState,mode){
     const s=canStart(ssState,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return null;}
@@ -1860,6 +1944,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const nextSessions=[...ssState.sessions,ns];
     const upd={...ssState,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)};
     await saveSS(upd);
+    alert(`Started ${mode==='REAL'?'Real':'Demo'} Session ${ns.num} automatically to log this trade.`);
     return{ss:upd,sess:ns};
   }
 
@@ -1869,12 +1954,23 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   async function recordPA(){
     if(!pa)return;
     let cur=ss,sess=active;
-    if(!sess){const r=await mkSession(cur,mode);if(!r)return;cur=r.ss;sess=r.sess;}
-    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess.num,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
+    // If there's no active session and a new one can't be started (daily
+    // limit or still inside the post-session gap), mkSession alerts why and
+    // returns null — that used to make this function bail out completely,
+    // silently discarding the trade (and the AI analysis attached to it)
+    // with nothing but that alert as a trace. A trade that was actually
+    // taken still deserves to be logged even when it can't be linked to a
+    // session, exactly like an intentionally backdated manual entry already is.
+    if(!sess){const r=await mkSession(cur,mode);if(r){cur=r.ss;sess=r.sess;}}
+    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode};
     await saveTrades(prev=>[t,...(prev||[])]);
-    const us={...sess,trades:sess.trades+1};
-    const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
-    await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    if(sess){
+      const us={...sess,trades:sess.trades+1};
+      const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
+      await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    }else{
+      flashNotice('Trade saved, but not linked to a session — no session is active right now.');
+    }
     setPA(null);
   }
 
@@ -1914,44 +2010,62 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const entryStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,stakeFor(entryAccountMode).actual,entryBal);
       const pnl=calcPnl(entryStake,outcome);
 
-      if (isToday) {
+      if(isLateLog){
+        if(!lateLog){alert('The late-log window for your last session has closed.');return;}
+        const r=await logLateTrade(lateLog.session,{outcome,pnl});
+        sessionNum=r.ok?r.sessionNum:null;
+        if(!r.ok)flashNotice('That session already reached its limit — trade saved without a session link.');
+      }else if (isToday) {
         let cur=ss;
         let sess=getActive(ss,entryAccountMode);
+        // If there's no active session and a new one can't be started (daily
+        // limit, or still inside the post-session gap), mkSession alerts why
+        // and returns null — that used to abort this entire save, discarding
+        // whatever the trader had just typed with nothing but that alert as
+        // a trace. A trade actually taken still deserves to be logged even
+        // when it can't be linked to a session, same as a deliberately
+        // backdated entry (tradeDate !== today, above) already is.
         if(!sess){
           const r=await mkSession(cur,entryAccountMode);
-          if(!r){setSaving(false);return;}
-          cur=r.ss;
-          sess=r.sess;
+          if(r){cur=r.ss;sess=r.sess;}
         }
-        const isW=outcome==='WIN';
-        const isL=outcome==='LOSS';
-        const us={...sess,
-          trades:sess.trades+1,
-          wins:sess.wins+(isW?1:0),
-          losses:sess.losses+(isL?1:0),
-          conLoss:isL?sess.conLoss+1:0,
-          conWin:isW?sess.conWin+1:0,
-          netLoss:sess.netLoss+(isL?1:isW?-1:0),
-          sPnl:sess.sPnl+pnl,
-        };
-        const lk2=chkLock(us,getTradeStyleForMode(settings,entryAccountMode));
-        if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
-        const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
-        await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
-        sessionNum = sess.num;
+        if(sess){
+          const isW=outcome==='WIN';
+          const isL=outcome==='LOSS';
+          const us={...sess,
+            trades:sess.trades+1,
+            wins:sess.wins+(isW?1:0),
+            losses:sess.losses+(isL?1:0),
+            conLoss:isL?sess.conLoss+1:0,
+            conWin:isW?sess.conWin+1:0,
+            netLoss:sess.netLoss+(isL?1:isW?-1:0),
+            sPnl:sess.sPnl+pnl,
+          };
+          const lk2=chkLock(us,getTradeStyleForMode(settings,entryAccountMode));
+          if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
+          const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
+          await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+          sessionNum = sess.num;
+        }else{
+          flashNotice('Trade saved, but not linked to a session — no session is active right now.');
+        }
       }
 
       const now = new Date();
-      const tradeDateTime = new Date(tradeDate);
-      tradeDateTime.setHours(now.getHours());
-      tradeDateTime.setMinutes(now.getMinutes());
-      tradeDateTime.setSeconds(now.getSeconds());
+      // new Date("YYYY-MM-DD") parses as UTC midnight, not local midnight — in
+      // any negative-UTC-offset timezone that instant falls on the PREVIOUS
+      // local day, so stamping today's local time onto it (setHours etc. all
+      // operate in local time) silently shifts the timestamp a day early.
+      // Build the date from local y/m/d components instead so tradeDate is
+      // always interpreted as a local calendar date, matching tod().
+      const[ty,tm,td]=tradeDate.split('-').map(Number);
+      const tradeDateTime=new Date(ty,tm-1,td,now.getHours(),now.getMinutes(),now.getSeconds());
       const timestamp = tradeDateTime.getTime();
 
       const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:''});setManualSuggestion(null);
+      setManual(false);setIsLateLog(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:''});setManualSuggestion(null);
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -2106,10 +2220,20 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         ))}
       </div>
 
-      {tabLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={tabLk.reason||(tabCooldown?'Session time expired. Manual entries resume after the gap.':`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`)}/>}
+      {tabLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={tabLk.reason||(tabCooldown?'Session locked. Manual entries resume after the gap.':`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`)}/>}
+      {journalNotice&&<Alert type="inf" title="Notice" body={journalNotice}/>}
 
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
-        <button style={btn()} onClick={()=>{setManual(v=>!v);smf(m=>({...m,accountMode:journalTab}));}} disabled={tabLocked}>{manual?'Cancel':'+ Manual entry'}</button>
+        <button style={btn()} onClick={()=>{setManual(v=>!v);setIsLateLog(false);smf(m=>({...m,accountMode:journalTab}));}} disabled={tabLocked}>{manual&&!isLateLog?'Cancel':'+ Manual entry'}</button>
+        {tabLocked&&lateLog&&(
+          <button style={btn('pri')} onClick={()=>{
+            const opening=!(manual&&isLateLog);
+            setManual(opening);setIsLateLog(opening);
+            if(opening)smf(m=>({...m,accountMode:journalTab,tradeDate:tod()}));
+          }}>
+            {manual&&isLateLog?'Cancel late log':'Log trade from your last session'}
+          </button>
+        )}
         {['ALL','PENDING','WIN','LOSS'].map(f=>(
           <button key={f} style={{...btn(filt===f?'pri':'def'),padding:'6px 10px'}} onClick={()=>setFilt(f)}>{f}</button>
         ))}
@@ -2133,6 +2257,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               </div>
             </div>
           </div>
+          {isLateLog?(
+            <div style={{marginTop:10,fontSize:12,color:'var(--text-secondary)'}}>
+              Logging against your last {journalTab==='REAL'?'Real':'Demo'} session (Session {lateLog?.session?.num}) — today's date, same account. This option disappears once that session's limit is reached.
+            </div>
+          ):(<>
           <div style={{marginTop:10}}>
             <label style={lbl}>Date of trade</label>
             <input style={inp} type="date" value={mf.tradeDate} onChange={e=>smf(m=>({...m,tradeDate: e.target.value}))}/>
@@ -2143,6 +2272,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               {ACCOUNT_MODES.map(mode=><button key={mode} style={{...btn(mf.accountMode===mode?'pri':'def'),flex:1}} onClick={()=>smf(m=>({...m,accountMode:mode}))}>{mode==='REAL'?'Real':'Demo'}</button>)}
             </div>
           </div>
+          </>)}
           <div style={{marginTop:10}}>
             <label style={lbl}>Stake</label>
             <div style={{display:'flex',gap:8,marginBottom:6}}>
@@ -2820,7 +2950,7 @@ export function Analytics({trades,analyses,settings,bal}){
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function Cfg({settings,saveSettings,ss,resetAccount}){
-  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT});
+  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true});
   const[saved,setSaved]=useState(false);
   const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
   const[sessionWarn,setSessionWarn]=useState(false);
@@ -3005,19 +3135,26 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
 
         {/* ── Session-lock alert ───────────────────────────────────────── */}
         <div style={{marginTop:14}}>
-          <label style={lbl}>Session-lock alert volume <span style={{fontWeight:400,fontSize:11,color:'var(--text-muted)'}}>({Math.round((f.alertVolume??ALERT_VOLUME_DEFAULT)*100)}%)</span></label>
-          <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            <input type="range" min={0} max={1} step="0.05" value={f.alertVolume??ALERT_VOLUME_DEFAULT}
+          <label style={{...lbl,display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+            <input type="checkbox" checked={f.soundAlertOn!==false} onChange={e=>set('soundAlertOn',e.target.checked)}/>
+            Session-lock alert sound
+          </label>
+          <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6,opacity:f.soundAlertOn===false?0.5:1}}>
+            <span style={{fontSize:11,color:'var(--text-muted)',flexShrink:0,width:38}}>{Math.round((f.alertVolume??ALERT_VOLUME_DEFAULT)*100)}%</span>
+            <input type="range" min={0} max={1} step="0.05" value={f.alertVolume??ALERT_VOLUME_DEFAULT} disabled={f.soundAlertOn===false}
               onChange={e=>set('alertVolume',parseFloat(e.target.value))}
               style={{width:'100%'}}/>
-            <button type="button" style={btn()} onClick={previewAlert} title="Preview the alert sound">Test</button>
+            <button type="button" style={btn()} onClick={previewAlert} disabled={f.soundAlertOn===false} title="Preview the alert sound">Test</button>
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
             A short chime plays the instant a session locks (time expired, stop loss, take profit, or max trades) — separate from the background music volume.
           </p>
           <div style={{marginTop:8}}>
             {notifPerm==='granted'?(
-              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--text-success)'}}><Bell size={14}/>Desktop alerts enabled</div>
+              <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:12}}>
+                <input type="checkbox" checked={f.desktopAlertOn!==false} onChange={e=>set('desktopAlertOn',e.target.checked)}/>
+                <Bell size={14}/>Desktop alerts on session lock
+              </label>
             ):notifPerm==='denied'?(
               <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--text-muted)'}}><BellOff size={14}/>Desktop alerts blocked — allow notifications for this site in your browser settings.</div>
             ):notifPerm==='unsupported'?null:(
@@ -3025,6 +3162,7 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
             )}
             <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
               If a session locks while this tab is in the background, a desktop notification backs up the sound in case your browser blocks background-tab audio.
+              {notifPerm==='granted'&&' Turning this off only stops alerts here in the app — your browser\'s own notification permission stays granted, since only the browser itself can revoke that.'}
             </p>
           </div>
         </div>
@@ -3626,8 +3764,8 @@ export default function App(){
     prevSessionsForAlertRef.current=todaySS.sessions;
     justEnded.forEach(s=>{
       alertedRef.current.add(s.id);
-      music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);
-      if(document.hidden&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
+      if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);
+      if(document.hidden&&settings?.desktopAlertOn!==false&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
         try{
           new Notification('Session locked',{body:`${s.accountMode==='REAL'?'Real':'Demo'} session ended — ${s.lockReason||'locked'}.`,tag:`session-lock-${s.id}`});
         }catch{}
@@ -3826,7 +3964,7 @@ export default function App(){
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
             {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA}/>}
-            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode}/>}
+            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode}/>}
             {view==='plan'&&<Plan settings={settings}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal}/>}
