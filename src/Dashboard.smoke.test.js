@@ -20,6 +20,24 @@ test('dashboard renders with an active session and trades', () => {
   expect(screen.getByText('EUR/USD OTC')).toBeInTheDocument();
 });
 
+test('streak reflects the most recent trades, not the oldest', () => {
+  // Chronological order: LOSS, WIN, WIN, WIN, WIN — a 4-win streak sits at
+  // the recent end, with a single loss further back. Given newest-first
+  // (the array shape the app actually fetches/prepends in), the streak
+  // must read "4 wins", not the stale "1 loss" a reversed walk would find.
+  const now = Date.now();
+  const trade = (i, outcome) => ({
+    id: `t${i}`, timestamp: now - i * 60000, date: '2026-07-03', sessionNum: null,
+    pair: 'EUR/USD OTC', direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
+    outcome, pnl: outcome === 'WIN' ? 1.84 : -2, source: 'MANUAL',
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO',
+  });
+  const trades = [trade(0, 'WIN'), trade(1, 'WIN'), trade(2, 'WIN'), trade(3, 'WIN'), trade(4, 'LOSS')];
+
+  render(<Dashboard settings={settings} trades={trades} wds={[]} ss={ssEmpty} bal={20} mode="DEMO" nav={jest.fn()} />);
+  expect(screen.getByText('4 wins')).toBeInTheDocument();
+});
+
 test('dashboard renders day-locked state', () => {
   // Daily circuit breaker is now computed straight from today's trades, not
   // from session/perMode state — 4 losses dated today trips it.

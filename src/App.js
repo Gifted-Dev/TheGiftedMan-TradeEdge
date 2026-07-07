@@ -1338,8 +1338,15 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
   const nextMs=mode==='REAL'?settings.milestones.find(m=>bal<startBal*m.mul):null;
   const recent=[...modeTrades].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
+  // Sorted newest-first explicitly (like `recent` above) rather than
+  // trusting the incoming order — walking it forward then measures the
+  // streak ending at the MOST RECENT trade. The previous version reversed
+  // `done` and walked oldest-to-newest instead, which measures whatever
+  // streak happened to sit at the OLDEST end of the trade history: a
+  // completely different, usually-stale number.
+  const doneByRecency=[...done].sort((a,b)=>b.timestamp-a.timestamp);
   let streak=0,sType=null;
-  for(const t of[...done].reverse()){if(!sType){sType=t.outcome;streak=1;}else if(t.outcome===sType)streak++;else break;}
+  for(const t of doneByRecency){if(!sType){sType=t.outcome;streak=1;}else if(t.outcome===sType)streak++;else break;}
   const pendingN=modeTrades.filter(t=>t.outcome==='PENDING').length;
   const msTarget=nextMs?startBal*nextMs.mul:null;
   const gUp=growth>=0;
