@@ -115,10 +115,65 @@ describe('Journal interactions', () => {
 
     fireEvent.click(screen.getByText('EUR/USD OTC'));
 
-    expect(await screen.findByText('Trade details')).toBeInTheDocument();
+    expect(await screen.findByText('Trade detail')).toBeInTheDocument();
     expect(screen.getAllByText(/This is a long note/i).length).toBeGreaterThan(0);
     expect(screen.getByText('Origin structure')).toBeInTheDocument();
+    // Read-only by default: an Edit action is offered, but no editable
+    // notes textarea or Save/Cancel/Delete controls exist until it's used.
+    expect(screen.getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Journal notes')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /save edits/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(await screen.findByText('Edit trade')).toBeInTheDocument();
+    expect(screen.getByLabelText('Journal notes')).toBeInTheDocument();
+
+    // Canceling out of Edit returns to the read-only Detail view, not the list.
+    fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(await screen.findByText('Trade detail')).toBeInTheDocument();
+    expect(screen.getAllByText(/This is a long note/i).length).toBeGreaterThan(0);
   });
+});
+
+test('filters the journal by strategy, combinable with the outcome filter', () => {
+  const trade = (id, strategy, outcome) => ({
+    id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
+    pair: `${id}-PAIR`, direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
+    outcome, pnl: outcome === 'WIN' ? 1.84 : outcome === 'LOSS' ? -2 : 0, source: 'MANUAL',
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategy,
+  });
+  const trades = [
+    trade('zone-win', 'ZONE', 'WIN'),
+    trade('zone-loss', 'ZONE', 'LOSS'),
+    trade('trend-win', 'TREND', 'WIN'),
+    trade('trend-loss', 'TREND', 'LOSS'),
+  ];
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={trades}
+      saveTrades={jest.fn()}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  // Strategy alone.
+  fireEvent.click(screen.getByRole('button', { name: /^trend$/i }));
+  expect(screen.getByText('trend-win-PAIR')).toBeInTheDocument();
+  expect(screen.getByText('trend-loss-PAIR')).toBeInTheDocument();
+  expect(screen.queryByText('zone-win-PAIR')).not.toBeInTheDocument();
+  expect(screen.queryByText('zone-loss-PAIR')).not.toBeInTheDocument();
+
+  // Strategy + outcome combined (AND, not exclusive alternatives).
+  fireEvent.click(screen.getByRole('button', { name: /^win$/i }));
+  expect(screen.getByText('trend-win-PAIR')).toBeInTheDocument();
+  expect(screen.queryByText('trend-loss-PAIR')).not.toBeInTheDocument();
+  expect(screen.queryByText('zone-win-PAIR')).not.toBeInTheDocument();
 });
 
 test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L', async () => {
@@ -358,6 +413,7 @@ test('shows a large preview when a journal screenshot is clicked', async () => {
 });
 
 test('lets you edit notes for a saved journal entry', async () => {
+  const saveTrades = jest.fn();
   const trades = [{
     id: 'trade-1',
     timestamp: Date.now(),
@@ -381,7 +437,7 @@ test('lets you edit notes for a saved journal entry', async () => {
     <Journal
       settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
       trades={trades}
-      saveTrades={jest.fn()}
+      saveTrades={saveTrades}
       ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: { dailyLosses: 0, isDailyLocked: false, lastEnd: null }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null } } }}
       saveSS={jest.fn()}
       pa={null}
@@ -391,9 +447,13 @@ test('lets you edit notes for a saved journal entry', async () => {
   );
 
   fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByRole('button', { name: /^edit$/i })); // Detail view opens read-only by default
   fireEvent.change(await screen.findByLabelText('Journal notes'), { target: { value: 'Updated notes' } });
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
+  await waitFor(() => expect(saveTrades).toHaveBeenCalled());
 
+  // Saving returns to the read-only Detail view, which is where the updated
+  // notes should now render.
   expect(await screen.findByText('Updated notes')).toBeInTheDocument();
 });
 
@@ -419,14 +479,55 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
   );
 
   fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
   const pairInput = await screen.findByDisplayValue('EUR/USD OTC');
   fireEvent.change(pairInput, { target: { value: 'GBP/USD OTC' } });
   fireEvent.click(screen.getByRole('button', { name: /trend\/pattern/i }));
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
 
-  // The modal header renders pair+direction as one combined text node
-  // ("GBP/USD OTC · BUY"), so match by substring rather than exact text.
-  expect(await screen.findByText(/GBP\/USD OTC/)).toBeInTheDocument();
+  // Saving returns to the read-only Detail view, which renders the pair in
+  // TWO places (the header, and its own fact in the details grid) — both
+  // legitimately show the corrected value, so assert at least one does.
+  expect((await screen.findAllByText('GBP/USD OTC')).length).toBeGreaterThan(0);
+});
+
+test('lets you correct the direction and outcome on a saved journal entry, recalculating P&L', async () => {
+  const saveTrades = jest.fn();
+  const trades = [{
+    id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
+    pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
+    stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
+    screenshots: [], notes: '', isAnalyzed: true, strategy: 'ZONE',
+  }];
+
+  render(
+    <Journal
+      settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
+      trades={trades}
+      saveTrades={saveTrades}
+      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      saveSS={jest.fn()}
+      pa={null}
+      setPA={jest.fn()}
+      wds={[]}
+    />
+  );
+
+  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+  fireEvent.click(await screen.findByRole('button', { name: /^sell$/i }));
+  // "WIN" also matches the ALL/PENDING/WIN/LOSS filter row — the outcome
+  // button inside the edit modal is the one rendered later in the DOM.
+  const winButtons = screen.getAllByRole('button', { name: /^win$/i });
+  fireEvent.click(winButtons[winButtons.length - 1]);
+  fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
+
+  await waitFor(() => expect(saveTrades).toHaveBeenCalled());
+  const updater = saveTrades.mock.calls[saveTrades.mock.calls.length - 1][0];
+  const [updated] = updater(trades);
+  expect(updated.direction).toBe('SELL');
+  expect(updated.outcome).toBe('WIN');
+  expect(updated.pnl).toBeCloseTo(2 * 0.92, 2); // stake 2 * default 92% payout
 });
 
 describe('Analyzer screenshot upload', () => {

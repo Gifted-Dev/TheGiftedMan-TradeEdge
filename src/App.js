@@ -1781,9 +1781,87 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
   );
 }
 
+// A case-file view for reviewing a past trade: screenshot(s) given the most
+// visual weight, notes rendered at real reading size (not an afterthought),
+// gate breakdown scannable when present. Purely read-only — editing lives
+// behind the separate "Edit" action in the modal header, never the default.
+function TradeDetailView({trade,onZoom}){
+  const shots=(trade.screenshots||[]).map((src,i)=>{
+    const raw=typeof src==='string'?src:(src?.b64||src?.b);
+    return{i,url:toDataUrl(raw,src?.mime)};
+  }).filter(s=>s.url);
+  const[mainIdx,setMainIdx]=useState(0);
+  const facts=[
+    ['Pair',trade.pair,null],
+    ['Direction',trade.direction,trade.direction==='BUY'?'var(--text-success)':'var(--text-danger)'],
+    ['Strategy',strategyLabel(trade.strategy)||'Zone (S&D)',null],
+    ['Trade grade',trade.zoneGrade,null],
+    ['Stake',f$(trade.stake),null],
+    ['Outcome',trade.outcome,trade.outcome==='WIN'?'var(--text-success)':trade.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'],
+    ['P&L',trade.outcome==='PENDING'?'—':(trade.pnl>=0?'+':'')+f$(trade.pnl),trade.outcome==='PENDING'?null:trade.pnl>=0?'var(--text-success)':'var(--text-danger)'],
+    ['Payout %',trade.outcome==='WIN'?`${trade.payoutPct||Math.round(PAYOUT*100)}%`:null,null],
+    ['Account mode',trade.accountMode==='REAL'?'Real':'Demo',null],
+    ['Session',trade.sessionNum,null],
+    ['Zone type',trade.zoneType,null],
+    ['Source',trade.source,null],
+    ['Timestamp',new Date(trade.timestamp).toLocaleString(),null],
+  ].filter(([,v])=>v!==null&&v!==undefined&&v!=='');
+
+  return(
+    <div style={{display:'grid',gap:14}}>
+      {shots.length>0?(
+        <div>
+          <div className="gm-gallery-tile" style={{position:'relative',borderRadius:12,overflow:'hidden',border:'1px solid var(--border)',background:'var(--surface-0)',cursor:'zoom-in'}} onClick={()=>onZoom(shots[mainIdx].i)}>
+            <img src={shots[mainIdx].url} alt={`Screenshot ${mainIdx+1}`} style={{width:'100%',maxHeight:420,objectFit:'contain',display:'block',margin:'0 auto'}}/>
+          </div>
+          {shots.length>1&&(
+            <div style={{display:'flex',gap:8,marginTop:8,overflowX:'auto'}}>
+              {shots.map((s,idx)=>(
+                <button key={s.i} onClick={()=>setMainIdx(idx)} style={{padding:0,border:idx===mainIdx?'2px solid var(--border-accent)':'1px solid var(--border)',borderRadius:8,overflow:'hidden',width:64,height:64,flexShrink:0,cursor:'pointer',background:'var(--surface-0)'}}>
+                  <img src={s.url} alt={`Thumbnail ${idx+1}`} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      ):(
+        <div style={{padding:'24px 14px',border:'1px dashed var(--border)',borderRadius:10,color:'var(--text-muted)',fontSize:13,textAlign:'center'}}>No screenshots attached to this entry.</div>
+      )}
+
+      <div style={card}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:12}}>
+          {facts.map(([label,value,color])=>(
+            <div key={label}>
+              <div style={{fontSize:11,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:2}}>{label}</div>
+              <div style={{fontSize:14,fontWeight:600,color:color||'var(--text-primary)'}}>{value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{...card,background:'var(--surface-1)'}}>
+        <div style={{fontSize:14,fontWeight:600,marginBottom:8,color:'var(--text-primary)'}}>Notes</div>
+        {trade.notes?.trim()
+          ?<div style={{fontSize:15,lineHeight:1.6,color:'var(--text-primary)',whiteSpace:'pre-wrap'}}>{trade.notes}</div>
+          :<div style={{fontSize:13,color:'var(--text-muted)',fontStyle:'italic'}}>No notes for this trade.</div>}
+      </div>
+
+      {(trade.gateResults?.length>0||(trade.criteria&&Object.keys(trade.criteria).length>0))&&(
+        <div style={card}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>{trade.gateResults?.length?'Gate check':'Zone analysis criteria'}</div>
+          {trade.gateResults?.length
+            ?<Gates gates={trade.gateResults} score={trade.score} grade={trade.zoneGrade}/>
+            :<Criteria criteria={trade.criteria}/>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Journal ───────────────────────────────────────────────────────────────────
 export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId}){
   const[filt,setFilt]=useState('ALL');
+  const[stratFilt,setStratFilt]=useState('ALL');
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
   const[mf,smf]=useState(()=>{
@@ -1809,7 +1887,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
-  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategy:''});
+  // Opening a trade always lands on the read-only Detail view first —
+  // Edit is a deliberate secondary action, never the default.
+  const[editingTrade,setEditingTrade]=useState(false);
+  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategy:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
   const[preview,setPreview]=useState(null); // {items:[url,...], index}
   const[saving,setSaving]=useState(false);
   const[savingEdit,setSavingEdit]=useState(false);
@@ -2150,8 +2231,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const manualStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,manualDefaultStake,manualBal);
 
   const tabTrades=trades.filter(t=>getTradeMode(t)===journalTab);
-  const sorted=[...(filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt))].sort((a,b)=>b.timestamp-a.timestamp);
-  const tradeMeta=[['Direction',selectedTrade?.direction],['Account mode',selectedTrade?.accountMode||'DEMO'],['Stake',selectedTrade?f$(selectedTrade.stake):null],['Outcome',selectedTrade?.outcome],['Payout %',selectedTrade?.outcome==='WIN'?`${selectedTrade?.payoutPct||Math.round(PAYOUT*100)}%`:null],['Session',selectedTrade?.sessionNum],['Zone type',selectedTrade?.zoneType],['Trade grade',selectedTrade?.zoneGrade],['Source',selectedTrade?.source],['Timestamp',selectedTrade?new Date(selectedTrade.timestamp).toLocaleString():null]];
+  // Outcome and strategy filters combine (AND), not exclusive alternatives —
+  // "Zone + Win" narrows both dimensions at once, same as either alone.
+  const outcomeFiltered=filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt);
+  const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>(t.strategy||'ZONE')===stratFilt);
+  const sorted=[...stratFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
   async function saveTradeEdits(){
     if(!selectedTrade||savingEdit)return;
@@ -2160,9 +2244,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const screenshots=editDraft.screenshots.map(x=>x.b64||x).filter(Boolean);
       const pair=(editDraft.pair||'').trim()||selectedTrade.pair;
       addPairOption(pair);
-      const updated={...selectedTrade,notes:editDraft.notes,screenshots,pair,strategy:editDraft.strategy};
+      const stake=parseFloat(editDraft.stake);
+      const validStake=Number.isFinite(stake)&&stake>0?stake:selectedTrade.stake;
+      const payoutPct=editDraft.outcome==='WIN'?parseFloat(editDraft.payoutPct)||undefined:undefined;
+      const pnl=calcPnl(validStake,editDraft.outcome,payoutPct);
+      const updated={...selectedTrade,notes:editDraft.notes,screenshots,pair,strategy:editDraft.strategy,
+        direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
+        payoutPct:payoutPct||null};
       await saveTrades(prev=>prev.map(t=>t.id===selectedTrade.id?updated:t));
       setSelectedTrade(updated);
+      setEditingTrade(false); // back to the read-only Detail view, not the list
       setSavedFlash(true);
       setTimeout(()=>setSavedFlash(false),1800);
     }catch(e){
@@ -2183,6 +2274,15 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
   function openTradeImage(i){
     setPreview({items:editDraft.screenshots.map(s=>s.url),index:i});
+  }
+  // Detail view reads straight off selectedTrade (read-only), not editDraft
+  // (which only exists for the Edit view) — same zoom modal, different source.
+  function openSelectedTradeImage(i){
+    const items=(selectedTrade.screenshots||[]).map(src=>{
+      const raw=typeof src==='string'?src:(src?.b64||src?.b);
+      return toDataUrl(raw,src?.mime);
+    });
+    setPreview({items,index:i});
   }
 
   // addTradeImage closes over editDraft/selectedTrade directly (not via a
@@ -2216,7 +2316,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // on every such mutation would blow away in-progress notes edits mid-typing.
   useEffect(()=>{
     if(selectedTrade){
-      setEditDraft({notes:selectedTrade.notes||'',pair:selectedTrade.pair||'',strategy:selectedTrade.strategy||'ZONE',screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
+      setEditDraft({notes:selectedTrade.notes||'',pair:selectedTrade.pair||'',strategy:selectedTrade.strategy||'ZONE',
+        dir:selectedTrade.direction||'BUY',outcome:selectedTrade.outcome||'PENDING',grade:selectedTrade.zoneGrade||'UNGRADED',
+        stake:String(selectedTrade.stake??''),payoutPct:selectedTrade.payoutPct?String(selectedTrade.payoutPct):'',
+        screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
         const isStr=typeof src==='string';
         const raw=isStr?src:(src?.b64||src?.b);
         return{id:i,url:toDataUrl(raw,src?.mime),b64:raw,mime:src?.mime||'image/png'};
@@ -2225,6 +2328,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       setPreview(null);
       setConfirmingDelete(false);
       setTradeSuggestion(null);
+      setEditingTrade(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[selectedTrade?.id]);
@@ -2303,10 +2407,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       {!tabDailyLocked&&!tabStrictLocked&&tabLk.locked&&<Alert type="warn" title="Off-plan" body={`${tabLk.reason} — logging a trade now will mark it off-plan.`}/>}
       {journalNotice&&<Alert type="inf" title="Notice" body={journalNotice}/>}
 
-      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+      <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
         <button style={btn()} onClick={()=>{setManual(v=>!v);setOffPlanOverride(false);smf(m=>({...m,accountMode:journalTab}));}} disabled={(tabDailyLocked||tabStrictLocked)&&!manual}>{manual?'Cancel':'+ Manual entry'}</button>
         {['ALL','PENDING','WIN','LOSS'].map(f=>(
           <button key={f} style={{...btn(filt===f?'pri':'def'),padding:'6px 10px'}} onClick={()=>setFilt(f)}>{f}</button>
+        ))}
+      </div>
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>Strategy:</span>
+        {[{id:'ALL',label:'All'},{id:'ZONE',label:'Zone'},{id:'TREND',label:'Trend'}].map(f=>(
+          <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setStratFilt(f.id)}>{f.label}</button>
         ))}
       </div>
       {manual&&offPlanOverride&&(
@@ -2474,17 +2584,24 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       ))}
 
       {selectedTrade&&(
-        <div role="dialog" aria-modal="true" style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1000}} onClick={()=>setSelectedTrade(null)}>
-          <div style={{...card,width:'100%',maxWidth:760,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+        <div role="dialog" aria-modal="true" aria-label={editingTrade?'Edit trade':'Trade detail'} style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1000}} onClick={()=>setSelectedTrade(null)}>
+          <div style={{...card,width:'100%',maxWidth:820,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
               <div>
-                <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Trade details</div>
+                <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>{editingTrade?'Edit trade':'Trade detail'}</div>
                 <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span>{selectedTrade.pair} · {selectedTrade.direction}</span>
                 </div>
               </div>
-              <button style={btn()} onClick={()=>setSelectedTrade(null)}>Close</button>
+              <div style={{display:'flex',gap:8}}>
+                {!editingTrade&&<button style={btn('pri')} onClick={()=>setEditingTrade(true)}><i className="ti ti-pencil" aria-hidden="true" style={{marginRight:5}}/>Edit</button>}
+                <button style={btn()} onClick={()=>editingTrade?setEditingTrade(false):setSelectedTrade(null)}>{editingTrade?'Back':'Close'}</button>
+              </div>
             </div>
+
+            {!editingTrade?(
+              <TradeDetailView trade={selectedTrade} onZoom={openSelectedTradeImage}/>
+            ):(
             <div style={{display:'grid',gap:12}}>
               <div style={card}>
                 <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Pair &amp; strategy</div>
@@ -2501,6 +2618,40 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                     ))}
                   </div>
                 </div>
+              </div>
+              <div style={card}>
+                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Direction, outcome &amp; grade</div>
+                <div style={g2}>
+                  <div>
+                    <label style={lbl}>Direction</label>
+                    <div style={{display:'flex',gap:8}}>
+                      {['BUY','SELL'].map(d=><button key={d} type="button" style={{...btn(editDraft.dir===d?(d==='BUY'?'suc':'dan'):'def'),flex:1}} onClick={()=>setEditDraft(x=>({...x,dir:d}))}>{d}</button>)}
+                    </div>
+                  </div>
+                  <div>
+                    <label style={lbl}>Stake ($)</label>
+                    <input style={inp} type="number" min="0" step="0.01" value={editDraft.stake} onChange={e=>setEditDraft(d=>({...d,stake:e.target.value}))}/>
+                  </div>
+                </div>
+                <div style={{marginTop:10}}>
+                  <label style={lbl}>Outcome</label>
+                  <div style={{display:'flex',gap:8}}>
+                    {['PENDING','WIN','LOSS'].map(o=><button key={o} type="button" style={{...btn(editDraft.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':'pri'):'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,outcome:o}))}>{o}</button>)}
+                  </div>
+                </div>
+                {editDraft.outcome==='WIN'&&(
+                  <div style={{marginTop:10}}>
+                    <label style={lbl}>Payout % <span style={{fontWeight:400,color:'var(--text-muted)'}}>(default {Math.round(PAYOUT*100)}% if left blank)</span></label>
+                    <input style={inp} type="number" min="1" max="100" step="1" placeholder={String(Math.round(PAYOUT*100))} value={editDraft.payoutPct} onChange={e=>setEditDraft(d=>({...d,payoutPct:e.target.value}))}/>
+                  </div>
+                )}
+                <div style={{marginTop:10}}>
+                  <label style={lbl}>Trade grade</label>
+                  <div style={{display:'flex',gap:8}}>
+                    {['A+','A','B','C','UNGRADED'].map(g=><button key={g} type="button" style={{...btn(editDraft.grade===g?'pri':'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,grade:g}))}>{g}</button>)}
+                  </div>
+                </div>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Editing these recalculates P&L, but does not retroactively change your session's win/loss/target counters — those are informational guidance, not re-derived after the fact.</div>
               </div>
               <div>
                 <label style={lbl}>Screenshots {editDraft.screenshots?.length>0&&<span style={{color:'var(--text-muted)',fontWeight:400}}>({editDraft.screenshots.length})</span>}</label>
@@ -2547,26 +2698,12 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               {editErr&&<Alert type="dan" title="Error" body={editErr}/>}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
                 <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
-                <button style={btn()} onClick={()=>setSelectedTrade(null)} disabled={savingEdit}>Cancel</button>
+                <button style={btn()} onClick={()=>setEditingTrade(false)} disabled={savingEdit}>Cancel</button>
                 <button style={btn('dan')} onClick={()=>setConfirmingDelete(true)}>Delete</button>
                 {savedFlash&&<span style={{fontSize:12,color:'var(--text-success)',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Saved</span>}
               </div>
-              <div style={card}>
-                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>{selectedTrade.gateResults?.length?'Gate check':'Zone analysis criteria'}</div>
-                {selectedTrade.gateResults?.length
-                  ?<Gates gates={selectedTrade.gateResults} score={selectedTrade.score} grade={selectedTrade.zoneGrade}/>
-                  :selectedTrade.criteria && Object.keys(selectedTrade.criteria).length>0
-                    ?<Criteria criteria={selectedTrade.criteria}/>
-                    :<div style={{fontSize:13,color:'var(--text-muted)'}}>No detailed criteria attached to this entry.</div>
-                }
-              </div>
-              <div style={card}>
-                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Trade metadata</div>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:8}}>
-                  {tradeMeta.filter(([,value])=>value!==null&&value!==undefined&&value!=='').map(([label,value])=><div key={label} style={{fontSize:13,color:'var(--text-secondary)'}}><span style={{fontWeight:600,color:'var(--text-primary)',display:'block',marginBottom:2}}>{label}</span>{value}</div>)}
-                </div>
-              </div>
             </div>
+            )}
           </div>
         </div>
       )}
