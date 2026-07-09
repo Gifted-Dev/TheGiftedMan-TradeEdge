@@ -8,6 +8,9 @@ import {
   Bell,
   BellOff,
   BookOpen,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
   CircleCheck,
   CircleX,
   ClipboardList,
@@ -20,10 +23,12 @@ import {
   Lock,
   LogOut,
   Menu,
+  MessageCircle,
   Palette,
   Pause,
   Play,
   ScanSearch,
+  Send,
   Settings,
   SkipForward,
   Sparkles,
@@ -191,6 +196,12 @@ function fromAnalysisRow(r){
     zoneType:r.zone_type,grade:r.grade,verdict:r.verdict,criteria:r.criteria,linkedTradeId:r.linked_trade_id,
     ...(r.extra||{})};
 }
+function toQueryRow(userId,q){
+  return{id:q.id,user_id:userId,timestamp:new Date(q.timestamp).toISOString(),question:q.question,answer:q.answer,mode:q.mode||null,extra:{}};
+}
+function fromQueryRow(r){
+  return{id:r.id,timestamp:new Date(r.timestamp).getTime(),question:r.question,answer:r.answer,mode:r.mode};
+}
 // Sessions no longer gate anything — the ONE hard stop (the daily circuit
 // breaker) is computed straight from trades (dailyLossCount, below), not
 // from session records. perMode is kept only as a harmless, unused-for-
@@ -326,11 +337,224 @@ function wilsonInterval(wins,total,z=1.96){
 // its 2nd day would look almost empty) and the "previous period" comparison
 // is a same-length window, making the delta an apples-to-apples comparison.
 const DAY_MS=86400000;
-function periodRange(period,now=Date.now()){
-  if(period==='ALL')return{start:0,end:now,prevStart:null,prevEnd:null,days:null};
-  const days=period==='MONTH'?30:7;
-  const end=now,start=now-days*DAY_MS;
-  return{start,end,prevStart:start-days*DAY_MS,prevEnd:start,days};
+// Prior equal-length window for the WEEK/MONTH presets' "vs last period"
+// delta — the other presets (TODAY/ALL/CUSTOM/...) have no single natural
+// comparator, so they just don't show one (existing UI already treats a
+// null prev as "no delta" gracefully).
+function prevRangeFor(range,now=Date.now()){
+  if(range.preset==='WEEK')return{start:now-14*DAY_MS,end:now-7*DAY_MS};
+  if(range.preset==='MONTH')return{start:now-60*DAY_MS,end:now-30*DAY_MS};
+  return null;
+}
+
+// ── Shared date-range filter (Analytics + Review) ──────────────────────────
+// One function turns a range selection into [start,end) epoch ms, the same
+// half-open convention periodRange/computeDigest already use. TODAY/CUSTOM
+// resolve against local calendar days (matches tod()'s en-CA date keys);
+// WEEK/MONTH stay rolling windows for consistency with the existing digest.
+function dateKeyToMs(dateKey){const[y,m,d]=dateKey.split('-').map(Number);return new Date(y,m-1,d).getTime();}
+function mkDateKey(y,m,d){return`${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;} // m is 0-indexed
+function monthStartMs(y,m){return new Date(y,m,1).getTime();}
+const PRESET_LABELS={TODAY:'Today',YESTERDAY:'Yesterday',WEEK:'Last 7 days',MONTH:'Last 30 days',CURRENT_MONTH:'Current month',PREV_MONTH:'Previous month',ALL:'All time',CUSTOM:'Custom range'};
+function rangeBounds(range,now=Date.now()){
+  const{preset,start,end}=range;
+  const d=new Date(now),y=d.getFullYear(),m=d.getMonth();
+  if(preset==='TODAY'){const t=tod();return{start:dateKeyToMs(t),end:dateKeyToMs(t)+DAY_MS};}
+  if(preset==='YESTERDAY'){const t=dateKeyToMs(tod());return{start:t-DAY_MS,end:t};}
+  if(preset==='WEEK')return{start:now-7*DAY_MS,end:now};
+  if(preset==='MONTH')return{start:now-30*DAY_MS,end:now};
+  if(preset==='CURRENT_MONTH')return{start:monthStartMs(y,m),end:now};
+  if(preset==='PREV_MONTH')return{start:monthStartMs(y,m-1),end:monthStartMs(y,m)};
+  if(preset==='CUSTOM'){
+    const s=start||tod(),e=end||start||tod();
+    return{start:dateKeyToMs(s),end:dateKeyToMs(e)+DAY_MS};
+  }
+  return{start:0,end:now}; // ALL
+}
+// Single source of truth for "which trades fall in this range" — Analytics
+// overview and Review both filter through this instead of each re-deriving
+// their own window math.
+function tradesInRange(trades,mode,range,now=Date.now()){
+  const{start,end}=rangeBounds(range,now);
+  return trades.filter(t=>(mode==='ALL'||getTradeMode(t)===mode)&&t.timestamp>=start&&t.timestamp<end);
+}
+function fmtTriggerDate(dateKey){
+  const[y,m,d]=dateKey.split('-').map(Number);
+  return new Date(y,m-1,d).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+}
+// Collapsed-trigger text: an explicit start/end (CUSTOM, once both picked)
+// reads as dates; every other preset just echoes its own button label.
+function rangeLabel(range){
+  const{preset,start,end}=range;
+  if(preset==='CUSTOM'&&start&&end)return start===end?fmtTriggerDate(start):`${fmtTriggerDate(start)} – ${fmtTriggerDate(end)}`;
+  return PRESET_LABELS[preset]||'All time';
+}
+// 6×7 grid including the leading/trailing days of adjacent months needed to
+// fill whole weeks — the standard calendar-grid trick (walk back to the
+// nearest Sunday, then just lay out 42 consecutive days).
+function monthGrid(year,month){
+  const startDow=new Date(year,month,1).getDay();
+  const gridStart=new Date(year,month,1-startDow);
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const dt=new Date(gridStart.getFullYear(),gridStart.getMonth(),gridStart.getDate()+i);
+    cells.push({dateKey:mkDateKey(dt.getFullYear(),dt.getMonth(),dt.getDate()),day:dt.getDate(),inMonth:dt.getMonth()===month});
+  }
+  return cells;
+}
+
+function isValidDateKey(s){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(s))return false;
+  const[y,m,d]=s.split('-').map(Number);
+  const dt=new Date(y,m-1,d);
+  return dt.getFullYear()===y&&dt.getMonth()===m-1&&dt.getDate()===d;
+}
+// Trading history can't include tomorrow — a range boundary past today is
+// never meaningful, so it's rejected the same way an invalid format is.
+function isSelectableDateKey(s){return isValidDateKey(s)&&s<=tod();}
+
+// One month's grid. Every cell is clickable (including the dimmed
+// lead/trail days from adjacent months — they're still real dates) except
+// future dates, which render disabled — no click, no highlight eligibility.
+function CalendarMonth({year,month,start,end,onDayClick}){
+  const cells=monthGrid(year,month);
+  const monthLabel=new Date(year,month,1).toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  const today=tod();
+  const inSpan=k=>start&&end&&k>=start&&k<=end;
+  const isEdge=k=>k===start||k===end;
+  return(
+    <div style={{flex:1,minWidth:0}}>
+      <div style={{textAlign:'center',fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{monthLabel}</div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',fontSize:10,color:'var(--text-muted)',marginBottom:4,textAlign:'center'}}>
+        {['S','M','T','W','T','F','S'].map((d,i)=><div key={i}>{d}</div>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}}>
+        {cells.map(c=>{
+          const future=c.dateKey>today;
+          return(
+          <div key={c.dateKey} title={future?'Future date — unavailable':c.dateKey} onClick={()=>!future&&onDayClick(c.dateKey)} style={{
+            textAlign:'center',fontSize:11,padding:'6px 0',borderRadius:'var(--radius-sm)',cursor:future?'not-allowed':'pointer',
+            color:future?'var(--text-muted)':isEdge(c.dateKey)?'#fff':!c.inMonth?'var(--text-muted)':'var(--text-primary)',
+            background:isEdge(c.dateKey)?'var(--fill-accent)':inSpan(c.dateKey)?'var(--bg-accent)':'transparent',
+            opacity:future?0.35:c.inMonth?1:0.35,
+          }}>{c.day}</div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Collapsed trigger + expanded dropdown panel (presets left, custom-range
+// calendars right) — matches the reference layout. Day clicks and the two
+// text fields both write through to range.start/range.end, so either input
+// method drives the same calendar highlight and the same downstream filter.
+function DateRangePicker({range,setRange}){
+  const[open,setOpen]=useState(false);
+  const[cursor,setCursor]=useState(()=>{const d=new Date();return{y:d.getFullYear(),m:d.getMonth()-1};});
+  const ref=useRef(null);
+  useEffect(()=>{
+    if(!open)return;
+    const onDown=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener('mousedown',onDown);
+    return()=>document.removeEventListener('mousedown',onDown);
+  },[open]);
+
+  // Draft text for the two fields — kept separate from range.start/end so
+  // an in-progress keystroke (e.g. "2026-06-1") doesn't get clobbered by a
+  // re-render, but resynced from range whenever it changes elsewhere (a day
+  // click, a preset, or the other field's own commit).
+  const[startText,setStartText]=useState(range.start||'');
+  const[endText,setEndText]=useState(range.end||'');
+  const[startErr,setStartErr]=useState(false);
+  const[endErr,setEndErr]=useState(false);
+  useEffect(()=>{setStartText(range.start||'');setStartErr(false);},[range.start]);
+  useEffect(()=>{setEndText(range.end||'');setEndErr(false);},[range.end]);
+
+  const presets=['TODAY','YESTERDAY','WEEK','MONTH','CURRENT_MONTH','PREV_MONTH','ALL','CUSTOM'];
+  function applyPreset(id){
+    if(id==='CUSTOM'){setRange({...range,preset:'CUSTOM'});return;} // stays open, reveals calendars
+    setRange({preset:id,start:null,end:null});
+    setOpen(false);
+  }
+  // Both day-clicks and field commits route through here — closing the
+  // panel the instant a complete [start,end] pair exists is what makes
+  // "clicking a day completes the range" and "typing both fields" behave
+  // the same way per the dismiss rules already established.
+  function applyCustom(patch){
+    const merged={...range,preset:'CUSTOM',...patch};
+    setRange(merged);
+    if(merged.start&&merged.end)setOpen(false);
+  }
+  // First click starts a fresh range; second click finishes it (swapping if
+  // the second date lands before the first); a click after a range is
+  // already complete starts over. Clicking the same day twice yields
+  // start===end — the single-day case.
+  function handleDayClick(dateKey){
+    const{start,end}=range;
+    if(!start||(start&&end))applyCustom({start:dateKey,end:null});
+    else applyCustom(dateKey<start?{start:dateKey,end:start}:{start,end:dateKey});
+  }
+  function commitStart(){
+    if(!isSelectableDateKey(startText)){setStartErr(true);setStartText(range.start||'');return;}
+    const s=startText;
+    applyCustom(range.end&&s>range.end?{start:range.end,end:s}:{start:s});
+  }
+  function commitEnd(){
+    if(!isSelectableDateKey(endText)){setEndErr(true);setEndText(range.end||'');return;}
+    const e=endText;
+    applyCustom(range.start&&e<range.start?{start:e,end:range.start}:{start:range.start||e,end:e});
+  }
+  const onEnterBlur=e=>{if(e.key==='Enter')e.target.blur();};
+  const rightMonth=(cursor.m+1)%12,rightYear=cursor.m===11?cursor.y+1:cursor.y;
+
+  return(
+    <div ref={ref} style={{position:'relative',marginBottom:16}}>
+      <button onClick={()=>setOpen(o=>!o)} style={{...inp,display:'inline-flex',alignItems:'center',gap:8,width:'auto',cursor:'pointer'}}>
+        <Calendar size={14} style={{color:'var(--text-muted)'}}/>
+        <span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{rangeLabel(range)}</span>
+      </button>
+
+      {open&&(
+        <div style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:30,display:'flex',background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
+          <div style={{display:'flex',flexDirection:'column',minWidth:150,borderRight:'1px solid var(--border)',padding:6,gap:1}}>
+            {presets.map(id=>(
+              <button key={id} onClick={()=>applyPreset(id)}
+                style={{textAlign:'left',padding:'8px 10px',borderRadius:'var(--radius-sm)',fontSize:12,
+                  fontWeight:range.preset===id?700:500,background:range.preset===id?'var(--bg-accent)':'transparent',
+                  color:range.preset===id?'var(--text-accent)':'var(--text-secondary)',border:'none',cursor:'pointer'}}>
+                {PRESET_LABELS[id]}
+              </button>
+            ))}
+          </div>
+
+          {range.preset==='CUSTOM'&&(
+            <div style={{padding:14,width:440}}>
+              <div style={{display:'flex',gap:8,marginBottom:startErr||endErr?4:12}}>
+                <input type="text" placeholder="YYYY-MM-DD" value={startText}
+                  onChange={e=>{setStartText(e.target.value);setStartErr(false);}}
+                  onBlur={commitStart} onKeyDown={onEnterBlur}
+                  style={{...inp,fontSize:12,padding:'6px 8px',borderColor:startErr?'var(--border-danger)':undefined}} aria-label="Range start"/>
+                <input type="text" placeholder="YYYY-MM-DD" value={endText}
+                  onChange={e=>{setEndText(e.target.value);setEndErr(false);}}
+                  onBlur={commitEnd} onKeyDown={onEnterBlur}
+                  style={{...inp,fontSize:12,padding:'6px 8px',borderColor:endErr?'var(--border-danger)':undefined}} aria-label="Range end"/>
+              </div>
+              {(startErr||endErr)&&<div style={{fontSize:11,color:'var(--text-danger)',marginBottom:8}}>Use YYYY-MM-DD, no later than today — reverted to the last valid date.</div>}
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                <button onClick={()=>setCursor(c=>({y:c.m===0?c.y-1:c.y,m:(c.m+11)%12}))} style={{...btn(),padding:'4px 6px'}} aria-label="Previous month"><ChevronLeft size={14}/></button>
+                <div style={{display:'flex',gap:18,flex:1}}>
+                  <CalendarMonth year={cursor.y} month={cursor.m} start={range.start} end={range.end} onDayClick={handleDayClick}/>
+                  <CalendarMonth year={rightYear} month={rightMonth} start={range.start} end={range.end} onDayClick={handleDayClick}/>
+                </div>
+                <button onClick={()=>setCursor(c=>({y:c.m===11?c.y+1:c.y,m:(c.m+1)%12}))} style={{...btn(),padding:'4px 6px'}} aria-label="Next month"><ChevronRight size={14}/></button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Pure — no I/O. Takes already-loaded trades/analyses and a [start,end)
@@ -588,6 +812,255 @@ async function polishJournalNote(text,settings){
   return out.replace(/^["']|["']$/g,'');
 }
 
+// ── Ask (natural-language data query) ───────────────────────────────────────
+// Marks an Error as safe to show verbatim in the chat — everything thrown
+// deliberately by this pipeline (a clear, actionable sentence) gets tagged;
+// anything else (a raw TypeError, a network failure, a future bug) is not,
+// so the top-level catch in Ask can tell the two apart instead of trusting
+// every err.message to be fit for display.
+function userError(msg){const e=new Error(msg);e.userFacing=true;return e;}
+
+// Shared text-completion call — same provider/key/url/model switch as
+// polishJournalNote, factored out since Ask needs it twice (classify, then
+// compose) instead of once.
+async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1}={}){
+  const provider=settings?.aiProvider||'gemini';
+  const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
+  if(!key)throw userError(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
+  const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
+  const model=provider==='groq'?'meta-llama/llama-4-scout-17b-16e-instruct':'nvidia/nemotron-nano-12b-v2-vl:free';
+  const body={model,messages:[{role:'user',content:prompt}],temperature,max_tokens:maxTokens};
+  if(json)body.response_format={type:'json_object'};
+  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify(body)});
+  if(!res.ok){const e=await res.json().catch(()=>({}));throw userError(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
+  const d=await res.json();
+  const txt=d.choices?.[0]?.message?.content;
+  if(!txt)throw userError('No response from AI. Try again.');
+  return txt.trim();
+}
+
+// Stage 1: turn the question into a structured, checkable spec. This model
+// is given ZERO trade data — it cannot hallucinate a stat because it has
+// nothing to hallucinate from. The advice/opinion refusal, the impliesAdvice
+// closing line, and the Demo/Real ambiguity check all happen on this JSON in
+// plain app code (see Ask component), never by trusting a generated sentence
+// to self-censor.
+const ASK_CLASSIFY_PROMPT=`You are a query classifier for a trading journal app. You have NOT been given any trade data and must never state a number, percentage, date, or fact about the user's trades. Your only job: read the question and output JSON describing what's being asked. Output ONLY valid JSON, no prose, matching exactly this shape:
+
+{
+  "intent": "DATA_QUERY" | "ADVICE_OR_OPINION" | "OUT_OF_SCOPE",
+  "mode": "DEMO" | "REAL" | "AMBIGUOUS",
+  "metric": "WIN_RATE" | "PNL" | "TRADE_COUNT" | "STREAK" | "GRADE_BREAKDOWN" | "PAIR_BREAKDOWN" | "STRATEGY_BREAKDOWN" | "OFF_PLAN_IMPACT" | "DAY_OF_WEEK" | "SESSION_NUMBER" | "TIME_OF_DAY" | null,
+  "range": "TODAY" | "YESTERDAY" | "WEEK" | "MONTH" | "CURRENT_MONTH" | "PREV_MONTH" | "ALL" | null,
+  "impliesAdvice": true | false
+}
+
+Rules:
+- intent=ADVICE_OR_OPINION only when the question has NO answerable data component at all — pure opinion/prediction/reassurance requests ("should I keep using Structured style?", "am I ready to go live?", "is my win rate good?").
+- impliesAdvice=true whenever the question attaches a should/stop/change hook to an otherwise answerable data question ("should I stop trading Wednesdays?" -> intent=DATA_QUERY, metric=DAY_OF_WEEK, impliesAdvice=true). The data half still gets answered; only the "should" half is declined.
+- intent=DATA_QUERY for anything answerable by counting/aggregating/cross-referencing the user's own logged trades, including broad questions ("how am I doing this month") — leave metric as the closest single primary metric (e.g. WIN_RATE); the app checks other dimensions automatically.
+- intent=OUT_OF_SCOPE for anything not about the user's own trade data.
+- mode=AMBIGUOUS whenever Demo/Real isn't specified or clearly implied — do not guess or default.
+- If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to (e.g. STRATEGY_BREAKDOWN for the Structured-style example) so the app can offer that breakdown instead of just refusing.
+- "range" defaults to "ALL" if the question doesn't specify a time period.
+
+Question: `;
+
+// Stage 3 (stage 2 is the app's own FACTS computation, no LLM involved):
+// compose 1-4 factual sentences from FACTS. FACTS is the ONLY source of
+// truth this call is allowed to cite from. Note: the impliesAdvice closing
+// line ("What to do with that is your call.") is appended by app code after
+// this call returns, not by this prompt — same reasoning as the classifier's
+// refusal gate: a boundary enforced in code can't be skipped by a model that
+// forgets an instruction.
+const ASK_COMPOSE_PROMPT=`You are a factual data-reporting assistant for a trading journal app. You will receive a JSON object FACTS containing pre-computed statistics from the user's own logged trades, and possibly a FACTS.secondaryPattern object describing a statistically notable cross-dimensional correlation. Answer using ONLY the numbers in FACTS.
+
+1. Never state a number, percentage, date, or count not present in FACTS. If FACTS can't answer the question, say so plainly — never estimate or infer.
+2. Every win rate you mention must be immediately followed by its 95% confidence interval and sample size exactly as given in FACTS (e.g. "62% (95% CI: 54%-70%, n=41)"). Never a bare percentage.
+3. If a FACTS entry's n is below 20, add one short small-sample caveat (e.g. "based on only 16 trades — worth watching, not yet conclusive").
+4. If FACTS.secondaryPattern is present AND genuinely relevant to the question, mention it — but ALWAYS open that mention with a framing sentence naming how many dimensions were checked (FACTS.secondaryPattern.dimensionsChecked), e.g. "Checked 8 dimensions of your data; this was the one pattern that showed a real statistical separation from your baseline." Never present it as if it were the only thing examined. If secondaryPattern is absent, or mentioning it would be a non-sequitur, say nothing about it — do not force a cross-reference into every answer.
+5. Never give advice, a recommendation, a prediction, or an opinion on whether a number is good, bad, enough, or ready. State it and stop.
+6. Never offer encouragement, reassurance, praise, or sympathy. Factual tone only — a query result, not a coach.
+7. Never suggest changing strategy, trade style, risk, or behavior.
+8. 1-4 sentences (up to 4 only when a secondary pattern is included). No bullet essays, no follow-up questions.
+9. Always state which mode (Demo or Real) and date range the numbers cover — both are given in FACTS.
+
+FACTS:
+`;
+
+async function classifyAskQuery(question,settings){
+  const txt=await aiChat(ASK_CLASSIFY_PROMPT+question,settings,{json:true,maxTokens:200});
+  try{return JSON.parse(txt.replace(/```json|```/g,'').trim());}
+  catch{throw userError('Could not parse the classifier response. Try again.');}
+}
+async function composeAskAnswer(question,facts,settings){
+  return aiChat(`${ASK_COMPOSE_PROMPT}${JSON.stringify(facts)}\n\nQuestion: ${question}`,settings,{maxTokens:300,temperature:0.2});
+}
+
+// ── Pattern detection (deterministic, no LLM) ───────────────────────────────
+// Scanning 8 dimensions at once for the first "interesting-looking" bucket
+// inflates the false-positive rate — a full Bonferroni correction would fix
+// that rigorously but would suppress nearly every finding at this data
+// scale, defeating the point of a personal-reflection feature. The
+// proportionate version: keep the core test simple (non-overlapping
+// confidence intervals vs baseline) but raise the floor for even
+// considering a bucket, so thin buckets never reach the test at all.
+const PATTERN_DIMENSIONS=['sessionNum','dayOfWeek','hourBucket','pair','strategy','zoneGrade','offPlan','streakPosition'];
+const PATTERN_MIN_N=15;          // floor for even considering a bucket
+const PATTERN_SMALL_SAMPLE_N=20; // n in [15,19] still clears the floor but keeps the caveat
+function ciOverlaps(a,b){return a.lower<=b.upper&&b.lower<=a.upper;}
+function fmtHour(h){const hh=((h%24)+24)%24;const period=hh<12?'am':'pm';const h12=hh%12===0?12:hh%12;return`${h12}${period}`;}
+// One row per bucket value for a dimension — {dimension,label,n,wins}. No CI
+// here; findNotablePattern and computeAskFacts each decide when to attach one.
+function bucketsFor(dimension,done){
+  const groups={};
+  const push=(label,t)=>{
+    if(label==null)return;
+    if(!groups[label])groups[label]={wins:0,n:0};
+    groups[label].n++;
+    if(t.outcome==='WIN')groups[label].wins++;
+  };
+  if(dimension==='streakPosition'){
+    // Tags each trade by the streak state that PRECEDED it (chronological),
+    // not the streak it's part of looking backward — "was the trader on a
+    // 3+ streak walking into this trade" is the tilt-relevant question.
+    const chrono=[...done].sort((a,b)=>a.timestamp-b.timestamp);
+    let streakType=null,streakLen=0;
+    for(const t of chrono){
+      let label='Neutral';
+      if(streakType==='LOSS'&&streakLen>=3)label='After 3+ loss streak';
+      else if(streakType==='WIN'&&streakLen>=3)label='After 3+ win streak';
+      push(label,t);
+      if(t.outcome===streakType)streakLen++;else{streakType=t.outcome;streakLen=1;}
+    }
+  }else{
+    done.forEach(t=>{
+      let label;
+      switch(dimension){
+        case'sessionNum':label=t.sessionNum!=null?`Session ${t.sessionNum}`:null;break;
+        case'dayOfWeek':label=new Date(t.timestamp).toLocaleDateString(undefined,{weekday:'long'});break;
+        case'hourBucket':{const h=new Date(t.timestamp).getHours();const start=Math.floor(h/4)*4;label=`${fmtHour(start)}-${fmtHour(start+4)}`;break;}
+        case'pair':label=t.pair||null;break;
+        case'strategy':label=strategyLabel(t.strategy||'ZONE');break;
+        case'zoneGrade':label=t.zoneGrade||null;break;
+        case'offPlan':label=t.offPlan?'Off-plan':'On-plan';break;
+        default:label=null;
+      }
+      push(label,t);
+    });
+  }
+  return Object.entries(groups).map(([label,g])=>({dimension,label,n:g.n,wins:g.wins}));
+}
+// The single most notable cross-dimensional finding for this mode/range, or
+// null if nothing clears the bar. Used both as computeAskFacts's
+// secondaryPattern (scoped to the question's own range) and, unscoped, as
+// the "Surface something interesting" button's entire answer.
+function findNotablePattern(trades,mode,range={preset:'ALL',start:null,end:null}){
+  const scoped=tradesInRange(trades,mode,range);
+  const done=scoped.filter(t=>t.outcome!=='PENDING');
+  if(!done.length)return null;
+  const baseWins=done.filter(t=>t.outcome==='WIN').length;
+  const baseWr=baseWins/done.length;
+  const baseCI=wilsonInterval(baseWins,done.length);
+  const candidates=PATTERN_DIMENSIONS
+    .flatMap(dim=>bucketsFor(dim,done))
+    .filter(b=>b.n>=PATTERN_MIN_N)
+    .map(b=>({...b,wr:b.wins/b.n,ci:wilsonInterval(b.wins,b.n)}))
+    .filter(b=>!ciOverlaps(b.ci,baseCI));
+  if(!candidates.length)return null;
+  const best=candidates.sort((a,b)=>Math.abs(b.wr-baseWr)-Math.abs(a.wr-baseWr))[0];
+  return{
+    dimension:best.dimension,label:best.label,n:best.n,wins:best.wins,
+    wr:Math.round(best.wr*1000)/10,
+    ciLower:Math.round(best.ci.lower*1000)/10,ciUpper:Math.round(best.ci.upper*1000)/10,
+    baselineWr:Math.round(baseWr*1000)/10,
+    baselineCiLower:Math.round(baseCI.lower*1000)/10,baselineCiUpper:Math.round(baseCI.upper*1000)/10,
+    baselineN:done.length,dimensionsChecked:PATTERN_DIMENSIONS.length,
+    smallSample:best.n<PATTERN_SMALL_SAMPLE_N,mode,rangeLabel:rangeLabel(range),
+  };
+}
+// Non-generated rendering of a pattern finding — the framing sentence is
+// baked in here too, so the fallback path (composer call fails) never skips
+// the "checked N dimensions" context the compose prompt otherwise supplies.
+function patternToText(p){
+  return`Checked ${p.dimensionsChecked} dimensions of your ${p.mode==='REAL'?'Real':'Demo'} data (${p.rangeLabel}); this was the one pattern that showed a real statistical separation from your baseline. ${p.label} trades win at ${p.wr}% (95% CI: ${p.ciLower}%-${p.ciUpper}%, n=${p.n}) versus your overall ${p.baselineWr}% (95% CI: ${p.baselineCiLower}%-${p.baselineCiUpper}%, n=${p.baselineN})${p.smallSample?` — based on only ${p.n} trades, worth watching, not yet conclusive.`:'.'}`;
+}
+const PATTERN_SCAN_QUESTION='Surface the most notable pattern in my data.';
+const NO_PATTERN_TEXT="Nothing crosses the significance bar right now — no dimension's win rate is separated enough from your baseline to call out. Check back as you log more trades.";
+
+// Stage 2: deterministic — reuses the same primitives Analytics/Dashboard
+// already use (tradesInRange, wilsonInterval, computeDigest) so the LLM
+// never computes a number itself, only phrases numbers computed here.
+function computeAskFacts(spec,trades,mode){
+  const range={preset:spec.range||'ALL',start:null,end:null};
+  const scoped=tradesInRange(trades,mode,range);
+  const done=scoped.filter(t=>t.outcome!=='PENDING');
+  const wins=done.filter(t=>t.outcome==='WIN').length;
+  const base={mode,rangeLabel:rangeLabel(range),n:done.length};
+  const wrStat=(list)=>{
+    const w=list.filter(t=>t.outcome==='WIN').length;
+    const ci=wilsonInterval(w,list.length);
+    return{n:list.length,wins:w,wr:list.length?Math.round((w/list.length)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
+  };
+  const bucketRowsWithCI=(dimension)=>bucketsFor(dimension,done).map(b=>{
+    const ci=wilsonInterval(b.wins,b.n);
+    return{label:b.label,n:b.n,wins:b.wins,wr:b.n?Math.round((b.wins/b.n)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
+  }).sort((a,b)=>b.n-a.n);
+  let result;
+  switch(spec.metric){
+    case'PNL':result={...base,pnl:Math.round(done.reduce((s,t)=>s+t.pnl,0)*100)/100};break;
+    case'TRADE_COUNT':result={...base,wins,losses:done.length-wins};break;
+    case'STREAK':{
+      const byRecency=[...done].sort((a,b)=>b.timestamp-a.timestamp);
+      let streak=0,type=null;
+      for(const t of byRecency){if(!type){type=t.outcome;streak=1;}else if(t.outcome===type)streak++;else break;}
+      result={...base,streak,streakType:type};break;
+    }
+    case'GRADE_BREAKDOWN':result={...base,rows:['A+','A','B','C','INVALID','UNGRADED'].map(g=>({grade:g,...wrStat(done.filter(t=>t.zoneGrade===g))})).filter(r=>r.n>0)};break;
+    case'STRATEGY_BREAKDOWN':result={...base,rows:['ZONE','TREND'].map(s=>{
+      const st=done.filter(t=>(t.strategy||'ZONE')===s);
+      return{strategy:s,...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
+    }).filter(r=>r.n>0)};break;
+    case'PAIR_BREAKDOWN':{
+      const byPair={};done.forEach(t=>{(byPair[t.pair]=byPair[t.pair]||[]).push(t);});
+      result={...base,rows:Object.entries(byPair).map(([pair,list])=>({pair,...wrStat(list)})).sort((a,b)=>b.n-a.n).slice(0,8)};break;
+    }
+    case'OFF_PLAN_IMPACT':{
+      const{start,end}=rangeBounds(range);
+      const d=computeDigest({trades,analyses:[],mode,start,end});
+      result={...base,offPlanCount:d.offPlanCount,offPlanWr:d.offPlanDoneCount?Math.round(d.offPlanWr*10)/10:null,onPlanWr:d.onPlanDoneCount?Math.round(d.onPlanWr*10)/10:null,offPlanPnl:Math.round(d.offPlanPnl*100)/100,offPlanN:d.offPlanDoneCount,onPlanN:d.onPlanDoneCount};break;
+    }
+    case'DAY_OF_WEEK':result={...base,rows:bucketRowsWithCI('dayOfWeek')};break;
+    case'SESSION_NUMBER':result={...base,rows:bucketRowsWithCI('sessionNum')};break;
+    case'TIME_OF_DAY':result={...base,rows:bucketRowsWithCI('hourBucket')};break;
+    case'WIN_RATE':
+    default:result={...base,...wrStat(done)};
+  }
+  // Cross-references every DATA_QUERY answer against the other 7 dimensions,
+  // scoped to the same range — cheap (plain array math), so it runs always;
+  // whether the composer mentions it is a prompt decision (rule 4), not
+  // something recomputed per question type.
+  const pattern=findNotablePattern(trades,mode,range);
+  if(pattern)result.secondaryPattern=pattern;
+  return result;
+}
+// One-line, non-generated rendering of FACTS — used both as the "here's the
+// data instead" tail on an advice refusal, and as a fallback if the compose
+// call itself fails, so a broken LLM call still shows real numbers.
+function factsToText(facts){
+  let base;
+  if(facts.rows)base=facts.rows.map(r=>{
+    const label=r.grade||r.strategy||r.pair||r.label;
+    return r.wr==null?`${label}: no completed trades`:`${label}: ${r.wr}% (95% CI: ${r.ciLower}%-${r.ciUpper}%, n=${r.n})`;
+  }).join(' · ')||'No completed trades in this range.';
+  else if('pnl'in facts&&!('wr'in facts))base=`P&L: ${facts.pnl>=0?'+':''}${facts.pnl} (n=${facts.n})`;
+  else if('streak'in facts)base=facts.streakType?`Current streak: ${facts.streak} ${facts.streakType==='WIN'?'wins':'losses'}`:'No completed trades yet.';
+  else if('offPlanCount'in facts)base=`Off-plan: ${facts.offPlanCount} trades, ${facts.offPlanWr!=null?facts.offPlanWr+'%':'—'} win rate (n=${facts.offPlanN||0}) vs on-plan ${facts.onPlanWr!=null?facts.onPlanWr+'%':'—'} (n=${facts.onPlanN||0}).`;
+  else if('wins'in facts&&!('wr'in facts))base=`${facts.n} trades — ${facts.wins}W / ${facts.losses}L`;
+  else base=facts.wr==null?'No completed trades in this range.':`${facts.wr}% (95% CI: ${facts.ciLower}%-${facts.ciUpper}%, n=${facts.n})`;
+  return facts.secondaryPattern?`${base} ${patternToText(facts.secondaryPattern)}`:base;
+}
+
 // ── Style helpers ─────────────────────────────────────────────────────────────
 const card={background:'var(--surface-1)',borderRadius:'var(--radius)',border:'1px solid var(--border)',padding:'16px 20px',marginBottom:12,boxShadow:'var(--shadow-card), var(--highlight-top)'};
 const inp={width:'100%',boxSizing:'border-box',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'9px 12px',color:'var(--text-primary)',fontSize:14,outline:'none',transition:'border-color 0.15s ease, box-shadow 0.15s ease'};
@@ -774,7 +1247,7 @@ function TrendChart({points,color}){
 function BarChart({items,color}){
   const max=Math.max(...items.map(i=>i.value),1);
   return(
-    <div style={{display:'flex',alignItems:'flex-end',gap:8,height:120,marginTop:8}}>
+    <div style={{display:'flex',gap:8,marginTop:8}}>
       {items.map(item=>(
         <div key={item.label} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:6}}>
           <div style={{width:'100%',height:100,display:'flex',alignItems:'flex-end',justifyContent:'center'}}>
@@ -1118,12 +1591,17 @@ function useMusicPlayer(active){
     setPlaying(true);
   }
   // Shuffles to a new random track and keeps playing — used for both the
-  // "Next" control and onEnded, so background music runs unattended.
+  // "Next" control and onEnded, so background music runs unattended for as
+  // long as the session is. The Next button can't fire this while inactive
+  // (MusicPlayerPanel unmounts with the session), but onEnded is wired to
+  // the always-mounted <audio> element, so a track finishing in the same
+  // instant the session ends must not be misread as "keep going".
   function next(){
     // The lock-alert chime borrows this same <audio> element and also ends/errors —
     // without this guard, the chime finishing would be misread as a track ending
     // and skip to a random track right as (or instead of) the alert plays.
     if(alertPlayingRef.current)return;
+    if(!active)return;
     if(!tracks?.length)return;
     startedRef.current=true;
     playTrackAt(randTrackIndex(tracks.length,trackIdx));
@@ -1318,6 +1796,8 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const todayDone=modeTrades.filter(t=>t.date===todayDate&&t.outcome!=='PENDING');
   const todayWins=todayDone.filter(t=>t.outcome==='WIN').length;
   const todayPnl=todayDone.reduce((s,t)=>s+t.pnl,0);
+  const todayWr=todayDone.length?((todayWins/todayDone.length)*100):0;
+  const todayByTime=[...todayDone].sort((a,b)=>a.timestamp-b.timestamp);
   const wr=done.length?((wins/done.length)*100):0;
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const startBal=getStartingBalanceForMode(settings,mode);
@@ -1461,6 +1941,40 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
           </div>
           <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>from {f$(startBal)} starting balance</div>
 
+          <div style={{marginTop:20,paddingTop:16,borderTop:'1px solid var(--border)'}}>
+            <div style={{fontSize:11,fontWeight:600,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:10}}>Today</div>
+            {todayDone.length>0?(
+              <>
+                <div style={{display:'flex',alignItems:'flex-end',gap:24,flexWrap:'wrap',marginBottom:12}}>
+                  <div>
+                    <div style={{fontSize:20,fontWeight:700,color:'var(--text-primary)',lineHeight:1.2}}>{todayDone.length}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)'}}>trades</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:20,fontWeight:700,lineHeight:1.2}}><span style={{color:'var(--text-success)'}}>{todayWins}W</span><span style={{color:'var(--text-muted)'}}> · </span><span style={{color:'var(--text-danger)'}}>{todayDone.length-todayWins}L</span></div>
+                    <div style={{fontSize:10,color:'var(--text-muted)'}}>win / loss</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:20,fontWeight:700,color:todayPnl>=0?'var(--text-success)':'var(--text-danger)',lineHeight:1.2}}>{(todayPnl>=0?'+':'')+f$(todayPnl)}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)'}}>P&L</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:20,fontWeight:700,color:'var(--text-primary)',lineHeight:1.2}}>{fp(todayWr)}</div>
+                    <div style={{fontSize:10,color:'var(--text-muted)'}}>today's win rate</div>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                  {todayByTime.map((t,i)=>(
+                    <span key={t.id||i} title={`${i+1}. ${t.outcome}`} style={{width:8,height:8,borderRadius:'50%',background:t.outcome==='WIN'?'var(--fill-success)':'var(--fill-danger)',flexShrink:0}}/>
+                  ))}
+                </div>
+                <div style={{fontSize:10,color:'var(--text-muted)',marginTop:6}}>Today's trade sequence</div>
+              </>
+            ):(
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>No trades yet today</div>
+            )}
+          </div>
+
           {nextMs&&(
             <div style={{marginTop:20,paddingTop:16,borderTop:'1px solid var(--border)'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:8}}>
@@ -1525,16 +2039,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
             </div>
           )}
 
-          {/* Today's total — visible in every state so the user always sees their full activity */}
-          {todayDone.length>0&&(
-            <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid var(--border)',display:'flex',gap:12,fontSize:11,color:'var(--text-muted)'}}>
-              <span>Today: <strong style={{color:'var(--text-primary)'}}>{todayDone.length} trades</strong></span>
-              <span><strong style={{color:'var(--text-success)'}}>{todayWins}W</strong> / <strong style={{color:'var(--text-danger)'}}>{todayDone.length-todayWins}L</strong></span>
-              <span>· {(todayPnl>=0?'+':'')+f$(todayPnl)}</span>
-            </div>
-          )}
-
-          <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:todayDone.length>0?8:16}}>
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:16}}>
             <button style={{...btn('pri'),width:'100%'}} onClick={()=>nav('analyzer')}><ScanSearch size={15}/>Analyze zone</button>
             <button style={{...btn(),width:'100%'}} onClick={()=>nav('journal')}><BookOpen size={15}/>Journal{pendingN>0&&<span style={{marginLeft:2,padding:'1px 7px',borderRadius:999,fontSize:11,fontWeight:700,background:'var(--bg-danger)',color:'var(--text-danger)',border:'1px solid var(--border-danger)'}}>{pendingN}</span>}</button>
           </div>
@@ -2965,20 +3470,22 @@ function Plan({settings}){
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
-// Auto-compiled "This Week"/"This Month" summary — pure computation over
+// Auto-compiled digest for whatever range the shared DateRangePicker (owned
+// by Analytics, passed down) is currently set to — pure computation over
 // trades/analyses already loaded client-side (see computeDigest), no
 // generated commentary, just numbers and a delta vs the prior equal-length
-// period. Tone is deliberately factual: the trader applies their own judgment.
-function ReviewDigest({trades,analyses,settings,wds}){
-  const[period,setPeriod]=useState('WEEK');
+// period where one exists. Tone is deliberately factual: the trader applies
+// their own judgment.
+function ReviewDigest({trades,analyses,settings,wds,range}){
   const[mode,setMode]=useState('DEMO');
-  const{start,end,prevStart,prevEnd}=periodRange(period);
+  const{start,end}=rangeBounds(range);
+  const prevR=prevRangeFor(range);
   const cur=computeDigest({trades,analyses,mode,start,end});
-  const prev=period==='ALL'?null:computeDigest({trades,analyses,mode,start:prevStart,end:prevEnd});
+  const prev=prevR?computeDigest({trades,analyses,mode,start:prevR.start,end:prevR.end}):null;
   const wrDelta=(prev&&cur.total&&prev.total)?cur.wr-prev.wr:null;
   const pnlDelta=prev?cur.realPnl-prev.realPnl:null;
-  const periodLabel=period==='WEEK'?'This week (last 7 days)':period==='MONTH'?'This month (last 30 days)':'All time';
-  const prevLabel=period==='WEEK'?'last week':'last month';
+  const periodLabel=rangeLabel(range);
+  const prevLabel=range.preset==='WEEK'?'the previous 7 days':'the previous 30 days';
   const modeBal=balForMode(settings,trades,wds,mode);
   const trend=offPlanTrend(trades,mode);
 
@@ -2998,7 +3505,6 @@ function ReviewDigest({trades,analyses,settings,wds}){
   return(
     <div>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
-        {tog([{id:'WEEK',label:'This week'},{id:'MONTH',label:'This month'},{id:'ALL',label:'All time'}],period,setPeriod)}
         {tog([{id:'DEMO',label:'Demo'},{id:'REAL',label:'Real'}],mode,setMode,id=>id==='REAL'?'var(--fill-danger)':'var(--fill-accent)')}
       </div>
 
@@ -3098,7 +3604,8 @@ function ReviewDigest({trades,analyses,settings,wds}){
 export function Analytics({trades,analyses,settings,bal,wds}){
   const[scope,setScope]=useState('ALL');
   const[tab,setTab]=useState('OVERVIEW');
-  const scoped=scope==='ALL'?trades:trades.filter(t=>getTradeMode(t)===scope);
+  const[range,setRange]=useState({preset:'ALL',start:null,end:null});
+  const scoped=tradesInRange(trades,scope,range);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
   const total=done.length,wins=done.filter(t=>t.outcome==='WIN').length;
   const wr=total?(wins/total)*100:0;
@@ -3121,7 +3628,7 @@ export function Analytics({trades,analyses,settings,bal,wds}){
   const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)?.v||0;acc.push({t:t.timestamp,v:prev+t.pnl});return acc;},[]);
   const gradeBars=grades.map(x=>({label:x.g,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
   const pairBars=pairs.map(x=>({label:x.p.length>8?x.p.slice(0,8)+'…':x.p,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'})).slice(0,5);
-  const doneAll=trades.filter(t=>t.outcome!=='PENDING');
+  const doneAll=tradesInRange(trades,'ALL',range).filter(t=>t.outcome!=='PENDING');
   const modeStats=ACCOUNT_MODES.map(mode=>{
     const modeTrades=doneAll.filter(t=>getTradeMode(t)===mode);
     const modeWins=modeTrades.filter(t=>t.outcome==='WIN').length;
@@ -3161,7 +3668,11 @@ export function Analytics({trades,analyses,settings,bal,wds}){
         </div>
       </div>
 
-      {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds}/>:<>
+      {/* One picker instance, shared by both tabs — Overview and Review filter
+          through the same tradesInRange/rangeBounds, never their own copies. */}
+      <DateRangePicker range={range} setRange={setRange}/>
+
+      {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds} range={range}/>:<>
 
       <div style={g2}>
         <Metric label="Total trades" value={total} sub={`${wins}W / ${total-wins}L`}/>
@@ -3269,8 +3780,168 @@ export function Analytics({trades,analyses,settings,bal,wds}){
         </div>
       )}
 
-      {total===0&&<div style={{...card,textAlign:'center',padding:'2rem',color:'var(--text-muted)'}}><i className="ti ti-chart-bar" style={{fontSize:28,display:'block',marginBottom:8}} aria-hidden="true"/>No completed trades yet.</div>}
+      {total===0&&<div style={{...card,textAlign:'center',padding:'2rem',color:'var(--text-muted)'}}><i className="ti ti-chart-bar" style={{fontSize:28,display:'block',marginBottom:8}} aria-hidden="true"/>{range.preset==='ALL'?'No completed trades yet.':'No trades in this range.'}</div>}
       </>}
+    </div>
+  );
+}
+
+// ── Ask ───────────────────────────────────────────────────────────────────────
+// Chat UI over the classify -> compute -> compose pipeline defined above. The
+// component's only jobs: render messages, resolve Demo/Real ambiguity via a
+// button reply (not a guess), and log each finished Q&A to Supabase — it does
+// not accumulate any user "profile", each question is answered from scratch.
+function Ask({trades,settings,mode,userId}){
+  const[messages,setMessages]=useState([]);
+  const[input,setInput]=useState('');
+  const[busy,setBusy]=useState(false);
+  const listRef=useRef(null);
+
+  useEffect(()=>{
+    if(!userId)return;
+    supabase.from('queries').select('*').eq('user_id',userId).order('timestamp',{ascending:true})
+      .then(({data})=>{
+        if(!data)return;
+        setMessages(data.flatMap(r=>{
+          const q=fromQueryRow(r);
+          return[{id:q.id+'-q',role:'user',text:q.question},{id:q.id+'-a',role:'assistant',text:q.answer}];
+        }));
+      });
+  },[userId]);
+
+  useEffect(()=>{listRef.current?.scrollTo({top:listRef.current.scrollHeight});},[messages,busy]);
+
+  function appendUser(text){setMessages(m=>[...m,{id:uid(),role:'user',text}]);}
+  function appendPlain(text){setMessages(m=>[...m,{id:uid(),role:'assistant',text}]);}
+  function appendClarify(question,spec){setMessages(m=>[...m,{id:uid(),role:'assistant',clarify:{question,spec}}]);}
+  // Top-level safety net: only a deliberately-thrown, tagged Error (a clear,
+  // actionable message like "Add your API key") is shown verbatim. Anything
+  // else — a raw TypeError, a network failure, a future bug in this
+  // pipeline — never reaches the chat as text, only the console.
+  function appendError(err){
+    console.error('Ask pipeline error:',err);
+    appendPlain(err?.userFacing?err.message:'Something went wrong — try again.');
+  }
+
+  async function persistAndShow(question,text,resolvedMode){
+    appendPlain(text); // show the real answer first — history logging is best-effort and must never block or corrupt it
+    if(!userId)return;
+    try{
+      const row={id:uid(),timestamp:Date.now(),question,answer:text,mode:resolvedMode};
+      const{error}=await supabase.from('queries').insert(toQueryRow(userId,row));
+      if(error)console.error('Failed to log query history:',error);
+    }catch(err){
+      console.error('Failed to log query history:',err); // never surfaced to the user
+    }
+  }
+
+  async function resolveAndAnswer(spec,question,resolvedMode){
+    if(spec.intent==='OUT_OF_SCOPE'){
+      await persistAndShow(question,"That's outside what I can look up in your own trade data.",resolvedMode);
+      return;
+    }
+    if(spec.intent==='ADVICE_OR_OPINION'){
+      const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode):null;
+      const text=`I can show you the data on this, but I can't tell you what to do with it.`+(facts?` ${factsToText(facts)}`:'');
+      await persistAndShow(question,text,resolvedMode);
+      return;
+    }
+    const facts=computeAskFacts(spec,trades,resolvedMode);
+    let text;
+    try{text=await composeAskAnswer(question,facts,settings);}
+    catch{text=factsToText(facts);} // composer call failed — still show the real, computed numbers
+    // Enforced in code, not trusted to the compose prompt — same reasoning
+    // as the ADVICE_OR_OPINION gate above: a boundary a model might forget
+    // to restate on any given call shouldn't be the only thing enforcing it.
+    if(spec.impliesAdvice)text=`${text} What to do with that is your call.`;
+    await persistAndShow(question,text,resolvedMode);
+  }
+
+  // Bypasses classifyAskQuery entirely — this is a fixed action, not a
+  // question needing interpretation, so there's no classifier JSON to route
+  // through and no way for an impliesAdvice/ADVICE_OR_OPINION branch to fire.
+  async function handleSurface(){
+    if(busy)return;
+    appendUser(PATTERN_SCAN_QUESTION);
+    setBusy(true);
+    try{
+      const pattern=findNotablePattern(trades,mode);
+      if(!pattern){
+        await persistAndShow(PATTERN_SCAN_QUESTION,NO_PATTERN_TEXT,mode);
+        return;
+      }
+      const facts={mode,rangeLabel:pattern.rangeLabel,n:pattern.baselineN,secondaryPattern:pattern};
+      let text;
+      try{text=await composeAskAnswer(PATTERN_SCAN_QUESTION,facts,settings);}
+      catch{text=patternToText(pattern);}
+      await persistAndShow(PATTERN_SCAN_QUESTION,text,mode);
+    }catch(err){
+      appendError(err);
+    }finally{setBusy(false);}
+  }
+
+  async function handleAsk(e){
+    e.preventDefault();
+    const q=input.trim();
+    if(!q||busy)return;
+    setInput('');
+    appendUser(q);
+    setBusy(true);
+    try{
+      const spec=await classifyAskQuery(q,settings);
+      if(spec.intent==='DATA_QUERY'&&spec.mode==='AMBIGUOUS'){
+        appendClarify(q,spec);
+        return;
+      }
+      await resolveAndAnswer(spec,q,spec.mode==='AMBIGUOUS'?mode:spec.mode);
+    }catch(err){
+      appendError(err);
+    }finally{setBusy(false);}
+  }
+  async function handleClarify(question,spec,chosenMode){
+    setBusy(true);
+    try{await resolveAndAnswer(spec,question,chosenMode);}
+    catch(err){appendError(err);}
+    finally{setBusy(false);}
+  }
+
+  return(
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:4}}>
+        <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Ask</div>
+        <button style={btn()} onClick={handleSurface} disabled={busy}><Sparkles size={14}/>Surface something interesting</button>
+      </div>
+      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>Ask factual questions about your own logged trades — win rate, P&L, streaks, breakdowns. This looks up your data; it doesn't give advice.</div>
+
+      <div style={{...card,padding:0,display:'flex',flexDirection:'column',height:480}}>
+        <div ref={listRef} style={{flex:1,overflowY:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
+          {messages.length===0&&!busy&&(
+            <div style={{fontSize:12,color:'var(--text-muted)',textAlign:'center',marginTop:20}}>
+              Try: "What's my win rate on Grade A zones?" or "How many trades did I take this week?"
+            </div>
+          )}
+          {messages.map(m=>(
+            <div key={m.id} style={{alignSelf:m.role==='user'?'flex-end':'flex-start',maxWidth:'80%'}}>
+              {m.clarify?(
+                <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px'}}>
+                  <div style={{fontSize:13,color:'var(--text-primary)',marginBottom:8}}>Are you asking about your Demo or Real account?</div>
+                  <div style={{display:'flex',gap:8}}>
+                    <button style={btn()} onClick={()=>handleClarify(m.clarify.question,m.clarify.spec,'DEMO')} disabled={busy}>Demo</button>
+                    <button style={btn('dan')} onClick={()=>handleClarify(m.clarify.question,m.clarify.spec,'REAL')} disabled={busy}>Real</button>
+                  </div>
+                </div>
+              ):(
+                <div style={{background:m.role==='user'?'var(--fill-accent)':'var(--surface-2)',color:m.role==='user'?'#fff':'var(--text-primary)',border:m.role==='user'?'none':'1px solid var(--border)',borderRadius:'var(--radius)',padding:'8px 12px',fontSize:13,whiteSpace:'pre-wrap'}}>{m.text}</div>
+              )}
+            </div>
+          ))}
+          {busy&&<div style={{alignSelf:'flex-start',fontSize:12,color:'var(--text-muted)'}}>Looking up your data…</div>}
+        </div>
+        <form onSubmit={handleAsk} style={{display:'flex',gap:8,padding:12,borderTop:'1px solid var(--border)'}}>
+          <input style={{...inp,flex:1}} placeholder="Ask about your trades…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
+          <button type="submit" style={{...btn('pri'),padding:'9px 14px'}} disabled={busy||!input.trim()} aria-label="Send"><Send size={15}/></button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -4126,6 +4797,7 @@ export default function App(){
     {id:'money',icon:Wallet,label:'Money mgmt'},
     {id:'plan',icon:ClipboardList,label:'Trading plan'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},
+    {id:'ask',icon:MessageCircle,label:'Ask'},
     {id:'settings',icon:Settings,label:'Settings'},
   ];
 
@@ -4300,6 +4972,7 @@ export default function App(){
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode}/>}
             {view==='plan'&&<Plan settings={settings}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds}/>}
+            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id}/>}
             {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount}/>}
           </div>
 

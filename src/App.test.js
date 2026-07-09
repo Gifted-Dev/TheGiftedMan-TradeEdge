@@ -586,7 +586,8 @@ describe("Dashboard's Today count", () => {
         trades={[trade('y1', localDate(1)), trade('t1', localDate(0))]} wds={[]}
         ss={staleSS} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
     );
-    expect(screen.getByText('1 trades')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('trades')).toBeInTheDocument();
     expect(screen.getByText('1W')).toBeInTheDocument();
     expect(screen.getByText('0L')).toBeInTheDocument();
   });
@@ -602,7 +603,8 @@ describe("Dashboard's Today count", () => {
         ]}
         wds={[]} ss={staleSS} saveSS={jest.fn()} bal={100} mode="DEMO" nav={jest.fn()} music={null}/>
     );
-    expect(screen.getByText('1 trades')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('trades')).toBeInTheDocument();
     expect(screen.getByText('1W')).toBeInTheDocument();
     expect(screen.getByText('0L')).toBeInTheDocument();
   });
