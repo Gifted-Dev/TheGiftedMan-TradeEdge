@@ -1,6 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Analytics, Analyzer, Journal, Dashboard, getToday } from './App';
 
+// The two reserved builtins, standing in for a loaded `strategies` list —
+// matches what App's bootstrap seeds per user (see ensureBuiltinStrategies).
+const STRATEGIES = [
+  { id: 'zone-sd', name: 'Zone (S&D)', isBuiltin: true, archived: false },
+  { id: 'trend-pattern', name: 'Trend/Pattern', isBuiltin: true, archived: false },
+];
+
 describe('getToday (midnight rollover)', () => {
   test('resets sessions for a new calendar date, keeps them for the same date', () => {
     const yesterday = new Date(Date.now() - 86400000).toLocaleDateString('en-CA');
@@ -56,16 +63,16 @@ test('Discipline Impact reports off-plan counts, P&L, and the direct balance-sub
 });
 
 test('Analytics breaks performance down by strategy, equally alongside grade and pair', () => {
-  const trade = (id, strategy, outcome, pnl) => ({
+  const trade = (id, strategyId, outcome, pnl) => ({
     id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC',
     direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2, outcome, pnl, source: 'MANUAL',
-    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategy,
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyId,
   });
   const trades = [
-    trade('z1', 'ZONE', 'WIN', 1.84),
-    trade('z2', 'ZONE', 'LOSS', -2),
-    trade('t1', 'TREND', 'WIN', 1.84),
-    trade('t2', 'TREND', 'WIN', 1.84),
+    trade('z1', 'zone-sd', 'WIN', 1.84),
+    trade('z2', 'zone-sd', 'LOSS', -2),
+    trade('t1', 'trend-pattern', 'WIN', 1.84),
+    trade('t2', 'trend-pattern', 'WIN', 1.84),
   ];
 
   render(<Analytics trades={trades} analyses={[]} settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }} bal={100} wds={[]}/>);
@@ -136,17 +143,17 @@ describe('Journal interactions', () => {
 });
 
 test('filters the journal by strategy, combinable with the outcome filter', () => {
-  const trade = (id, strategy, outcome) => ({
+  const trade = (id, strategyId, outcome) => ({
     id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: `${id}-PAIR`, direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
     outcome, pnl: outcome === 'WIN' ? 1.84 : outcome === 'LOSS' ? -2 : 0, source: 'MANUAL',
-    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategy,
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyId,
   });
   const trades = [
-    trade('zone-win', 'ZONE', 'WIN'),
-    trade('zone-loss', 'ZONE', 'LOSS'),
-    trade('trend-win', 'TREND', 'WIN'),
-    trade('trend-loss', 'TREND', 'LOSS'),
+    trade('zone-win', 'zone-sd', 'WIN'),
+    trade('zone-loss', 'zone-sd', 'LOSS'),
+    trade('trend-win', 'trend-pattern', 'WIN'),
+    trade('trend-loss', 'trend-pattern', 'LOSS'),
   ];
 
   render(
@@ -159,11 +166,15 @@ test('filters the journal by strategy, combinable with the outcome filter', () =
       pa={null}
       setPA={jest.fn()}
       wds={[]}
+      strategies={STRATEGIES}
     />
   );
 
   // Strategy alone.
-  fireEvent.click(screen.getByRole('button', { name: /^trend$/i }));
+  // The filter button and each Trend/Pattern-tagged trade card (its role="button"
+  // wrapper's accessible name includes the badge text) both match this name —
+  // the filter button renders first, before the trade list.
+  fireEvent.click(screen.getAllByRole('button', { name: /trend\/pattern/i })[0]);
   expect(screen.getByText('trend-win-PAIR')).toBeInTheDocument();
   expect(screen.getByText('trend-loss-PAIR')).toBeInTheDocument();
   expect(screen.queryByText('zone-win-PAIR')).not.toBeInTheDocument();
@@ -188,11 +199,12 @@ test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L'
       pa={null}
       setPA={jest.fn()}
       wds={[]}
+      strategies={STRATEGIES}
     />
   );
 
   fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
-  fireEvent.click(screen.getByRole('button', { name: /zone \(s&d\)/i })); // strategy is required before saving
+  fireEvent.change(screen.getByRole('combobox', { name: /strategy/i }), { target: { value: 'zone-sd' } }); // strategy is required before saving
   // "WIN" also matches the ALL/PENDING/WIN/LOSS filter row — the outcome
   // button is the one rendered inside the manual-entry form, later in the DOM.
   const winButtons = screen.getAllByRole('button', { name: /^win$/i });
@@ -207,7 +219,7 @@ test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L'
   const [saved] = updater([]);
   expect(saved.stake).toBe(10);
   expect(saved.pnl).toBe(8); // 10 * 0.80, not the default 10 * 0.92 = 9.2
-  expect(saved.strategy).toBe('ZONE');
+  expect(saved.strategyId).toBe('zone-sd');
   expect(saved.payoutPct).toBe(80);
 });
 
@@ -217,7 +229,7 @@ test('manual entry refuses to save without an explicit strategy selection', asyn
   // Clear both the "remembered last strategy" AND the in-progress-draft
   // recovery — a prior test's draft would otherwise carry its strategy
   // choice into this "fresh, no selection yet" scenario.
-  try { window.localStorage.removeItem('gm_last_strategy'); } catch {}
+  try { window.localStorage.removeItem('gm_last_strategy_id'); } catch {}
   try { window.sessionStorage.removeItem('gm_draft_mf'); } catch {}
 
   render(
@@ -230,6 +242,7 @@ test('manual entry refuses to save without an explicit strategy selection', asyn
       pa={null}
       setPA={jest.fn()}
       wds={[]}
+      strategies={STRATEGIES}
     />
   );
 
@@ -462,7 +475,7 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
     id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
     stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
-    screenshots: [], notes: '', isAnalyzed: true, strategy: 'ZONE',
+    screenshots: [], notes: '', isAnalyzed: true, strategyId: 'zone-sd',
   }];
 
   render(
@@ -475,6 +488,7 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
       pa={null}
       setPA={jest.fn()}
       wds={[]}
+      strategies={STRATEGIES}
     />
   );
 
@@ -482,7 +496,7 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
   fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
   const pairInput = await screen.findByDisplayValue('EUR/USD OTC');
   fireEvent.change(pairInput, { target: { value: 'GBP/USD OTC' } });
-  fireEvent.click(screen.getByRole('button', { name: /trend\/pattern/i }));
+  fireEvent.change(screen.getByRole('combobox', { name: /strategy/i }), { target: { value: 'trend-pattern' } });
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
 
   // Saving returns to the read-only Detail view, which renders the pair in
@@ -497,7 +511,7 @@ test('lets you correct the direction and outcome on a saved journal entry, recal
     id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
     stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
-    screenshots: [], notes: '', isAnalyzed: true, strategy: 'ZONE',
+    screenshots: [], notes: '', isAnalyzed: true, strategyId: 'zone-sd',
   }];
 
   render(

@@ -39,6 +39,7 @@ import {
   VolumeX,
   Wallet,
   X,
+  Zap,
 } from "lucide-react";
 
 const OLD_SK = { S:'gm_s_v1', T:'gm_t_v1', A:'gm_a_v1', W:'gm_w_v1', SS:'gm_ss_v1' };
@@ -145,7 +146,13 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn,strictLockingDemo:s.strictLockingDemo,strictLockingReal:s.strictLockingReal}};
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn,strictLockingDemo:s.strictLockingDemo,strictLockingReal:s.strictLockingReal,
+      moneyMgmtStyleDemo:s.moneyMgmtStyleDemo,moneyMgmtStyleReal:s.moneyMgmtStyleReal,
+      amMultiplierDemo:s.amMultiplierDemo,amMultiplierReal:s.amMultiplierReal,
+      amCeilingPctDemo:s.amCeilingPctDemo,amCeilingPctReal:s.amCeilingPctReal,
+      amProfitTargetPctDemo:s.amProfitTargetPctDemo,amProfitTargetPctReal:s.amProfitTargetPctReal,
+      amLossTargetPctDemo:s.amLossTargetPctDemo,amLossTargetPctReal:s.amLossTargetPctReal,
+      riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
   return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
@@ -157,7 +164,7 @@ function toTradeRow(userId,t){
   return{id:t.id,user_id:userId,timestamp:new Date(t.timestamp).toISOString(),pair:t.pair,direction:t.direction,
     zone_type:t.zoneType,zone_grade:t.zoneGrade,stake:t.stake,outcome:t.outcome,pnl:t.pnl,source:t.source,
     screenshots:(t.screenshots||[]).map(shotPath),notes:t.notes,session_num:t.sessionNum,is_analyzed:t.isAnalyzed,
-    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,score:t.score,hardFilterFailed:t.hardFilterFailed,hardFilterFailures:t.hardFilterFailures,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode,offPlan:t.offPlan||false,lockingModeAtTime:t.lockingModeAtTime||'SOFT',payoutPct:t.payoutPct||null,strategy:t.strategy||'ZONE'}};
+    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,score:t.score,hardFilterFailed:t.hardFilterFailed,hardFilterFailures:t.hardFilterFailures,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode,offPlan:t.offPlan||false,lockingModeAtTime:t.lockingModeAtTime||'SOFT',payoutPct:t.payoutPct||null,strategyId:t.strategyId||'zone-sd'}};
 }
 function fromTradeRow(r){
   return{id:r.id,timestamp:new Date(r.timestamp).getTime(),pair:r.pair,direction:r.direction,zoneType:r.zone_type,
@@ -169,13 +176,21 @@ function toSessionRow(userId,date,s){
     end_time:s.endTime?new Date(s.endTime).toISOString():null,trades:s.trades,wins:s.wins,losses:s.losses,
     con_loss:s.conLoss,con_win:s.conWin,net_loss:s.netLoss,session_pnl:s.sPnl,is_active:s.isActive,
     is_locked:s.isLocked,lock_reason:s.lockReason,
-    extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,strictAtStart:s.strictAtStart||false}};
+    extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,strictAtStart:s.strictAtStart||false,
+      startBalance:s.startBalance,amStreak:s.amStreak||0,amNextStake:s.amNextStake??null,endReason:s.endReason||null}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
     endTime:r.end_time?new Date(r.end_time).getTime():null,trades:r.trades,wins:r.wins,losses:r.losses,
     conLoss:r.con_loss,conWin:r.con_win,netLoss:r.net_loss,sPnl:r.session_pnl,isActive:r.is_active,
     isLocked:r.is_locked,lockReason:r.lock_reason,...(r.extra||{})};
+}
+function toStrategyRow(userId,s){
+  return{id:s.id,user_id:userId,name:s.name,description:s.description||null,
+    is_builtin:!!s.isBuiltin,archived:!!s.archived,created_at:new Date(s.createdAt||Date.now()).toISOString()};
+}
+function fromStrategyRow(r){
+  return{id:r.id,name:r.name,description:r.description,isBuiltin:r.is_builtin,archived:r.archived,createdAt:new Date(r.created_at).getTime()};
 }
 function toWdRow(userId,w){
   return{id:w.id,user_id:userId,timestamp:new Date(w.timestamp).toISOString(),date:w.date,amount:w.amount,
@@ -263,6 +278,20 @@ async function maybeMigrateLocal(userId){
     Object.values(OLD_SK).forEach(k=>localStorage.removeItem(k));
     alert('Import complete — your local data is now saved to your account.');
   }catch(e){console.error(e);alert('Import failed: '+e.message+'. Your local data was left untouched.');}
+}
+// The two reserved strategies every user gets on first load — fixed ids so
+// Zone Analyzer's auto-log path can tag 'zone-sd' directly, no name lookup.
+const BUILTIN_STRATEGIES=[
+  {id:'zone-sd',name:'Zone (S&D)'},
+  {id:'trend-pattern',name:'Trend/Pattern'},
+];
+async function ensureBuiltinStrategies(userId){
+  const{data,error}=await supabase.from('strategies').select('id').eq('user_id',userId).in('id',BUILTIN_STRATEGIES.map(s=>s.id));
+  if(error)return;
+  const existing=new Set((data||[]).map(r=>r.id));
+  const missing=BUILTIN_STRATEGIES.filter(s=>!existing.has(s.id))
+    .map(s=>({id:s.id,user_id:userId,name:s.name,description:null,is_builtin:true,archived:false}));
+  if(missing.length)await supabase.from('strategies').insert(missing);
 }
 const tod=()=>new Date().toLocaleDateString('en-CA');
 const f$=(n)=>`$${Math.abs(+n).toFixed(2)}`;
@@ -673,12 +702,127 @@ function getTradeStyleForMode(settings,mode){
   return settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1;
 }
 function styleName(id){return id===1?'Precision':id===2?'Active':id===3?'Structured':'plan';}
-function lastStrategy(){try{return localStorage.getItem('gm_last_strategy')||'';}catch{return'';}}
-function strategyLabel(s){return s==='TREND'?'Trend/Pattern':s==='ZONE'?'Zone (S&D)':'';}
+function lastStrategyId(){try{return localStorage.getItem('gm_last_strategy_id')||'';}catch{return'';}}
+// Same "remember the last thing you picked" convenience as lastStrategyId,
+// for Quick Log's direction toggle.
+function lastDirection(){try{return localStorage.getItem('gm_last_direction')||'BUY';}catch{return'BUY';}}
+function setLastDirection(d){try{localStorage.setItem('gm_last_direction',d);}catch{}}
+// Compact two-button BUY/SELL toggle. Pass `onChange` for an editable picker
+// (Quick Log's draft row); omit it for a read-only pill (committed rows) —
+// both directions stay visible so the row's still scannable at a glance.
+function DirToggle({value,onChange}){
+  const opt=(d,label)=>{
+    const on=value===d;
+    const base={padding:'2px 8px',fontSize:11,fontWeight:600,borderRadius:4,border:'1px solid var(--border)'};
+    const style=on
+      ?{...base,background:d==='BUY'?'var(--bg-success)':'var(--bg-danger)',color:d==='BUY'?'var(--text-success)':'var(--text-danger)',borderColor:d==='BUY'?'var(--border-success)':'var(--border-danger)'}
+      :{...base,background:'transparent',color:'var(--text-muted)',cursor:onChange?'pointer':'default'};
+    return onChange
+      ?<button key={d} type="button" style={style} onClick={()=>onChange(d)}>{label}</button>
+      :<span key={d} style={{...style,opacity:on?1:0.35}}>{label}</span>;
+  };
+  return<div style={{display:'flex',gap:4}}>{opt('BUY','BUY')}{opt('SELL','SELL')}</div>;
+}
+// `strategies` is the user's full loaded list (Journal/Analytics/Settings/Ask
+// all thread it through). Falls back to the two reserved builtins, then the
+// raw id, only if a caller genuinely has no list to check (shouldn't happen).
+function strategyLabel(id,strategies){
+  if(!id)return'';
+  return(strategies||[]).find(s=>s.id===id)?.name || BUILTIN_STRATEGIES.find(s=>s.id===id)?.name || id;
+}
 // Per-mode, default OFF (matches the current live soft-guidance behavior).
 function isStrictForMode(settings,mode){
   return!!(mode==='REAL'?settings?.strictLockingReal:settings?.strictLockingDemo);
 }
+
+// ── Money Management (Part B) ───────────────────────────────────────────────
+function getMoneyMgmtStyleForMode(settings,mode){
+  return(mode==='REAL'?settings?.moneyMgmtStyleReal:settings?.moneyMgmtStyleDemo)||'FIXED';
+}
+function getAmMultiplierForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.amMultiplierReal:settings?.amMultiplierDemo);
+  return Number.isFinite(v)?v:2;
+}
+function getAmCeilingPctForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.amCeilingPctReal:settings?.amCeilingPctDemo);
+  return Number.isFinite(v)?v:20;
+}
+function getAmProfitTargetPctForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.amProfitTargetPctReal:settings?.amProfitTargetPctDemo);
+  return Number.isFinite(v)?v:10;
+}
+function getAmLossTargetPctForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.amLossTargetPctReal:settings?.amLossTargetPctDemo);
+  return Number.isFinite(v)?v:10;
+}
+
+// Anti-Martingale engine — verbatim per spec, do not redesign. A win escalates
+// the stake (up to AM_MAX_ESCALATIONS, capped at amCeilingPct% of balance);
+// any loss, or completing the escalation ladder, resets to the base stake.
+const AM_MAX_ESCALATIONS = 2;
+function amBaseStake(balance, settings) {
+  const riskPct = settings?.riskPercent ?? 5;
+  return Math.max(1, Math.round(balance * (riskPct / 100) * 100) / 100);
+}
+function advanceAntiMartingale(state, outcome, balance, settings, mode) {
+  const base = amBaseStake(balance, settings);
+  if (outcome !== 'WIN') {
+    return { streak: 0, nextStake: base }; // any loss resets immediately
+  }
+  // Cap check on the PRE-increment streak: a WIN only forces the reset once
+  // it happens AT the max-escalated stake (the actual "2nd escalated win") —
+  // both escalation levels get placed before the ladder caps out.
+  if (state.streak >= AM_MAX_ESCALATIONS) {
+    return { streak: 0, nextStake: base };
+  }
+  const multiplier = settings?.[`amMultiplier${mode}`] ?? 2;
+  const ceilingPct = settings?.[`amCeilingPct${mode}`] ?? 20;
+  const ceiling = balance * (ceilingPct / 100);
+  const escalated = Math.max(1, Math.round(Math.min(state.nextStake * multiplier, ceiling) * 100) / 100);
+  return { streak: state.streak + 1, nextStake: escalated };
+}
+// Live display helpers — never trust a stored dollar figure at face value;
+// always reclamp/rebase against the CURRENT balance so a mid-session
+// withdrawal (or any other balance change) is reflected without a new trade.
+function liveAmNextStake(session, balance, settings, mode) {
+  const streak = session?.amStreak || 0;
+  if (streak === 0) return amBaseStake(balance, settings);
+  const ceiling = balance * (getAmCeilingPctForMode(settings, mode) / 100);
+  return Math.max(1, Math.min(session?.amNextStake ?? amBaseStake(balance, settings), ceiling));
+}
+// One line of "what to bet and why" — computed from the same live inputs as
+// liveAmNextStake, so the number and the reasoning can never drift apart.
+function amStakeReasoning(session, balance, settings, mode) {
+  const streak = session?.amStreak || 0;
+  const base = amBaseStake(balance, settings);
+  const stake = liveAmNextStake(session, balance, settings, mode);
+  if (streak === 0) {
+    return 'Base stake — a win escalates the next stake up.';
+  }
+  const multiplier = getAmMultiplierForMode(settings, mode);
+  const ceiling = balance * (getAmCeilingPctForMode(settings, mode) / 100);
+  const onWin = Math.max(1, Math.min(Math.round(stake * multiplier * 100) / 100, ceiling));
+  if (streak >= AM_MAX_ESCALATIONS) {
+    return `Final escalation (${streak} of ${AM_MAX_ESCALATIONS}) — any outcome resets to $${base.toFixed(2)} base next.`;
+  }
+  return `Escalation ${streak} of ${AM_MAX_ESCALATIONS} — win again for $${onWin.toFixed(2)}, any loss resets to $${base.toFixed(2)} base.`;
+}
+function checkAntiMartingaleSessionEnd(session, mode, settings) {
+  if (!session?.isActive) return null;
+  if (getMoneyMgmtStyleForMode(settings, mode) !== 'ANTI_MARTINGALE') return null;
+  const startBal = session.startBalance;
+  const pnlPct = startBal ? (session.sPnl / startBal) * 100 : 0;
+  const profitTarget = settings?.[`amProfitTargetPct${mode}`] ?? 10;
+  const lossTarget = settings?.[`amLossTargetPct${mode}`] ?? 10;
+  if (pnlPct >= profitTarget) return 'AM_PROFIT_TARGET';
+  if (pnlPct <= -Math.abs(lossTarget)) return 'AM_LOSS_TARGET';
+  return null;
+}
+// endSessionNatural's effect (isActive:false, endTime, endReason — no
+// isLocked/lockReason/lockCode, so Strict Locking never applies to an AM
+// ending) is folded directly into the single saveSS call at each call site
+// (setOutcome, addManual, and the reconciliation effect) instead of being a
+// separate awaited write, per the no-double-write wiring note in the spec.
 
 function getStartingBalanceForMode(settings,mode){
   const value=parseFloat(mode==='REAL'?settings?.startingBalanceReal:settings?.startingBalanceDemo);
@@ -730,11 +874,20 @@ function getSessionDuration(settings,styleId){
 // then belongs to this session for its whole lifetime — toggling the
 // setting later never retroactively changes an already-running session's
 // enforcement, only a session started after the toggle picks up the change.
-function buildSession(ssState,mode,durationMin,strictAtStart){
+// `settings`/`startBalance` are only needed for the Anti-Martingale fields —
+// startBalance is "balance now" for this mode at session creation (the
+// caller already has it as balForMode's output, e.g. Dashboard's `bal`), kept
+// stable for the life of the session so checkAntiMartingaleSessionEnd has a
+// fixed reference point. amNextStake is seeded to the base stake immediately
+// (not left null) so the Dashboard has something to show before any trade.
+function buildSession(ssState,mode,durationMin,strictAtStart,settings,startBalance){
+  const amStyle=getMoneyMgmtStyleForMode(settings,mode);
   return{id:uid(),num:ssState.sessions.filter(x=>x.accountMode===mode).length+1,accountMode:mode,
     startTime:Date.now(),endTime:null,trades:0,wins:0,losses:0,conLoss:0,conWin:0,netLoss:0,sPnl:0,
     isActive:true,isLocked:false,lockReason:null,lockCode:null,strictAtStart:!!strictAtStart,
-    durationMin,pausedAt:null,pausedMsTotal:0};
+    durationMin,pausedAt:null,pausedMsTotal:0,
+    startBalance:startBalance??0,endReason:null,
+    amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings):null};
 }
 // Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
 function sessionElapsedMs(sess,now){
@@ -912,7 +1065,7 @@ function ciOverlaps(a,b){return a.lower<=b.upper&&b.lower<=a.upper;}
 function fmtHour(h){const hh=((h%24)+24)%24;const period=hh<12?'am':'pm';const h12=hh%12===0?12:hh%12;return`${h12}${period}`;}
 // One row per bucket value for a dimension — {dimension,label,n,wins}. No CI
 // here; findNotablePattern and computeAskFacts each decide when to attach one.
-function bucketsFor(dimension,done){
+function bucketsFor(dimension,done,strategies){
   const groups={};
   const push=(label,t)=>{
     if(label==null)return;
@@ -941,7 +1094,7 @@ function bucketsFor(dimension,done){
         case'dayOfWeek':label=new Date(t.timestamp).toLocaleDateString(undefined,{weekday:'long'});break;
         case'hourBucket':{const h=new Date(t.timestamp).getHours();const start=Math.floor(h/4)*4;label=`${fmtHour(start)}-${fmtHour(start+4)}`;break;}
         case'pair':label=t.pair||null;break;
-        case'strategy':label=strategyLabel(t.strategy||'ZONE');break;
+        case'strategy':label=strategyLabel(t.strategyId||'zone-sd',strategies);break;
         case'zoneGrade':label=t.zoneGrade||null;break;
         case'offPlan':label=t.offPlan?'Off-plan':'On-plan';break;
         default:label=null;
@@ -955,7 +1108,7 @@ function bucketsFor(dimension,done){
 // null if nothing clears the bar. Used both as computeAskFacts's
 // secondaryPattern (scoped to the question's own range) and, unscoped, as
 // the "Surface something interesting" button's entire answer.
-function findNotablePattern(trades,mode,range={preset:'ALL',start:null,end:null}){
+function findNotablePattern(trades,mode,range={preset:'ALL',start:null,end:null},strategies){
   const scoped=tradesInRange(trades,mode,range);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
   if(!done.length)return null;
@@ -963,7 +1116,7 @@ function findNotablePattern(trades,mode,range={preset:'ALL',start:null,end:null}
   const baseWr=baseWins/done.length;
   const baseCI=wilsonInterval(baseWins,done.length);
   const candidates=PATTERN_DIMENSIONS
-    .flatMap(dim=>bucketsFor(dim,done))
+    .flatMap(dim=>bucketsFor(dim,done,strategies))
     .filter(b=>b.n>=PATTERN_MIN_N)
     .map(b=>({...b,wr:b.wins/b.n,ci:wilsonInterval(b.wins,b.n)}))
     .filter(b=>!ciOverlaps(b.ci,baseCI));
@@ -991,7 +1144,7 @@ const NO_PATTERN_TEXT="Nothing crosses the significance bar right now — no dim
 // Stage 2: deterministic — reuses the same primitives Analytics/Dashboard
 // already use (tradesInRange, wilsonInterval, computeDigest) so the LLM
 // never computes a number itself, only phrases numbers computed here.
-function computeAskFacts(spec,trades,mode){
+function computeAskFacts(spec,trades,mode,strategies){
   const range={preset:spec.range||'ALL',start:null,end:null};
   const scoped=tradesInRange(trades,mode,range);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
@@ -1002,7 +1155,7 @@ function computeAskFacts(spec,trades,mode){
     const ci=wilsonInterval(w,list.length);
     return{n:list.length,wins:w,wr:list.length?Math.round((w/list.length)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
   };
-  const bucketRowsWithCI=(dimension)=>bucketsFor(dimension,done).map(b=>{
+  const bucketRowsWithCI=(dimension)=>bucketsFor(dimension,done,strategies).map(b=>{
     const ci=wilsonInterval(b.wins,b.n);
     return{label:b.label,n:b.n,wins:b.wins,wr:b.n?Math.round((b.wins/b.n)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
   }).sort((a,b)=>b.n-a.n);
@@ -1017,9 +1170,9 @@ function computeAskFacts(spec,trades,mode){
       result={...base,streak,streakType:type};break;
     }
     case'GRADE_BREAKDOWN':result={...base,rows:['A+','A','B','C','INVALID','UNGRADED'].map(g=>({grade:g,...wrStat(done.filter(t=>t.zoneGrade===g))})).filter(r=>r.n>0)};break;
-    case'STRATEGY_BREAKDOWN':result={...base,rows:['ZONE','TREND'].map(s=>{
-      const st=done.filter(t=>(t.strategy||'ZONE')===s);
-      return{strategy:s,...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
+    case'STRATEGY_BREAKDOWN':result={...base,rows:[...new Set(done.map(t=>t.strategyId||'zone-sd'))].map(id=>{
+      const st=done.filter(t=>(t.strategyId||'zone-sd')===id);
+      return{strategy:strategyLabel(id,strategies),...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
     }).filter(r=>r.n>0)};break;
     case'PAIR_BREAKDOWN':{
       const byPair={};done.forEach(t=>{(byPair[t.pair]=byPair[t.pair]||[]).push(t);});
@@ -1040,7 +1193,7 @@ function computeAskFacts(spec,trades,mode){
   // scoped to the same range — cheap (plain array math), so it runs always;
   // whether the composer mentions it is a prompt decision (rule 4), not
   // something recomputed per question type.
-  const pattern=findNotablePattern(trades,mode,range);
+  const pattern=findNotablePattern(trades,mode,range,strategies);
   if(pattern)result.secondaryPattern=pattern;
   return result;
 }
@@ -1804,6 +1957,9 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const growth=startBal?((bal-startBal)/startBal)*100:0;
   const stake=calcStake(bal,settings);
   const active=getActive(ss,mode);
+  const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
+  const amDisplayStake=liveAmNextStake(active,bal,settings,mode);
+  const amReasoning=amStakeReasoning(active,bal,settings,mode);
   // Read straight off the session's own counters — the same trades/wins/losses
   // fields chkLock and every save path maintain — instead of re-deriving them
   // by joining trades back to the session via date+sessionNum. That join is a
@@ -1849,7 +2005,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
     const strictAtStart=isStrictForMode(settings,mode);
     let base=ss;
     const tryInsert=async b=>{
-      const candidate=buildSession(b,mode,duration,strictAtStart);
+      const candidate=buildSession(b,mode,duration,strictAtStart,settings,bal);
       const{error}=await supabase.from('sessions').insert(toSessionRow(userId,b.date,candidate));
       return{candidate,error};
     };
@@ -2051,7 +2207,11 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
         <div className="col-span-6 lg:col-span-3"><Metric label="Win rate" value={fp(wr)} sub={`${wins}W / ${done.length-wins}L · ${done.length} trades`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':done.length?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':'losses'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
-        <div className="col-span-6 lg:col-span-3"><Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/></div>
+        <div className="col-span-6 lg:col-span-3">
+          {mmStyle==='ANTI_MARTINGALE'
+            ?<Metric label="Next stake" value={f$(amDisplayStake)} sub={amReasoning} color="var(--text-primary)"/>
+            :<Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/>}
+        </div>
 
         {/* Recent trades */}
         <div className="col-span-12" style={{...card,marginBottom:0}}>
@@ -2290,7 +2450,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
 // visual weight, notes rendered at real reading size (not an afterthought),
 // gate breakdown scannable when present. Purely read-only — editing lives
 // behind the separate "Edit" action in the modal header, never the default.
-function TradeDetailView({trade,onZoom}){
+function TradeDetailView({trade,onZoom,strategies}){
   const shots=(trade.screenshots||[]).map((src,i)=>{
     const raw=typeof src==='string'?src:(src?.b64||src?.b);
     return{i,url:toDataUrl(raw,src?.mime)};
@@ -2299,7 +2459,7 @@ function TradeDetailView({trade,onZoom}){
   const facts=[
     ['Pair',trade.pair,null],
     ['Direction',trade.direction,trade.direction==='BUY'?'var(--text-success)':'var(--text-danger)'],
-    ['Strategy',strategyLabel(trade.strategy)||'Zone (S&D)',null],
+    ['Strategy',strategyLabel(trade.strategyId,strategies)||'Zone (S&D)',null],
     ['Trade grade',trade.zoneGrade,null],
     ['Stake',f$(trade.stake),null],
     ['Outcome',trade.outcome,trade.outcome==='WIN'?'var(--text-success)':trade.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'],
@@ -2364,7 +2524,8 @@ function TradeDetailView({trade,onZoom}){
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────────
-export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId}){
+export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies,openTradeId,onConsumedJump}){
+  const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
   const[manual,setManual]=useState(false);
@@ -2388,14 +2549,23 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     // to a hardcoded pick — on a fresh browser with no prior choice this is
     // '', which addManual refuses to save without the user explicitly
     // picking one, so it's never silently assumed either way.
-    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategy:lastStrategy()};
+    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategyId:lastStrategyId()};
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
+  // Deep-link from Quick Log: opens the exact same Detail/Edit modal below,
+  // rather than duplicating it — same component, same code path, just
+  // triggered by a trade id instead of a row click inside this component.
+  useEffect(()=>{
+    if(!openTradeId)return;
+    const t=trades.find(x=>x.id===openTradeId);
+    if(t)setSelectedTrade(t);
+    onConsumedJump?.();
+  },[openTradeId,trades,onConsumedJump]);
   // Opening a trade always lands on the read-only Detail view first —
   // Edit is a deliberate secondary action, never the default.
   const[editingTrade,setEditingTrade]=useState(false);
-  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategy:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
+  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategyId:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
   const[preview,setPreview]=useState(null); // {items:[url,...], index}
   const[saving,setSaving]=useState(false);
   const[savingEdit,setSavingEdit]=useState(false);
@@ -2474,7 +2644,18 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     try{sessionStorage.setItem('gm_draft_mf',JSON.stringify(mf));}catch{}
   },[mf]);
 
-  const stakeFor=m=>calcStake(balForMode(settings,trades,wds,m),settings);
+  // AM-aware: when Anti-Martingale is the active style for this mode, the
+  // "default" stake is the live escalation-aware suggestion, not Fixed-Risk
+  // math — same {calc,actual,eff} shape as calcStake so every call site
+  // (paStake, manualDefaultStake, the stake-mode buttons) works unchanged.
+  const stakeFor=m=>{
+    const modeBal=balForMode(settings,trades,wds,m);
+    if(getMoneyMgmtStyleForMode(settings,m)==='ANTI_MARTINGALE'){
+      const actual=liveAmNextStake(getActive(ss,m),modeBal,settings,m);
+      return{calc:actual,actual,eff:modeBal?(actual/modeBal)*100:0};
+    }
+    return calcStake(modeBal,settings);
+  };
   // Analyzer results always log to the global toggle's account (Change 4) —
   // no separate confirmation step. Manual entries log to whichever tab is open.
   const stake=stakeFor(mode);
@@ -2518,7 +2699,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const s=canStart(ssState,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return null;}
     const tryInsert=async base=>{
-      const candidate=buildSession(base,mode,getSessionDuration(settings,getTradeStyleForMode(settings,mode)),isStrictForMode(settings,mode));
+      const candidate=buildSession(base,mode,getSessionDuration(settings,getTradeStyleForMode(settings,mode)),isStrictForMode(settings,mode),settings,balForMode(settings,trades,wds,mode));
       const{error}=await supabase.from('sessions').insert(toSessionRow(userId,base.date,candidate));
       return{candidate,error};
     };
@@ -2569,7 +2750,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         offPlan=true;
       }
     }
-    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode,offPlan,lockingModeAtTime,strategy:'ZONE'};
+    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode,offPlan,lockingModeAtTime,strategyId:'zone-sd'};
     await saveTrades(prev=>[t,...(prev||[])]);
     if(sess){
       const us={...sess,trades:sess.trades+1};
@@ -2589,12 +2770,26 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     // resolving an old PENDING trade from a prior day could otherwise match
     // today's same-numbered session and corrupt its counters (same class of
     // bug as the reconciliation effect above).
-    const sess=t.date===ss.date && ss.sessions.find(s=>s.num===t.sessionNum && s.accountMode===getTradeMode(t));
+    const tMode=getTradeMode(t);
+    const sess=t.date===ss.date && ss.sessions.find(s=>s.num===t.sessionNum && s.accountMode===tMode);
     if(sess){
       const isW=outcome==='WIN';
-      const us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
-      const lk2=chkLock(us,getTradeStyleForMode(settings,getTradeMode(t)));
-      if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
+      let us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
+      if(getMoneyMgmtStyleForMode(settings,tMode)==='ANTI_MARTINGALE'){
+        // t's prior pnl was 0 (it was PENDING), so trades still reflects
+        // balance BEFORE this outcome — adding pnl gives balance after it,
+        // which is what the next stake should be sized against.
+        const balAfter=balForMode(settings,trades,wds,tMode)+pnl;
+        const am=advanceAntiMartingale({streak:sess.amStreak||0,nextStake:sess.amNextStake??amBaseStake(balAfter,settings)},outcome,balAfter,settings,tMode);
+        us={...us,amStreak:am.streak,amNextStake:am.nextStake};
+        const endReason=checkAntiMartingaleSessionEnd(us,tMode,settings);
+        // No isLocked/lockReason/lockCode here — Strict Locking never applies
+        // to an Anti-Martingale profit/loss-target ending.
+        if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason};
+      }else{
+        const lk2=chkLock(us,getTradeStyleForMode(settings,tMode));
+        if(lk2.locked){us.isActive=false;us.isLocked=true;us.lockReason=lk2.reason;us.lockCode=lk2.code;us.endTime=Date.now();}
+      }
       const nextSessions=ss.sessions.map(s=>s.id===sess.id?us:s);
       await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
     }
@@ -2610,7 +2805,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(saving)return;
     // Never silently assumed — the user must actively pick a strategy every
     // time, even though the toggle is pre-filled with their last choice.
-    if(!mf.strategy){alert('Select a strategy (Zone (S&D) or Trend/Pattern) before saving.');return;}
+    if(!mf.strategyId){alert('Select a strategy before saving.');return;}
     const entryAccountMode=mf.accountMode || journalTab;
     // The ONE hard stop left in the whole system.
     if(isDailyCircuitBroken(trades,entryAccountMode)){
@@ -2651,22 +2846,28 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           // been reached." sess.strictAtStart (not the live setting) decides
           // enforcement, so a mid-session toggle never changes this session.
           const styleId=getTradeStyleForMode(settings,entryAccountMode);
-          const preLock=chkLock(sess,styleId);
-          lockingModeAtTime=sess.strictAtStart?'STRICT':'SOFT';
-          if(preLock.locked){
-            if(sess.strictAtStart&&!offPlanOverride){
-              alert(`This session is locked (${preLock.reason}). Use "Log an off-plan trade anyway" to record a trade taken outside the lock.`);
-              return;
+          const amStyle=getMoneyMgmtStyleForMode(settings,entryAccountMode);
+          // Trade Management's chkLock stop/take-profit rules (and the Strict
+          // Locking that can block on them) don't apply to Anti-Martingale
+          // sessions — those end on the AM profit/loss target instead.
+          if(amStyle!=='ANTI_MARTINGALE'){
+            const preLock=chkLock(sess,styleId);
+            lockingModeAtTime=sess.strictAtStart?'STRICT':'SOFT';
+            if(preLock.locked){
+              if(sess.strictAtStart&&!offPlanOverride){
+                alert(`This session is locked (${preLock.reason}). Use "Log an off-plan trade anyway" to record a trade taken outside the lock.`);
+                return;
+              }
+              if(!offPlanOverride){
+                const proceed=window.confirm(`This trade exceeds your ${styleName(styleId)}'s stop condition (${preLock.reason}). Logging it will mark it as off-plan.`);
+                if(!proceed)return;
+              }
+              offPlan=true;
             }
-            if(!offPlanOverride){
-              const proceed=window.confirm(`This trade exceeds your ${styleName(styleId)}'s stop condition (${preLock.reason}). Logging it will mark it as off-plan.`);
-              if(!proceed)return;
-            }
-            offPlan=true;
           }
           const isW=outcome==='WIN';
           const isL=outcome==='LOSS';
-          const us={...sess,
+          let us={...sess,
             trades:sess.trades+1,
             wins:sess.wins+(isW?1:0),
             losses:sess.losses+(isL?1:0),
@@ -2675,6 +2876,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             netLoss:sess.netLoss+(isL?1:isW?-1:0),
             sPnl:sess.sPnl+pnl,
           };
+          if(amStyle==='ANTI_MARTINGALE'&&outcome!=='PENDING'){
+            const balAfter=entryBal+pnl;
+            const am=advanceAntiMartingale({streak:sess.amStreak||0,nextStake:sess.amNextStake??amBaseStake(balAfter,settings)},outcome,balAfter,settings,entryAccountMode);
+            us={...us,amStreak:am.streak,amNextStake:am.nextStake};
+            const endReason=checkAntiMartingaleSessionEnd(us,entryAccountMode,settings);
+            if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason};
+          }
           const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
           await saveSS({...cur,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
           sessionNum = sess.num;
@@ -2694,10 +2902,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const tradeDateTime=new Date(ty,tm-1,td,now.getHours(),now.getMinutes(),now.getSeconds());
       const timestamp = tradeDateTime.getTime();
 
-      const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode,offPlan,lockingModeAtTime,payoutPct:payoutPct||null,strategy:mf.strategy};
+      const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode,offPlan,lockingModeAtTime,payoutPct:payoutPct||null,strategyId:mf.strategyId};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategy:mf.strategy});setManualSuggestion(null);
+      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategyId:mf.strategyId});setManualSuggestion(null);
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -2734,12 +2942,14 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const manualBal=balForMode(settings,trades,wds,manualAccountMode);
   const manualDefaultStake=stakeFor(manualAccountMode).actual;
   const manualStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,manualDefaultStake,manualBal);
+  const manualIsAm=getMoneyMgmtStyleForMode(settings,manualAccountMode)==='ANTI_MARTINGALE';
+  const manualAmReasoning=manualIsAm?amStakeReasoning(getActive(ss,manualAccountMode),manualBal,settings,manualAccountMode):null;
 
   const tabTrades=trades.filter(t=>getTradeMode(t)===journalTab);
   // Outcome and strategy filters combine (AND), not exclusive alternatives —
   // "Zone + Win" narrows both dimensions at once, same as either alone.
   const outcomeFiltered=filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt);
-  const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>(t.strategy||'ZONE')===stratFilt);
+  const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>(t.strategyId||'zone-sd')===stratFilt);
   const sorted=[...stratFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
   async function saveTradeEdits(){
@@ -2753,7 +2963,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const validStake=Number.isFinite(stake)&&stake>0?stake:selectedTrade.stake;
       const payoutPct=editDraft.outcome==='WIN'?parseFloat(editDraft.payoutPct)||undefined:undefined;
       const pnl=calcPnl(validStake,editDraft.outcome,payoutPct);
-      const updated={...selectedTrade,notes:editDraft.notes,screenshots,pair,strategy:editDraft.strategy,
+      const updated={...selectedTrade,notes:editDraft.notes,screenshots,pair,strategyId:editDraft.strategyId,
         direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
         payoutPct:payoutPct||null};
       await saveTrades(prev=>prev.map(t=>t.id===selectedTrade.id?updated:t));
@@ -2821,7 +3031,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // on every such mutation would blow away in-progress notes edits mid-typing.
   useEffect(()=>{
     if(selectedTrade){
-      setEditDraft({notes:selectedTrade.notes||'',pair:selectedTrade.pair||'',strategy:selectedTrade.strategy||'ZONE',
+      setEditDraft({notes:selectedTrade.notes||'',pair:selectedTrade.pair||'',strategyId:selectedTrade.strategyId||'zone-sd',
         dir:selectedTrade.direction||'BUY',outcome:selectedTrade.outcome||'PENDING',grade:selectedTrade.zoneGrade||'UNGRADED',
         stake:String(selectedTrade.stake??''),payoutPct:selectedTrade.payoutPct?String(selectedTrade.payoutPct):'',
         screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
@@ -2862,6 +3072,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={paStakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={paStakeValue} onChange={e=>setPaStakeValue(e.target.value)}/>
             )}
             <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:4}}>Will log {f$(paStake)}{paStakeMode==='PERCENT'?` (${fp(parseFloat(paStakeValue)||0)} of ${f$(paBal)} balance)`:''}.</div>
+            {getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE'&&paStakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>Anti-Martingale: {amStakeReasoning(active,paBal,settings,mode)}</div>}
           </div>
           <div style={{display:'flex',gap:8}}>
             <button style={{...btn('suc'),flex:1}} onClick={()=>recordPA()} disabled={dailyLocked||strictLocked}>Create journal entry</button>
@@ -2920,7 +3131,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       </div>
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Strategy:</span>
-        {[{id:'ALL',label:'All'},{id:'ZONE',label:'Zone'},{id:'TREND',label:'Trend'}].map(f=>(
+        {[{id:'ALL',label:'All'},...activeStrategies.map(s=>({id:s.id,label:s.name}))].map(f=>(
           <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setStratFilt(f.id)}>{f.label}</button>
         ))}
       </div>
@@ -2967,21 +3178,22 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={mf.stakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={mf.stakeValue} onChange={e=>smf(m=>({...m,stakeValue:e.target.value}))}/>
             )}
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>This trade will log {f$(manualStake)}{mf.stakeMode==='PERCENT'?` (${fp(parseFloat(mf.stakeValue)||0)} of ${f$(manualBal)} balance)`:''}.</div>
+            {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Anti-Martingale: {manualAmReasoning}</div>}
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Strategy</label>
-            <div style={{display:'flex',gap:8}}>
-              {[{id:'ZONE',label:'Zone (S&D)'},{id:'TREND',label:'Trend/Pattern'}].map(s=>(
-                <button key={s.id} style={{...btn(mf.strategy===s.id?'pri':'def'),flex:1}} onClick={()=>{
-                  smf(m=>({...m,strategy:s.id}));
-                  try{localStorage.setItem('gm_last_strategy',s.id);}catch{}
-                }}>{s.label}</button>
-              ))}
-            </div>
-            {!mf.strategy&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Required — pick whichever was actually used for this trade.</div>}
+            <select aria-label="Strategy" style={inp} value={mf.strategyId||''} onChange={e=>{
+              const id=e.target.value;
+              smf(m=>({...m,strategyId:id}));
+              try{localStorage.setItem('gm_last_strategy_id',id);}catch{}
+            }}>
+              <option value="">Select a strategy…</option>
+              {activeStrategies.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            {!mf.strategyId&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Required — pick whichever was actually used for this trade.</div>}
           </div>
           <div style={{marginTop:10}}>
-            <label style={lbl}>Trade grade{mf.strategy&&<span style={{fontWeight:400,color:'var(--text-muted)'}}> ({strategyLabel(mf.strategy)})</span>}</label>
+            <label style={lbl}>Trade grade{mf.strategyId&&<span style={{fontWeight:400,color:'var(--text-muted)'}}> ({strategyLabel(mf.strategyId,strategies)})</span>}</label>
             <div style={{display:'flex',gap:8}}>
               {['A+','A','B','C','UNGRADED'].map(g=><button key={g} style={{...btn(mf.grade===g?'pri':'def'),flex:1}} onClick={()=>smf(m=>({...m,grade:g}))}>{g}</button>)}
             </div>
@@ -3065,7 +3277,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{(t.accountMode||'DEMO')==='REAL'?'Real':'Demo'}</span>
               {!t.isAnalyzed&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>Manual</span>}
               {t.offPlan&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>Off-plan</span>}
-              {t.strategy&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{strategyLabel(t.strategy)}</span>}
+              {t.strategyId&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{strategyLabel(t.strategyId,strategies)}</span>}
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:13,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'}}>{t.outcome==='PENDING'?`${f$(t.stake)} pending`:(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
@@ -3105,7 +3317,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             </div>
 
             {!editingTrade?(
-              <TradeDetailView trade={selectedTrade} onZoom={openSelectedTradeImage}/>
+              <TradeDetailView trade={selectedTrade} onZoom={openSelectedTradeImage} strategies={strategies}/>
             ):(
             <div style={{display:'grid',gap:12}}>
               <div style={card}>
@@ -3117,11 +3329,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 </datalist>
                 <div style={{marginTop:10}}>
                   <label style={lbl}>Strategy</label>
-                  <div style={{display:'flex',gap:8}}>
-                    {[{id:'ZONE',label:'Zone (S&D)'},{id:'TREND',label:'Trend/Pattern'}].map(s=>(
-                      <button key={s.id} type="button" style={{...btn(editDraft.strategy===s.id?'pri':'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,strategy:s.id}))}>{s.label}</button>
-                    ))}
-                  </div>
+                  <select aria-label="Strategy" style={inp} value={editDraft.strategyId||''} onChange={e=>setEditDraft(d=>({...d,strategyId:e.target.value}))}>
+                    <option value="">Select a strategy…</option>
+                    {[...activeStrategies,
+                      // Keep the trade's current strategy selectable inline even if it's
+                      // since been archived — an archived strategy is only hidden from
+                      // NEW entries, not erased from a trade that already references it.
+                      ...(editDraft.strategyId&&!activeStrategies.some(s=>s.id===editDraft.strategyId)
+                        ?(strategies||[]).filter(s=>s.id===editDraft.strategyId):[])
+                    ].map(s=><option key={s.id} value={s.id}>{s.name}{s.archived?' (archived)':''}</option>)}
+                  </select>
                 </div>
               </div>
               <div style={card}>
@@ -3254,11 +3471,140 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   );
 }
 
+// ── Quick Log ────────────────────────────────────────────────────────────────
+// Rapid-entry table for an active Anti-Martingale session — same trades-table
+// schema as Journal's manual entry (source:'QUICKLOG' instead of 'MANUAL'),
+// just a faster per-row commit instead of opening the full form each time.
+// Row clicks deep-link into Journal's own Detail/Edit modal (onOpenTrade)
+// rather than duplicating that ~800-line modal here.
+function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOpenTrade}){
+  const active=getActive(ss,mode);
+  const isAm=getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE';
+  const bal=balForMode(settings,trades,wds,mode);
+  const canLog=isAm&&active?.isActive;
+
+  const sessionTrades=trades
+    .filter(t=>getTradeMode(t)===mode&&t.sessionNum===active?.num&&t.date===tod())
+    .sort((a,b)=>a.timestamp-b.timestamp);
+  // Running balance per row, folded from the session's own starting point —
+  // "balance after" always reads as "what it was right after that trade,"
+  // not today's live figure.
+  let running=active?.startBalance??bal;
+  const rows=sessionTrades.map(t=>{running+=t.pnl;return{t,balanceAfter:running};});
+
+  const liveStake=canLog?liveAmNextStake(active,bal,settings,mode):0;
+  // This app's own local pair/direction quick-entry state, same tiny pattern
+  // Journal's addPairOption uses — not lifted to shared state since it's a
+  // session-local autocomplete convenience, not persisted data.
+  const[pairOptions,setPairOptions]=useState(PAIRS);
+  const[draftPair,setDraftPair]=useState('');
+  const[draftDir,setDraftDir]=useState(lastDirection());
+  const[draftStakeOverride,setDraftStakeOverride]=useState('');
+  const[saving,setSaving]=useState(false);
+  const draftStake=parseFloat(draftStakeOverride)||liveStake;
+
+  function addPairOption(value){
+    const trimmed=(value||'').trim();
+    if(!trimmed)return;
+    setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+  }
+
+  async function commitRow(outcome){
+    if(!canLog||saving)return;
+    setSaving(true);
+    try{
+      const pair=(draftPair||'Manual').trim();
+      addPairOption(pair);
+      setLastDirection(draftDir);
+      const stake=draftStake;
+      const pnl=calcPnl(stake,outcome);
+      const balAfter=bal+pnl;
+
+      // Exact same AM state machine addManual already uses — no new logic.
+      const am=advanceAntiMartingale(
+        {streak:active.amStreak||0,nextStake:active.amNextStake??amBaseStake(balAfter,settings)},
+        outcome,balAfter,settings,mode);
+      let us={...active,trades:active.trades+1,
+        wins:active.wins+(outcome==='WIN'?1:0),losses:active.losses+(outcome==='LOSS'?1:0),
+        sPnl:active.sPnl+pnl,amStreak:am.streak,amNextStake:am.nextStake};
+      const endReason=checkAntiMartingaleSessionEnd(us,mode,settings);
+      if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason}; // non-blocking, no isLocked
+
+      const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+      await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+
+      const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:active.num,pair,direction:draftDir,
+        zoneType:'',zoneGrade:'',stake,outcome,pnl,source:'QUICKLOG',screenshots:[],notes:'',
+        isAnalyzed:false,accountMode:mode,offPlan:false,lockingModeAtTime:'SOFT',payoutPct:null,
+        strategyId:lastStrategyId()||'zone-sd'};
+      await saveTrades(prev=>[t,...(prev||[])]);
+
+      setDraftPair('');setDraftStakeOverride('');
+    }finally{setSaving(false);}
+  }
+
+  return(
+    <div>
+      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Quick log — {mode==='REAL'?'Real':'Demo'}</div>
+
+      {!isAm&&<Alert type="inf" title="Anti-Martingale only" body="Quick Log is built for Anti-Martingale's escalating-stake rhythm. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
+      {isAm&&!active&&<Alert type="inf" title="No active session" body="Start an Anti-Martingale session from the Dashboard to begin logging here."/>}
+      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason==='AM_PROFIT_TARGET'?'profit target reached':'loss target reached'}. Start a new session to keep logging; this table is read-only until then.`}/>}
+
+      {isAm&&active&&(
+        <div style={g3}>
+          <Metric label="Balance" value={f$(bal)}/>
+          <Metric label="Session P&L" value={(active.sPnl>=0?'+':'')+f$(active.sPnl)} color={active.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+          <Metric label="Trades this session" value={`${active.wins}W / ${active.losses}L`}/>
+        </div>
+      )}
+
+      <table style={{width:'100%',borderCollapse:'collapse',marginTop:12}}>
+        <thead>
+          <tr style={{fontSize:11,color:'var(--text-muted)',textAlign:'left'}}>
+            <th style={{padding:'4px 6px'}}>Pair</th><th style={{padding:'4px 6px'}}>Dir</th><th style={{padding:'4px 6px'}}>Stake</th><th style={{padding:'4px 6px'}}>Outcome</th><th style={{padding:'4px 6px'}}>Balance after</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(({t,balanceAfter})=>(
+            <tr key={t.id} style={{cursor:'pointer',borderTop:'1px solid var(--border)'}} onClick={()=>onOpenTrade(t.id)}>
+              <td style={{padding:'6px'}}>{t.pair}</td>
+              <td style={{padding:'6px'}}><DirToggle value={t.direction}/></td>
+              <td style={{padding:'6px'}}>{f$(t.stake)}</td>
+              <td style={{padding:'6px',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)',fontWeight:600}}>{t.outcome}</td>
+              <td style={{padding:'6px'}}>{f$(balanceAfter)}</td>
+            </tr>
+          ))}
+          {canLog&&(
+            <tr style={{borderTop:'1px solid var(--border)'}}>
+              <td style={{padding:'6px'}}>
+                <input list="quicklog-pairs" style={inp} value={draftPair} onChange={e=>setDraftPair(e.target.value)} placeholder="EUR/USD OTC"/>
+                <datalist id="quicklog-pairs">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
+              </td>
+              <td style={{padding:'6px'}}><DirToggle value={draftDir} onChange={setDraftDir}/></td>
+              <td style={{padding:'6px'}}><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></td>
+              <td style={{padding:'6px'}}>
+                <button style={btn('suc')} onClick={()=>commitRow('WIN')} disabled={saving}>W</button>{' '}
+                <button style={btn('dan')} onClick={()=>commitRow('LOSS')} disabled={saving}>L</button>
+              </td>
+              <td style={{padding:'6px',fontSize:12}}>
+                <span style={{color:'var(--text-success)'}}>{f$(bal+calcPnl(draftStake,'WIN'))}</span>
+                {' / '}
+                <span style={{color:'var(--text-danger)'}}>{f$(bal+calcPnl(draftStake,'LOSS'))}</span>
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Money Management ──────────────────────────────────────────────────────────
 // Milestones and the growth projector follow the global Demo/Real toggle, so
 // growth can be envisioned on Demo too. Withdrawal logging stays Real-only —
 // Demo has no concept of a withdrawal.
-function Money({settings,trades,wds,saveWds,mode}){
+function Money({settings,trades,wds,saveWds,mode,ss}){
   const startBal=getStartingBalanceForMode(settings,mode);
   const bal=balForMode(settings,trades,wds,mode);
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
@@ -3266,6 +3612,10 @@ function Money({settings,trades,wds,saveWds,mode}){
   const[note,setNote]=useState('');
   const[wks,setWks]=useState(12);
   const stake=calcStake(bal,settings);
+  const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
+  const activeAmSession=ss?getActive(ss,mode):null;
+  const amNextStake=mmStyle==='ANTI_MARTINGALE'?liveAmNextStake(activeAmSession,bal,settings,mode):null;
+  const amReasoning=mmStyle==='ANTI_MARTINGALE'?amStakeReasoning(activeAmSession,bal,settings,mode):null;
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
   const actualWr=done.length?wins/done.length:0.65;
@@ -3299,10 +3649,17 @@ function Money({settings,trades,wds,saveWds,mode}){
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Position sizer</div>
         <div style={g3}>
           <Metric label="Balance" value={f$(bal)}/>
-          <Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>
-          <Metric label="Trade stake" value={f$(stake.actual)} color="var(--text-accent)"/>
+          {mmStyle==='ANTI_MARTINGALE'
+            ?<Metric label="Style" value="Anti-Martingale" sub={amReasoning}/>
+            :<Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>}
+          <Metric label="Trade stake" value={f$(mmStyle==='ANTI_MARTINGALE'?amNextStake:stake.actual)} color="var(--text-accent)"/>
         </div>
-        {settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
+        {mmStyle==='ANTI_MARTINGALE'&&(
+          <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
+            {getAmMultiplierForMode(settings,mode).toFixed(1)}× multiplier per win, capped at {getAmCeilingPctForMode(settings,mode)}% of balance · ends at +{getAmProfitTargetPctForMode(settings,mode)}% or −{getAmLossTargetPctForMode(settings,mode)}% of this session's starting balance.
+          </div>
+        )}
+        {mmStyle!=='ANTI_MARTINGALE'&&settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
           <div style={{fontSize:12,color:'var(--text-warning)',marginTop:8,padding:'6px 10px',background:'var(--bg-warning)',borderRadius:'var(--radius)'}}>
             ⚠ $1 minimum means effective risk is {fp(stake.eff)} — above your target {fp(settings.riskPercent)}. Balance needs {f$(1/(settings.riskPercent/100))} for correct sizing.
           </div>
@@ -3601,7 +3958,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
   );
 }
 
-export function Analytics({trades,analyses,settings,bal,wds}){
+export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyList}){
   const[scope,setScope]=useState('ALL');
   const[tab,setTab]=useState('OVERVIEW');
   const[range,setRange]=useState({preset:'ALL',start:null,end:null});
@@ -3615,12 +3972,18 @@ export function Analytics({trades,analyses,settings,bal,wds}){
   const aWr=analyzed.length?(analyzed.filter(t=>t.outcome==='WIN').length/analyzed.length)*100:0;
   const mWr=manual.length?(manual.filter(t=>t.outcome==='WIN').length/manual.length)*100:0;
   const grades=['A+','A','B','C','INVALID','UNGRADED'].map(g=>{const gt=done.filter(t=>t.zoneGrade===g),gw=gt.filter(t=>t.outcome==='WIN').length;return{g,total:gt.length,wins:gw,wr:gt.length?(gw/gt.length)*100:0};}).filter(x=>x.total>0);
-  // Strategy is a full breakdown dimension, equal standing to grade/pair —
-  // trades pre-date this field, so default to ZONE (matches toTradeRow's
-  // own fallback) rather than silently dropping them from the split.
-  const strategies=['ZONE','TREND'].map(s=>{
-    const st=done.filter(t=>(t.strategy||'ZONE')===s),sw=st.filter(t=>t.outcome==='WIN').length;
-    return{s,total:st.length,wins:sw,wr:st.length?(sw/st.length)*100:0,pnl:st.reduce((a,t)=>a+t.pnl,0)};
+  // Strategy is a full breakdown dimension, equal standing to grade/pair, and
+  // works for any number of user-defined strategies, not just the two
+  // builtins — grouped by whichever strategyId's actually present in the
+  // data (trades pre-dating this field default to 'zone-sd', matching
+  // toTradeRow's own fallback), with the display name resolved from the
+  // user's full strategies list. A strategyId that no longer resolves (only
+  // possible if a row were hard-deleted outside the app, since Settings only
+  // ever soft-deletes) defensively falls back to "(unknown)".
+  const strategyBreakdown=[...new Set(done.map(t=>t.strategyId||'zone-sd'))].map(id=>{
+    const st=done.filter(t=>(t.strategyId||'zone-sd')===id),sw=st.filter(t=>t.outcome==='WIN').length;
+    const name=strategyLabel(id,strategyList)||'(unknown)';
+    return{id,name,total:st.length,wins:sw,wr:st.length?(sw/st.length)*100:0,pnl:st.reduce((a,t)=>a+t.pnl,0)};
   }).filter(x=>x.total>0);
   const pairsMap={};done.forEach(t=>{if(!pairsMap[t.pair])pairsMap[t.pair]={wins:0,total:0};pairsMap[t.pair].total++;if(t.outcome==='WIN')pairsMap[t.pair].wins++;});
   const pairs=Object.entries(pairsMap).map(([p,d])=>({p,wr:(d.wins/d.total)*100,...d})).sort((a,b)=>b.total-a.total).slice(0,6);
@@ -3743,14 +4106,14 @@ export function Analytics({trades,analyses,settings,bal,wds}){
         </div>
       )}
 
-      {strategies.length>0&&(
+      {strategyBreakdown.length>0&&(
         <div style={card}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Performance by strategy</div>
-          <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:6}}>Zone (S&D) vs Trend/Pattern — equal standing, no default preference</div>
-          {strategies.map(x=>(
-            <div key={x.s} style={{marginTop:10,paddingTop:8,borderTop:'0.5px solid var(--border)'}}>
+          <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:6}}>Every strategy you've logged trades under — equal standing, no default preference</div>
+          {strategyBreakdown.map(x=>(
+            <div key={x.id} style={{marginTop:10,paddingTop:8,borderTop:'0.5px solid var(--border)'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{strategyLabel(x.s)}</span><span style={{fontSize:12,color:'var(--text-muted)'}}>{x.total} trades</span></div>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{x.name}</span><span style={{fontSize:12,color:'var(--text-muted)'}}>{x.total} trades</span></div>
                 <span style={{fontSize:13,fontFamily:'var(--font-mono)',color:x.wr>=65?'var(--text-success)':'var(--text-accent)'}}>{fp(x.wr)}</span>
               </div>
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
@@ -3791,7 +4154,7 @@ export function Analytics({trades,analyses,settings,bal,wds}){
 // component's only jobs: render messages, resolve Demo/Real ambiguity via a
 // button reply (not a guess), and log each finished Q&A to Supabase — it does
 // not accumulate any user "profile", each question is answered from scratch.
-function Ask({trades,settings,mode,userId}){
+function Ask({trades,settings,mode,userId,strategies}){
   const[messages,setMessages]=useState([]);
   const[input,setInput]=useState('');
   const[busy,setBusy]=useState(false);
@@ -3841,12 +4204,12 @@ function Ask({trades,settings,mode,userId}){
       return;
     }
     if(spec.intent==='ADVICE_OR_OPINION'){
-      const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode):null;
+      const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode,strategies):null;
       const text=`I can show you the data on this, but I can't tell you what to do with it.`+(facts?` ${factsToText(facts)}`:'');
       await persistAndShow(question,text,resolvedMode);
       return;
     }
-    const facts=computeAskFacts(spec,trades,resolvedMode);
+    const facts=computeAskFacts(spec,trades,resolvedMode,strategies);
     let text;
     try{text=await composeAskAnswer(question,facts,settings);}
     catch{text=factsToText(facts);} // composer call failed — still show the real, computed numbers
@@ -3865,7 +4228,7 @@ function Ask({trades,settings,mode,userId}){
     appendUser(PATTERN_SCAN_QUESTION);
     setBusy(true);
     try{
-      const pattern=findNotablePattern(trades,mode);
+      const pattern=findNotablePattern(trades,mode,undefined,strategies);
       if(!pattern){
         await persistAndShow(PATTERN_SCAN_QUESTION,NO_PATTERN_TEXT,mode);
         return;
@@ -3947,16 +4310,107 @@ function Ask({trades,settings,mode,userId}){
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function Cfg({settings,saveSettings,ss,resetAccount}){
-  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true});
+// One row of the "Manage strategies" list — inline edit, and a delete that's
+// soft (archive) if any trade references this strategy, hard otherwise; the
+// two builtins never show a delete button at all.
+function StrategyRow({strategy,trades,updateStrategy,deleteStrategy}){
+  const[editing,setEditing]=useState(false);
+  const[name,setName]=useState(strategy.name);
+  const[desc,setDesc]=useState(strategy.description||'');
+  const inUse=(trades||[]).some(t=>(t.strategyId||'zone-sd')===strategy.id);
+  async function save(){
+    if(!name.trim())return;
+    await updateStrategy({...strategy,name:name.trim(),description:desc.trim()||null});
+    setEditing(false);
+  }
+  return(
+    <div style={{padding:'8px 0',borderBottom:'0.5px solid var(--border)'}}>
+      {editing?(
+        <div>
+          <input style={inp} value={name} onChange={e=>setName(e.target.value)} placeholder="Name"/>
+          <input style={{...inp,marginTop:6}} value={desc} onChange={e=>setDesc(e.target.value)} placeholder="Description (optional)"/>
+          <div style={{display:'flex',gap:8,marginTop:6}}>
+            <button style={{...btn('pri'),flex:1}} onClick={save} disabled={!name.trim()}>Save</button>
+            <button style={btn()} onClick={()=>{setEditing(false);setName(strategy.name);setDesc(strategy.description||'');}}>Cancel</button>
+          </div>
+        </div>
+      ):(
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+          <div>
+            <div style={{fontSize:13,fontWeight:500,color:'var(--text-primary)'}}>
+              {strategy.name}
+              {strategy.isBuiltin&&<span style={{marginLeft:6,fontSize:10,color:'var(--text-muted)'}}>Built-in</span>}
+              {strategy.archived&&<span style={{marginLeft:6,fontSize:10,color:'var(--text-warning)'}}>Archived</span>}
+            </div>
+            {strategy.description&&<div style={{fontSize:12,color:'var(--text-muted)'}}>{strategy.description}</div>}
+          </div>
+          <div style={{display:'flex',gap:6,flexShrink:0}}>
+            <button style={{...btn(),padding:'4px 10px',fontSize:12}} onClick={()=>setEditing(true)}>Edit</button>
+            {!strategy.isBuiltin&&(
+              <button style={{...btn('dan'),padding:'4px 10px',fontSize:12}} onClick={()=>{
+                const msg=inUse
+                  ?`"${strategy.name}" is used by past trades — it'll be archived (hidden from new entries, kept for history) instead of deleted. Continue?`
+                  :`Delete "${strategy.name}"? This cannot be undone.`;
+                if(!window.confirm(msg))return;
+                deleteStrategy(strategy);
+              }}>Delete</button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Cfg({settings,saveSettings,ss,resetAccount,trades,strategies,addStrategy,updateStrategy,deleteStrategy}){
+  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true,
+    moneyMgmtStyleDemo:settings?.moneyMgmtStyleDemo ?? 'FIXED',moneyMgmtStyleReal:settings?.moneyMgmtStyleReal ?? 'FIXED',
+    amMultiplierDemo:settings?.amMultiplierDemo ?? 2,amMultiplierReal:settings?.amMultiplierReal ?? 2,
+    amCeilingPctDemo:settings?.amCeilingPctDemo ?? 20,amCeilingPctReal:settings?.amCeilingPctReal ?? 20,
+    amProfitTargetPctDemo:settings?.amProfitTargetPctDemo ?? 10,amProfitTargetPctReal:settings?.amProfitTargetPctReal ?? 10,
+    amLossTargetPctDemo:settings?.amLossTargetPctDemo ?? 10,amLossTargetPctReal:settings?.amLossTargetPctReal ?? 10,
+    riskCalcBalance:settings?.riskCalcBalance ?? '',riskCalcTargetPct:settings?.riskCalcTargetPct ?? '',riskCalcTradesPerSession:settings?.riskCalcTradesPerSession ?? 6});
   const[saved,setSaved]=useState(false);
   const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
   const[sessionWarn,setSessionWarn]=useState(false);
   const[includeBalances,setIncludeBalances]=useState(false);
   const[confirmReset,setConfirmReset]=useState(null); // {scope,label,body}
   const[resetDone,setResetDone]=useState(false);
+  const[newStratName,setNewStratName]=useState('');
+  const[newStratDesc,setNewStratDesc]=useState('');
+  const[calcMode,setCalcMode]=useState('DEMO');
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   const activeSession=ss?getActive(ss):null;
+
+  async function applyMoneyMgmtStyle(mode,styleVal){
+    if(activeSession)setSessionWarn(true);
+    const key=mode==='REAL'?'moneyMgmtStyleReal':'moneyMgmtStyleDemo';
+    const updated={...f,[key]:styleVal};
+    sf(updated);
+    await saveSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
+  }
+
+  // Suggested risk % — display-only, never writes to riskPercent or any other
+  // setting. Reuses the same win-rate math Analytics uses (wins/total*100).
+  const calcDone=(trades||[]).filter(t=>getTradeMode(t)===calcMode&&t.outcome!=='PENDING');
+  const calcWinRate=calcDone.length?(calcDone.filter(t=>t.outcome==='WIN').length/calcDone.length)*100:65;
+  const calcModeKey=calcMode==='REAL'?'Real':'Demo';
+  const calcIsAM=f[`moneyMgmtStyle${calcModeKey}`]==='ANTI_MARTINGALE';
+  const calcTargetPct=parseFloat(f.riskCalcTargetPct)||(calcIsAM?parseFloat(f[`amProfitTargetPct${calcModeKey}`])||10:10);
+  const calcTradesN=Math.max(1,parseFloat(f.riskCalcTradesPerSession)||6);
+  // Simple heuristic, not a full Kelly/Monte-Carlo model: edge is win rate
+  // minus loss rate (floored so a coin-flip-or-worse win rate doesn't blow
+  // up the division), and suggested risk scales the target down by how many
+  // trades/session and how much edge you actually have — more trades or more
+  // edge per session both mean less risk needed on any single one.
+  const calcEdge=Math.max(0.05,(calcWinRate-(100-calcWinRate))/100);
+  const calcSuggestedRisk=Math.min(20,Math.max(0.5,+(calcTargetPct/(calcTradesN*calcEdge)).toFixed(1)));
+  // riskPercent is global (not per-mode), so "current setting" is the same
+  // number regardless of which mode the calculator's toggle is on.
+  const calcCurrentPct=parseFloat(f.riskPercent)||5;
+  const calcBalanceNum=parseFloat(f.riskCalcBalance)||0;
+  const calcClose=Math.abs(calcCurrentPct-calcSuggestedRisk)<=0.5;
+  function applySuggestedRisk(){set('riskPercent',Math.max(1,Math.min(20,calcSuggestedRisk)));}
 
   async function save(){await saveSettings({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0)});setSaved(true);setTimeout(()=>setSaved(false),2000);}
 
@@ -4082,8 +4536,9 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>Trade management style</div>
         <div style={g2}>
-          <div>
+          <div style={f.moneyMgmtStyleDemo==='ANTI_MARTINGALE'?{opacity:0.45,pointerEvents:'none'}:undefined}>
             <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Demo account</div>
+            {f.moneyMgmtStyleDemo==='ANTI_MARTINGALE'&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Demo is on Anti-Martingale money management, which ends sessions on its own profit/loss target instead.</p>}
             {STYLES.map(st=>(
               <div key={`demo-${st.id}`} onClick={()=>applyStyle(st.id,'DEMO')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleDemo===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
@@ -4094,8 +4549,9 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
               </div>
             ))}
           </div>
-          <div>
+          <div style={f.moneyMgmtStyleReal==='ANTI_MARTINGALE'?{opacity:0.45,pointerEvents:'none'}:undefined}>
             <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Real account</div>
+            {f.moneyMgmtStyleReal==='ANTI_MARTINGALE'&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Real is on Anti-Martingale money management, which ends sessions on its own profit/loss target instead.</p>}
             {STYLES.map(st=>(
               <div key={`real-${st.id}`} onClick={()=>applyStyle(st.id,'REAL')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleReal===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
@@ -4191,6 +4647,93 @@ function Cfg({settings,saveSettings,ss,resetAccount}){
               {notifPerm==='granted'&&' Turning this off only stops alerts here in the app — your browser\'s own notification permission stays granted, since only the browser itself can revoke that.'}
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* ── Money management style ──────────────────────────────────── */}
+      <div style={card}>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:6}}>Money management style</div>
+        <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
+          Switchable any time — takes effect from your next trade. Anti-Martingale escalates the stake after a win (up to {AM_MAX_ESCALATIONS} steps, capped at a % of balance) and resets on any loss; it ends its own session on a profit or loss target instead of the Trade Management rules above, so that selector is disabled for whichever mode uses it.
+        </p>
+        <div style={g2}>
+          {ACCOUNT_MODES.map(m=>{
+            const key=m==='REAL'?'moneyMgmtStyleReal':'moneyMgmtStyleDemo';
+            const modeLabel=m==='REAL'?'Real':'Demo';
+            return(
+              <div key={m}>
+                <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{modeLabel} account</div>
+                <div style={{display:'flex',gap:8,marginBottom:10}}>
+                  {[{id:'FIXED',label:'Fixed Risk %'},{id:'ANTI_MARTINGALE',label:'Anti-Martingale'}].map(o=>(
+                    <button key={o.id} style={{...btn(f[key]===o.id?'pri':'def'),flex:1,fontSize:12}} onClick={()=>applyMoneyMgmtStyle(m,o.id)}>{o.label}</button>
+                  ))}
+                </div>
+                {f[key]==='ANTI_MARTINGALE'&&(
+                  <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
+                    <label style={lbl}>Multiplier: {(f[`amMultiplier${modeLabel}`]??2).toFixed(1)}×</label>
+                    <input type="range" min="1.2" max="3" step="0.1" value={f[`amMultiplier${modeLabel}`]??2} onChange={e=>set(`amMultiplier${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                    <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeLabel}`]??20}% of balance</label>
+                    <input type="range" min="5" max="50" step="1" value={f[`amCeilingPct${modeLabel}`]??20} onChange={e=>set(`amCeilingPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                    <label style={{...lbl,marginTop:8}}>Profit target: {f[`amProfitTargetPct${modeLabel}`]??10}% of session start balance</label>
+                    <input type="range" min="1" max="50" step="1" value={f[`amProfitTargetPct${modeLabel}`]??10} onChange={e=>set(`amProfitTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                    <label style={{...lbl,marginTop:8}}>Loss target: {f[`amLossTargetPct${modeLabel}`]??10}% of session start balance</label>
+                    <input type="range" min="1" max="50" step="1" value={f[`amLossTargetPct${modeLabel}`]??10} onChange={e=>set(`amLossTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Suggested risk % — computes and displays only, never writes to riskPercent or any setting. */}
+        <div style={{marginTop:16,paddingTop:14,borderTop:'1px solid var(--border)'}}>
+          <div style={{fontSize:13,fontWeight:500,marginBottom:8}}>Suggested risk % calculator</div>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            {ACCOUNT_MODES.map(m=>(
+              <button key={m} style={{...btn(calcMode===m?'pri':'def'),flex:1,fontSize:12}} onClick={()=>setCalcMode(m)}>{m==='REAL'?'Real':'Demo'}</button>
+            ))}
+          </div>
+          <div style={g2}>
+            <div><label style={lbl}>Balance ($, optional — for the $ estimate below)</label><input style={inp} type="number" min="0" placeholder="e.g. 500" value={f.riskCalcBalance} onChange={e=>set('riskCalcBalance',e.target.value)}/></div>
+            <div><label style={lbl}>Session profit target (%)</label><input style={inp} type="number" min="0.1" step="0.5" placeholder={String(calcIsAM?(f[`amProfitTargetPct${calcModeKey}`]??10):10)} value={f.riskCalcTargetPct} onChange={e=>set('riskCalcTargetPct',e.target.value)}/></div>
+          </div>
+          <div style={{marginTop:8}}><label style={lbl}>Trades per session (est.)</label><input style={inp} type="number" min="1" step="1" value={f.riskCalcTradesPerSession} onChange={e=>set('riskCalcTradesPerSession',e.target.value)}/></div>
+          <div style={{marginTop:10,padding:10,borderRadius:'var(--radius)',background:calcClose?'var(--bg-success)':'var(--bg-accent)',fontSize:13,color:calcClose?'var(--text-success)':'var(--text-accent)'}}>
+            {calcClose?(
+              <>
+                Your current setting (<strong>{calcCurrentPct}%</strong>) is already close to the suggested <strong>{calcSuggestedRisk}%</strong>
+                {calcBalanceNum>0&&<> (~{f$(calcBalanceNum*(calcCurrentPct/100))} vs ~{f$(calcBalanceNum*(calcSuggestedRisk/100))} per trade)</>}.
+                {' '}<button style={{...btn(),fontSize:11,padding:'3px 8px'}} onClick={applySuggestedRisk}>Apply anyway</button>
+              </>
+            ):(
+              <>
+                Your current setting: <strong>{calcCurrentPct}%</strong>{calcBalanceNum>0&&<> (~{f$(calcBalanceNum*(calcCurrentPct/100))}/trade at {f$(calcBalanceNum)})</>}<br/>
+                Suggested: <strong>{calcSuggestedRisk}%</strong>{calcBalanceNum>0&&<> (~{f$(calcBalanceNum*(calcSuggestedRisk/100))}/trade)</>}
+                {' '}<button style={{...btn('pri'),fontSize:11,padding:'3px 8px'}} onClick={applySuggestedRisk}>Apply this suggestion</button>
+              </>
+            )}
+          </div>
+          <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>
+            To reach {calcTargetPct}% target from ~{calcTradesN} trades/session at {calcWinRate.toFixed(0)}% win rate ({calcDone.length} {calcModeKey} trade{calcDone.length===1?'':'s'} on record, defaults to 65% with none), ~{calcSuggestedRisk}% risk per trade keeps drawdown risk moderate. This is a simple heuristic, not a guarantee.
+            {calcIsAM&&<> {calcModeKey} is on Anti-Martingale — this sets the <em>base</em> stake size only (what escalation resets to after a loss); it has no effect on the profit/loss session-ending targets in the section above.</>}
+          </p>
+        </div>
+      </div>
+
+      {/* ── Manage strategies ───────────────────────────────────────── */}
+      <div style={card}>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:6}}>Manage strategies</div>
+        <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:10}}>Strategies tag every trade in the Journal. Zone (S&D) and Trend/Pattern are built in and can't be deleted; add your own below.</p>
+        {(strategies||[]).map(s=>(
+          <StrategyRow key={s.id} strategy={s} trades={trades} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>
+        ))}
+        <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
+          <label style={lbl}>Add strategy</label>
+          <div style={g2}>
+            <input style={inp} placeholder="Name" value={newStratName} onChange={e=>setNewStratName(e.target.value)}/>
+            <input style={inp} placeholder="Description (optional)" value={newStratDesc} onChange={e=>setNewStratDesc(e.target.value)}/>
+          </div>
+          <button style={{...btn('pri'),marginTop:8}} disabled={!newStratName.trim()} onClick={async()=>{await addStrategy(newStratName,newStratDesc);setNewStratName('');setNewStratDesc('');}}>+ Add strategy</button>
         </div>
       </div>
 
@@ -4525,8 +5068,11 @@ export default function App(){
   const[trades,setTrades]=useState([]);
   const[analyses,setAnalyses]=useState([]);
   const[wds,setWds]=useState([]);
+  const[strategies,setStrategies]=useState([]);
   const[ss,setSS]=useState(null);
   const[view,setView]=useState(()=>sessionStorage.getItem('gm_view')||'dashboard');
+  // Quick Log row click → Journal's own Detail/Edit modal, by trade id.
+  const[jumpToTradeId,setJumpToTradeId]=useState(null);
   const[page,setPage]=useState(()=>sessionStorage.getItem('gm_page')||'landing');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
@@ -4544,18 +5090,22 @@ export default function App(){
   },[]);
 
   useEffect(()=>{
-    if(!userId){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setSS(null);setLoading(false);prevUserId.current=null;return;}
+    if(!userId){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setStrategies([]);setSS(null);setLoading(false);prevUserId.current=null;return;}
     if(prevUserId.current===userId)return;
     prevUserId.current=userId;
     setLoading(true);
     (async()=>{
       await maybeMigrateLocal(userId);
-      const[{data:s},{data:t},{data:sessRows},{data:w},{data:a}]=await Promise.all([
+      // Every user gets their own 'zone-sd'/'trend-pattern' rows on first
+      // load — a no-op after the first time (both ids already exist).
+      await ensureBuiltinStrategies(userId);
+      const[{data:s},{data:t},{data:sessRows},{data:w},{data:a},{data:strat}]=await Promise.all([
         supabase.from('settings').select('*').eq('user_id',userId).maybeSingle(),
         supabase.from('trades').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
         supabase.from('sessions').select('*').eq('user_id',userId).eq('date',tod()),
         supabase.from('withdrawals').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
         supabase.from('zone_analyses').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
+        supabase.from('strategies').select('*').eq('user_id',userId).order('created_at',{ascending:true}),
       ]);
       const sObj=s?fromSettingsRow(s):null;
       const normalized=sObj&&{
@@ -4571,6 +5121,7 @@ export default function App(){
       setTrades(await Promise.all(tradesObj.map(async tr=>({...tr,screenshots:await Promise.all((tr.screenshots||[]).map(signShot))}))));
       setAnalyses(await Promise.all(analysesObj.map(async an=>({...an,screenshot:await signShot(an.screenshot)}))));
       setWds((w||[]).map(fromWdRow));
+      setStrategies((strat||[]).map(fromStrategyRow));
       setSS(normalized?dayFromSessionRows(sessRows||[]):null);
       setLoading(false);
     })();
@@ -4621,6 +5172,28 @@ export default function App(){
   };
   const saveWds=async v=>{setWds(v);if(authUser)await supabase.from('withdrawals').upsert(v.map(w=>toWdRow(authUser.id,w)));};
   const saveSS=async v=>{setSS(v);if(authUser)await supabase.from('sessions').upsert(v.sessions.map(s=>toSessionRow(authUser.id,v.date,s)));};
+
+  const addStrategy=async(name,description)=>{
+    const s={id:uid(),name:(name||'').trim(),description:(description||'').trim()||null,isBuiltin:false,archived:false,createdAt:Date.now()};
+    if(!s.name)return null;
+    setStrategies(prev=>[...prev,s]);
+    if(authUser)await supabase.from('strategies').insert(toStrategyRow(authUser.id,s));
+    return s;
+  };
+  const updateStrategy=async s=>{
+    setStrategies(prev=>prev.map(x=>x.id===s.id?s:x));
+    if(authUser)await supabase.from('strategies').upsert(toStrategyRow(authUser.id,s));
+  };
+  // Hard delete only when nothing references it; otherwise archive (soft
+  // delete) so past trades can still resolve their strategy name. Builtins
+  // are never deletable — enforced here too, not just by hiding the button.
+  const deleteStrategy=async strat=>{
+    if(strat.isBuiltin)return;
+    const inUse=trades.some(t=>(t.strategyId||'zone-sd')===strat.id);
+    if(inUse){await updateStrategy({...strat,archived:true});return;}
+    setStrategies(prev=>prev.filter(s=>s.id!==strat.id));
+    if(authUser)await supabase.from('strategies').delete().eq('user_id',authUser.id).eq('id',strat.id);
+  };
 
   // Deletes a trade for real (saveTrades only ever upserts — nothing before this
   // ever removed a row) and reverses its simple counters on the owning session.
@@ -4702,6 +5275,9 @@ export default function App(){
         .sort((a,b)=>a.timestamp-b.timestamp);
       if(!sessionTrades.length)return sess;
       // Rebuild counters from scratch (in order) so streaks are correct.
+      const amStyle=getMoneyMgmtStyleForMode(settings,sess.accountMode);
+      let amStreak=0,amNextStake=amStyle==='ANTI_MARTINGALE'?amBaseStake(sess.startBalance??0,settings):null;
+      let runningBal=sess.startBalance??0;
       let w=0,l=0,tc=0,cl=0,cw=0,sp=0;
       for(const t of sessionTrades){
         if(t.outcome==='PENDING'){tc++;continue;}
@@ -4709,17 +5285,33 @@ export default function App(){
         if(t.outcome==='WIN'){w++;cw++;cl=0;}
         if(t.outcome==='LOSS'){l++;cl++;cw=0;}
         sp+=t.pnl||0;
+        if(amStyle==='ANTI_MARTINGALE'){
+          runningBal+=t.pnl||0;
+          const am=advanceAntiMartingale({streak:amStreak,nextStake:amNextStake},t.outcome,runningBal,settings,sess.accountMode);
+          amStreak=am.streak;amNextStake=am.nextStake;
+        }
       }
       const nl=Math.max(0,l-w);
-      const rebuilt={...sess,trades:tc,wins:w,losses:l,conLoss:cl,conWin:cw,netLoss:nl,sPnl:sp};
+      const rebuilt={...sess,trades:tc,wins:w,losses:l,conLoss:cl,conWin:cw,netLoss:nl,sPnl:sp,
+        ...(amStyle==='ANTI_MARTINGALE'?{amStreak,amNextStake}:{})};
+      // Use the last resolved trade's timestamp as endTime so the 6h
+      // session gap is measured from when trading actually stopped,
+      // not from when this reconciliation runs.
+      const lastTrade=sessionTrades.filter(t=>t.outcome!=='PENDING').pop();
+      const endTime=lastTrade?lastTrade.timestamp:Date.now();
+      if(amStyle==='ANTI_MARTINGALE'){
+        // No chkLock/Strict Locking replay here — Trade Management stop
+        // rules don't apply to Anti-Martingale sessions.
+        const endReason=checkAntiMartingaleSessionEnd(rebuilt,sess.accountMode,settings);
+        if(endReason){changed=true;return{...rebuilt,isActive:false,endTime,endReason};}
+        // A trade delete can leave streak/next-stake stale even with no end
+        // event (e.g. an escalation trade removed) — still worth persisting.
+        if(rebuilt.amStreak!==(sess.amStreak||0)||rebuilt.amNextStake!==sess.amNextStake){changed=true;return rebuilt;}
+        return sess;
+      }
       const lk=chkLock(rebuilt,getTradeStyleForMode(settings,sess.accountMode));
       if(lk.locked){
         changed=true;
-        // Use the last resolved trade's timestamp as endTime so the 6h
-        // session gap is measured from when trading actually stopped,
-        // not from when this reconciliation runs.
-        const lastTrade=sessionTrades.filter(t=>t.outcome!=='PENDING').pop();
-        const endTime=lastTrade?lastTrade.timestamp:Date.now();
         return{...rebuilt,isActive:false,isLocked:true,lockReason:lk.reason,lockCode:lk.code,endTime};
       }
       return sess;
@@ -4794,6 +5386,10 @@ export default function App(){
     {id:'dashboard',icon:LayoutDashboard,label:'Dashboard'},
     {id:'analyzer',icon:ScanSearch,label:'Zone analyzer'},
     {id:'journal',icon:BookOpen,label:'Journal',badge:pending},
+    // Only relevant while Anti-Martingale is this mode's active Money
+    // Management Style — same gate QuickLog's own "Anti-Martingale only"
+    // alert uses, so the nav entry and the page content never disagree.
+    ...(getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE'?[{id:'quicklog',icon:Zap,label:'Quick log'}]:[]),
     {id:'money',icon:Wallet,label:'Money mgmt'},
     {id:'plan',icon:ClipboardList,label:'Trading plan'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},
@@ -4968,12 +5564,13 @@ export default function App(){
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
             {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music} userId={authUser?.id}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA} trades={trades}/>}
-            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id}/>}
-            {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode}/>}
+            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies} openTradeId={jumpToTradeId} onConsumedJump={()=>setJumpToTradeId(null)}/>}
+            {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} onOpenTrade={id=>{setJumpToTradeId(id);setView('journal');}}/>}
+            {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
             {view==='plan'&&<Plan settings={settings}/>}
-            {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds}/>}
-            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id}/>}
-            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount}/>}
+            {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
+            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies}/>}
+            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} strategies={strategies} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>}
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}

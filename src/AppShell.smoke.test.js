@@ -8,7 +8,7 @@ jest.mock('./supabaseClient', () => {
   };
   const thenable = (result) => {
     const c = {
-      select: () => c, eq: () => c, order: () => c,
+      select: () => c, eq: () => c, order: () => c, in: () => c, insert: () => c, upsert: () => c, delete: () => c,
       maybeSingle: () => Promise.resolve({ data: settingsRow, error: null }),
       then: (res, rej) => Promise.resolve(result).then(res, rej),
     };
