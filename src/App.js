@@ -3581,13 +3581,51 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
       {isAm&&!active&&<Alert type="inf" title="No active session" body="Start an Anti-Martingale session from the Dashboard to begin logging here."/>}
       {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason==='AM_PROFIT_TARGET'?'profit target reached':active.endReason==='AM_LOSS_TARGET'?'loss target reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
 
-      {isAm&&active&&(
-        <div style={g3}>
-          <Metric label="Balance" value={f$(bal)}/>
-          <Metric label="Session P&L" value={(active.sPnl>=0?'+':'')+f$(active.sPnl)} color={active.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
-          <Metric label="Trades this session" value={`${active.wins}W / ${active.losses}L`}/>
-        </div>
-      )}
+      {isAm&&active&&(()=>{
+        // Targets are % of session START balance (matches
+        // checkAntiMartingaleSessionEnd exactly) — not live balance, so these
+        // dollar figures don't drift as the session's own P&L moves the
+        // number they're measuring against.
+        const startBal=active.startBalance??bal;
+        const profitTargetPct=getAmProfitTargetPctForMode(settings,mode);
+        const lossTargetPct=getAmLossTargetPctForMode(settings,mode);
+        const maxTrades=getAmMaxTradesForMode(settings,mode);
+        const profitTargetDollars=startBal*(profitTargetPct/100);
+        const lossTargetDollars=startBal*(lossTargetPct/100);
+        const tradesRemaining=Math.max(0,maxTrades-active.trades);
+        // Normalized bar, not a raw dollar span: each half is independently
+        // scaled to its own target, so zero always sits exactly at center
+        // regardless of asymmetric profit/loss target %s.
+        const lossFrac=lossTargetDollars>0?Math.min(1,Math.max(0,-active.sPnl)/lossTargetDollars):0;
+        const profitFrac=profitTargetDollars>0?Math.min(1,Math.max(0,active.sPnl)/profitTargetDollars):0;
+        const markerPct=active.sPnl<0?50-lossFrac*50:50+profitFrac*50;
+        return(
+          <>
+            <div style={g3}>
+              <Metric label="Balance" value={f$(bal)}/>
+              <Metric label="Session P&L" value={(active.sPnl>=0?'+':'')+f$(active.sPnl)} color={active.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+              <Metric label="Trades this session" value={`${active.wins}W / ${active.losses}L`}/>
+            </div>
+            <div style={g3}>
+              <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
+              <Metric label="Loss stop" value={`-${f$(lossTargetDollars)}`} color="var(--text-danger)"/>
+              <Metric label="Max trades" value={`${maxTrades} — ${tradesRemaining} left`}/>
+            </div>
+            <div style={{marginBottom:16}}>
+              <div style={{position:'relative',height:10,borderRadius:999,overflow:'hidden',display:'flex',border:'1px solid var(--border)'}}>
+                <div style={{flex:1,background:'var(--fill-danger)',opacity:0.25}}/>
+                <div style={{flex:1,background:'var(--fill-success)',opacity:0.25}}/>
+                <div style={{position:'absolute',top:-2,bottom:-2,left:`calc(${Math.max(0,Math.min(100,markerPct))}% - 2px)`,width:4,borderRadius:2,background:active.sPnl>=0?'var(--fill-success)':'var(--fill-danger)',boxShadow:'0 0 0 1px var(--surface-0)'}}/>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginTop:4}}>
+                <span>-{f$(lossTargetDollars)}</span>
+                <span>$0</span>
+                <span>+{f$(profitTargetDollars)}</span>
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       <table style={{width:'100%',borderCollapse:'collapse',marginTop:12}}>
         <thead>
