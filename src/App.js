@@ -4964,7 +4964,9 @@ function Landing({onLogin}){
     {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 10 strict structural gates, 4 of them hard filters, before you enter a trade.'},
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, trade grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by trade grade, strategy, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
-    {icon:Wallet,title:'Money Management',desc:'Risk sizing as a percent of balance or a fixed dollar amount, overridable per trade, with milestone-based withdrawal tracking and growth projection.'},
+    {icon:Target,title:'Custom Strategies',desc:'Define your own strategies beyond the built-in Zone (S&D) and Trend/Pattern — tag every trade and break down win rate and P&L by strategy in Analytics.'},
+    {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade) or Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss, session ends itself on a profit target, loss target, or max trades) — independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
+    {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
     {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first. Skipping a session with no qualifying setup gets a shorter cooldown instead of the full gap.'},
     {icon:Sparkles,title:'Focus Music',desc:'Free lofi and ambient tracks play in the background for the length of your session, then stop automatically when it ends.'},
@@ -5038,7 +5040,7 @@ function Landing({onLogin}){
           <div className="ld-section-head">
             <div className="ld-section-tag">Features</div>
             <h2 className="ld-section-title">Everything You Need to Trade with Discipline</h2>
-            <p className="ld-section-sub">Seven integrated modules that work together to keep you consistent, data-driven, and in control.</p>
+            <p className="ld-section-sub">Nine integrated modules that work together to keep you consistent, data-driven, and in control.</p>
           </div>
           <div className="ld-features-grid">
             {features.map((f,i)=>(

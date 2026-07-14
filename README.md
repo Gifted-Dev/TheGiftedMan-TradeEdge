@@ -10,7 +10,10 @@ This application helps you:
 - Record trades manually or from AI-assisted analysis.
 - Track trades in either Demo or Real mode, with separate performance analytics for each.
 - Apply different trade-management setups to Demo and Real accounts while still enforcing the same daily session and trade-limit rules.
-- Review your win rate, P&L, growth, streaks, zone-grade performance, and pair performance over time.
+- Tag trades with your own custom strategies, not just the two built-in ones.
+- Choose Fixed Risk % or Anti-Martingale money management independently per Demo/Real account, with Anti-Martingale sessions ending themselves on a profit target, loss target, or max trades reached.
+- Log trades fast with Quick Log, a spreadsheet-style table built for Anti-Martingale's escalating-stake pace.
+- Review your win rate, P&L, growth, streaks, zone-grade, strategy, and pair performance over time.
 - Manage balance growth, withdrawals, and milestone targets with disciplined risk sizing.
 
 ## Core features
@@ -66,14 +69,24 @@ This application helps you:
 - While a session is active, the Dashboard (and a compact widget on every other page) plays free lofi/ambient background music via the Jamendo API — play/pause, skip to a random track, track selection, and volume on the Dashboard — and it stops automatically the moment the session ends, for any reason.
 - **Email notification when the gap ends**: the moment any session ends, a serverless function schedules a one-off delayed job (via Upstash QStash) for exactly when that session's cooldown will elapse, then emails you (via Resend) with the end reason and a link back into the app — so you find out you can start again without needing the app open. Works even if you're not actively using the app, and is deduplicated server-side so a retry never double-emails.
 
-### 6. Money management and planning
-- Risk sizing is either a percent of your current balance or a fixed dollar amount per trade — switch anytime in Settings.
+### 6. Custom strategies
+- Define your own trading strategies beyond the two built-in ones (Zone (S&D) and Trend/Pattern) in Settings — add, edit, or archive them anytime.
+- Every trade — manual, Analyzer-logged, or Quick Log — is tagged with a strategy.
+- Deleting a strategy that's referenced by existing trades archives it instead of removing it, so historical trades keep their original label; archived strategies are hidden from new-entry pickers but still resolve correctly everywhere they're shown.
+- Analytics' strategy breakdown, and the "Ask" assistant's pattern detection, both work across any number of user-defined strategies, not just the two built-in ones.
+
+### 7. Money management and planning
+- Choose a Money Management style independently per Demo/Real account, in Settings:
+  - **Fixed Risk %** — stake is a percent of your current balance or a fixed dollar amount, switchable anytime. Session-ending is governed by your chosen Trade Management style (Precision/Active/Structured).
+  - **Anti-Martingale** — stake escalates by a configurable multiplier after each win, up to a configurable max (1 or 2 consecutive escalations), capped by a dollar ceiling (% of balance); any loss resets immediately to the base stake. Trade Management style doesn't apply under this mode — instead, the session ends itself automatically the moment a profit target %, loss target %, or max-trades-per-session count is reached (all configurable, all % of the session's starting balance), whichever comes first. This ending is never a lock — Journal and Zone Analyzer stay fully accessible right after.
+  - A **Suggested risk %** calculator (in Settings, collapsed by default) auto-populates from your real live balance and — when Anti-Martingale is active — your actual configured profit target and max trades, then shows a suggested risk % with its reasoning. It only computes and displays; applying it to your real Risk % setting is a separate, explicit action.
+- **Quick Log**: a rapid spreadsheet-style entry table, available whenever Anti-Martingale is the active style for the current account mode. Each row is one trade — pick a pair and direction, tap Win or Loss, and the row commits immediately: balance, session P&L, and the next row's suggested stake (calculated live from the Anti-Martingale engine) all update instantly. The session summary shows your profit target, loss target, and max-trades cap in concrete dollar/count terms, plus a progress bar showing exactly where the session's current P&L sits between its stop and target. Every row remains clickable to open the same Trade Detail/Edit view as the Journal, for adding a screenshot or notes after the fact.
 - Override the stake for any single trade at logging time (Journal manual entry, or when logging an Analyzer result) — type a custom dollar amount or percent instead of accepting the default.
 - Track withdrawals and milestone targets.
 - Review projected growth and balance progression over time.
 - Use the built-in trading plan view to review your risk and session rules, plus an interactive zone-selection checklist for judging a zone before you trust it.
 
-### 7. Analytics dashboard
+### 8. Analytics dashboard
 - View key metrics such as:
   - balance
   - win rate, with a 95% confidence interval (Wilson score interval, reliable even at low trade counts) shown alongside it and by zone grade
@@ -88,7 +101,7 @@ This application helps you:
   - analyzed versus manual trades
 - **Review tab**: an auto-generated "This Week" / "This Month" digest per Demo/Real — trade counts, win rate with confidence interval, delta vs. the prior period, best/worst pair (minimum 3 trades to qualify), most common gate failure (only from zone analyses linked to a trade you actually logged), trades logged without zone analysis, and Real-account P&L. Pure numbers and deltas, computed on the fly from your existing trades — no manual entry, no generated commentary.
 
-### 8. Cloud account and sync
+### 9. Cloud account and sync
 - Email + password authentication (Supabase Auth), including password reset.
 - Settings, trades, sessions, withdrawals, and zone analyses are stored per-account in Supabase Postgres, protected by row-level security (each user can only read/write their own rows).
 - Chart screenshots are uploaded to Supabase Storage instead of being embedded as base64, keeping the database lean.
