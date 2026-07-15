@@ -50,6 +50,7 @@ const ALERT_CHIME_SRC = "data:audio/wav;base64,UklGRgQbAABXQVZFZm10IBAAAAABAAEAQ
 const PAYOUT = 0.92;
 const MAX_DL = 4;
 const ACCOUNT_MODES = ['DEMO','REAL'];
+const MM_STYLES = [{id:'FIXED',label:'Fixed Risk %'},{id:'ANTI_MARTINGALE',label:'Anti-Martingale'},{id:'PROFIT_LOCK',label:'Profit Lock'}];
 // Session timer — duration is a property of the trade style itself (like its
 // win/loss rules), not of the account mode, so it's stored once globally and
 // keyed by style id, same as sn/sr in Plan and STYLES in Cfg.
@@ -154,6 +155,11 @@ function toSettingsRow(userId,s){
       amLossTargetPctDemo:s.amLossTargetPctDemo,amLossTargetPctReal:s.amLossTargetPctReal,
       amMaxEscalationsDemo:s.amMaxEscalationsDemo,amMaxEscalationsReal:s.amMaxEscalationsReal,
       amMaxTradesDemo:s.amMaxTradesDemo,amMaxTradesReal:s.amMaxTradesReal,
+      plMaxEscalationsDemo:s.plMaxEscalationsDemo,plMaxEscalationsReal:s.plMaxEscalationsReal,
+      plCeilingPctDemo:s.plCeilingPctDemo,plCeilingPctReal:s.plCeilingPctReal,
+      plProfitTargetPctDemo:s.plProfitTargetPctDemo,plProfitTargetPctReal:s.plProfitTargetPctReal,
+      plLossTargetPctDemo:s.plLossTargetPctDemo,plLossTargetPctReal:s.plLossTargetPctReal,
+      plMaxTradesDemo:s.plMaxTradesDemo,plMaxTradesReal:s.plMaxTradesReal,
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
@@ -179,7 +185,8 @@ function toSessionRow(userId,date,s){
     con_loss:s.conLoss,con_win:s.conWin,net_loss:s.netLoss,session_pnl:s.sPnl,is_active:s.isActive,
     is_locked:s.isLocked,lock_reason:s.lockReason,
     extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,strictAtStart:s.strictAtStart||false,
-      startBalance:s.startBalance,amStreak:s.amStreak||0,amNextStake:s.amNextStake??null,endReason:s.endReason||null}};
+      startBalance:s.startBalance,amStreak:s.amStreak||0,amNextStake:s.amNextStake??null,
+      plStreak:s.plStreak||0,plNextStake:s.plNextStake??null,endReason:s.endReason||null}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
@@ -547,7 +554,7 @@ function DateRangePicker({range,setRange}){
       </button>
 
       {open&&(
-        <div style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:30,display:'flex',background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
+        <div className="daterange-popover" style={{position:'absolute',top:'calc(100% + 6px)',left:0,zIndex:30,display:'flex',background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
           <div style={{display:'flex',flexDirection:'column',minWidth:150,borderRight:'1px solid var(--border)',padding:6,gap:1}}>
             {presets.map(id=>(
               <button key={id} onClick={()=>applyPreset(id)}
@@ -709,13 +716,21 @@ function lastStrategyId(){try{return localStorage.getItem('gm_last_strategy_id')
 // for Quick Log's direction toggle.
 function lastDirection(){try{return localStorage.getItem('gm_last_direction')||'BUY';}catch{return'BUY';}}
 function setLastDirection(d){try{localStorage.setItem('gm_last_direction',d);}catch{}}
+// Same convenience, for payout % — captured per-trade at logging time (the
+// broker's payout can shift trade to trade), never a silent stored default.
+function lastPayoutPct(){try{return localStorage.getItem('gm_last_payout_pct')||'';}catch{return'';}}
+function setLastPayoutPct(v){try{localStorage.setItem('gm_last_payout_pct',v);}catch{}}
 // Compact two-button BUY/SELL toggle. Pass `onChange` for an editable picker
 // (Quick Log's draft row); omit it for a read-only pill (committed rows) —
 // both directions stay visible so the row's still scannable at a glance.
 function DirToggle({value,onChange}){
+  // Only the editable (onChange) case is a real tap target — read-only pills
+  // (committed rows) aren't interactive and stay compact on purpose.
   const opt=(d,label)=>{
     const on=value===d;
-    const base={padding:'2px 8px',fontSize:11,fontWeight:600,borderRadius:4,border:'1px solid var(--border)'};
+    const base=onChange
+      ?{padding:'10px 16px',fontSize:13,fontWeight:600,borderRadius:6,border:'1px solid var(--border)',minHeight:44,minWidth:44}
+      :{padding:'2px 8px',fontSize:11,fontWeight:600,borderRadius:4,border:'1px solid var(--border)'};
     const style=on
       ?{...base,background:d==='BUY'?'var(--bg-success)':'var(--bg-danger)',color:d==='BUY'?'var(--text-success)':'var(--text-danger)',borderColor:d==='BUY'?'var(--border-success)':'var(--border-danger)'}
       :{...base,background:'transparent',color:'var(--text-muted)',cursor:onChange?'pointer':'default'};
@@ -743,7 +758,11 @@ function getMoneyMgmtStyleForMode(settings,mode){
 }
 function getAmMultiplierForMode(settings,mode){
   const v=parseFloat(mode==='REAL'?settings?.amMultiplierReal:settings?.amMultiplierDemo);
-  return Number.isFinite(v)?v:2;
+  // Range is 1.2x-1.5x (peak exposure 2.25x-3.375x base at the 1-or-2 max
+  // escalations cap, down from up to 9x at the old 3x max) — clamp any
+  // stored value into range rather than trust it, since a value saved
+  // before this bound tightened could still be sitting above 1.5.
+  return Number.isFinite(v)?Math.min(1.5,Math.max(1.2,v)):1.3;
 }
 function getAmCeilingPctForMode(settings,mode){
   const v=parseFloat(mode==='REAL'?settings?.amCeilingPctReal:settings?.amCeilingPctDemo);
@@ -791,7 +810,7 @@ function advanceAntiMartingale(state, outcome, balance, settings, mode) {
   if (state.streak >= maxEscalations) {
     return { streak: 0, nextStake: base };
   }
-  const multiplier = settings?.[`amMultiplier${mode}`] ?? 2;
+  const multiplier = getAmMultiplierForMode(settings, mode); // clamped to 1.2x-1.5x
   const ceilingPct = settings?.[`amCeilingPct${mode}`] ?? 20;
   const ceiling = balance * (ceilingPct / 100);
   const escalated = Math.max(1, Math.round(Math.min(state.nextStake * multiplier, ceiling) * 100) / 100);
@@ -837,6 +856,122 @@ function checkAntiMartingaleSessionEnd(session, mode, settings) {
   if (pnlPct <= -Math.abs(lossTarget)) return 'AM_LOSS_TARGET';
   if (session.trades >= getAmMaxTradesForMode(settings, mode)) return 'AM_MAX_TRADES';
   return null;
+}
+
+// ── Profit Lock engine ───────────────────────────────────────────────────
+// Same protective caps as Anti-Martingale (max escalations, dollar ceiling,
+// three-condition session end), but a genuinely different mechanic: a win
+// stakes ONLY the profit just banked (never base + profit), so original
+// capital is never re-risked once a streak starts. A loss at any point
+// resets to base, losing at most the streak's accumulated profit — never
+// more. Deliberately a separate function from advanceAntiMartingale rather
+// than a shared one with a branch: AM escalates a configured multiplier
+// against the stake itself; Profit Lock stakes the trade's REAL pnl, so it
+// needs that value as an input the AM engine has no use for.
+function getPlMaxEscalationsForMode(settings, mode) {
+  const v = parseInt(mode === 'REAL' ? settings?.plMaxEscalationsReal : settings?.plMaxEscalationsDemo, 10);
+  return v === 2 ? 2 : 1;
+}
+function getPlCeilingPctForMode(settings, mode) {
+  const v = parseFloat(mode === 'REAL' ? settings?.plCeilingPctReal : settings?.plCeilingPctDemo);
+  return Number.isFinite(v) ? v : 20;
+}
+function getPlProfitTargetPctForMode(settings, mode) {
+  const v = parseFloat(mode === 'REAL' ? settings?.plProfitTargetPctReal : settings?.plProfitTargetPctDemo);
+  return Number.isFinite(v) ? v : 10;
+}
+function getPlLossTargetPctForMode(settings, mode) {
+  const v = parseFloat(mode === 'REAL' ? settings?.plLossTargetPctReal : settings?.plLossTargetPctDemo);
+  return Number.isFinite(v) ? v : 10;
+}
+function getPlMaxTradesForMode(settings, mode) {
+  const v = parseInt(mode === 'REAL' ? settings?.plMaxTradesReal : settings?.plMaxTradesDemo, 10);
+  return Number.isFinite(v) && v >= 3 && v <= 20 ? v : 8;
+}
+function advanceProfitLock(state, outcome, pnl, balance, settings, mode) {
+  const base = amBaseStake(balance, settings);
+  if (outcome !== 'WIN') {
+    return { streak: 0, nextStake: base }; // any loss resets to base — never below it
+  }
+  const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
+  // Same pre-increment cap-check pattern as advanceAntiMartingale: the
+  // forced reset only fires once a WIN has actually happened AT the max-
+  // escalated stake, so every banked-profit level up to the cap gets used.
+  if (state.streak >= maxEscalations) {
+    return { streak: 0, nextStake: base };
+  }
+  const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
+  const bankedProfit = Math.max(1, Math.round(Math.min(pnl, ceiling) * 100) / 100);
+  return { streak: state.streak + 1, nextStake: bankedProfit };
+}
+function liveProfitLockNextStake(session, balance, settings, mode) {
+  const streak = session?.plStreak || 0;
+  if (streak === 0) return amBaseStake(balance, settings);
+  const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
+  return Math.max(1, Math.min(session?.plNextStake ?? amBaseStake(balance, settings), ceiling));
+}
+function plStakeReasoning(session, balance, settings, mode) {
+  const streak = session?.plStreak || 0;
+  const base = amBaseStake(balance, settings);
+  const stake = liveProfitLockNextStake(session, balance, settings, mode);
+  const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
+  if (streak === 0) {
+    return `Base stake — a win banks its profit as the next stake; your $${base.toFixed(2)} base is never re-risked once a streak starts.`;
+  }
+  if (streak >= maxEscalations) {
+    return `Final banked stake (${streak} of ${maxEscalations}) — this is banked profit, not capital; any outcome resets to $${base.toFixed(2)} base next.`;
+  }
+  return `Next stake: $${stake.toFixed(2)} — this is your banked profit from the last win. A loss here returns you to your $${base.toFixed(2)} base, never below it.`;
+}
+function checkProfitLockSessionEnd(session, mode, settings) {
+  if (!session?.isActive) return null;
+  if (getMoneyMgmtStyleForMode(settings, mode) !== 'PROFIT_LOCK') return null;
+  const startBal = session.startBalance;
+  const pnlPct = startBal ? (session.sPnl / startBal) * 100 : 0;
+  const profitTarget = getPlProfitTargetPctForMode(settings, mode);
+  const lossTarget = getPlLossTargetPctForMode(settings, mode);
+  if (pnlPct >= profitTarget) return 'PL_PROFIT_TARGET';
+  if (pnlPct <= -Math.abs(lossTarget)) return 'PL_LOSS_TARGET';
+  if (session.trades >= getPlMaxTradesForMode(settings, mode)) return 'PL_MAX_TRADES';
+  return null;
+}
+
+// ── Escalating-style dispatchers ─────────────────────────────────────────
+// 'ANTI_MARTINGALE' and 'PROFIT_LOCK' both replace Trade Management's
+// session-ending rules with their own three-condition check and both need a
+// live stake/reasoning pair — these let call sites stay style-agnostic
+// instead of re-branching the same if/else at every commit site.
+function isEscalatingStyle(style) {
+  return style === 'ANTI_MARTINGALE' || style === 'PROFIT_LOCK';
+}
+function liveEscalatingNextStake(session, balance, settings, mode, style) {
+  return style === 'PROFIT_LOCK'
+    ? liveProfitLockNextStake(session, balance, settings, mode)
+    : liveAmNextStake(session, balance, settings, mode);
+}
+function escalatingStakeReasoning(session, balance, settings, mode, style) {
+  return style === 'PROFIT_LOCK'
+    ? plStakeReasoning(session, balance, settings, mode)
+    : amStakeReasoning(session, balance, settings, mode);
+}
+// Each check function already gates on its own style match internally, so
+// calling both unconditionally and taking whichever fires is safe — at
+// most one of the two can ever return non-null for a given session.
+function checkEscalatingSessionEnd(session, mode, settings) {
+  return checkAntiMartingaleSessionEnd(session, mode, settings) ?? checkProfitLockSessionEnd(session, mode, settings);
+}
+// Advances whichever engine is active, and returns the update pre-keyed to
+// the right session fields (amStreak/amNextStake vs plStreak/plNextStake)
+// so call sites can just spread the result onto `us` without a branch.
+function advanceEscalatingStake(style, session, outcome, pnl, balance, settings, mode) {
+  if (style === 'PROFIT_LOCK') {
+    const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings) };
+    const r = advanceProfitLock(state, outcome, pnl, balance, settings, mode);
+    return { plStreak: r.streak, plNextStake: r.nextStake };
+  }
+  const state = { streak: session.amStreak || 0, nextStake: session.amNextStake ?? amBaseStake(balance, settings) };
+  const r = advanceAntiMartingale(state, outcome, balance, settings, mode);
+  return { amStreak: r.streak, amNextStake: r.nextStake };
 }
 // endSessionNatural's effect (isActive:false, endTime, endReason — no
 // isLocked/lockReason/lockCode, so Strict Locking never applies to an AM
@@ -907,7 +1042,8 @@ function buildSession(ssState,mode,durationMin,strictAtStart,settings,startBalan
     isActive:true,isLocked:false,lockReason:null,lockCode:null,strictAtStart:!!strictAtStart,
     durationMin,pausedAt:null,pausedMsTotal:0,
     startBalance:startBalance??0,endReason:null,
-    amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings):null};
+    amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings):null,
+    plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings):null};
 }
 // Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
 function sessionElapsedMs(sess,now){
@@ -1238,8 +1374,8 @@ function factsToText(facts){
 const card={background:'var(--surface-1)',borderRadius:'var(--radius)',border:'1px solid var(--border)',padding:'16px 20px',marginBottom:12,boxShadow:'var(--shadow-card), var(--highlight-top)'};
 const inp={width:'100%',boxSizing:'border-box',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)',padding:'9px 12px',color:'var(--text-primary)',fontSize:14,outline:'none',transition:'border-color 0.15s ease, box-shadow 0.15s ease'};
 const lbl={fontSize:12,fontWeight:500,color:'var(--text-muted)',marginBottom:4,display:'block'};
-const g2={display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:12,marginBottom:16};
-const g3={display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:12,marginBottom:16};
+// g2/g3 (2/3-column grids) now live as .grid-2/.grid-3 in index.css — moved
+// out of inline style so the mobile breakpoint there can actually reach them.
 
 function btn(variant='def'){
   const base={borderRadius:'var(--radius-sm)',padding:'8px 14px',cursor:'pointer',fontSize:13,fontWeight:600,border:'none',transition:'box-shadow 0.15s ease, opacity 0.15s ease, background 0.15s ease',display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6};
@@ -1584,7 +1720,7 @@ function Setup({onDone}){
         {step===1&&(
           <div>
             <h2 style={{fontSize:16,fontWeight:500,marginBottom:12,margin:'0 0 12px'}}>AI provider for zone analysis <span style={{fontSize:12,fontWeight:400,color:'var(--text-muted)'}}>(optional)</span></h2>
-            <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:14}}>Only needed for the Zone Analyzer's AI grading — the Journal, Quick Log, Anti-Martingale, strategies, and Analytics all work without one. Add a key now or skip and come back to Settings whenever you want to use the Analyzer.</p>
+            <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:14}}>Only needed for the Zone Analyzer's AI grading — the Journal, Quick Log, Anti-Martingale, Profit Lock, strategies, and Analytics all work without one. Add a key now or skip and come back to Settings whenever you want to use the Analyzer.</p>
             <div style={{marginBottom:14}}>
               <label style={lbl}>OpenRouter API key <span style={{color:'var(--text-muted)'}}>(openrouter.ai — free tier)</span></label>
               <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey} onChange={e=>set('apiKey',e.target.value)}/>
@@ -1599,7 +1735,7 @@ function Setup({onDone}){
         {step===2&&(
           <div>
             <h2 style={{fontSize:16,fontWeight:500,margin:'0 0 12px'}}>Account setup</h2>
-            <div style={g2}>
+            <div className="grid-2">
               <div>
                 <label style={lbl}>Demo starting balance ($)</label>
                 <input style={inp} type="number" min="1" placeholder="e.g. 20" value={f.startingBalanceDemo} onChange={e=>set('startingBalanceDemo',e.target.value)}/>
@@ -1622,7 +1758,7 @@ function Setup({onDone}){
         {step===3&&(
           <div>
             <h2 style={{fontSize:16,fontWeight:500,margin:'0 0 12px'}}>Trade management style</h2>
-            <div style={g2}>
+            <div className="grid-2">
               <div>
                 <label style={lbl}>Demo account</label>
                 {[{id:1,name:'Precision',desc:'1 trade per session. Session ends after that trade regardless of outcome.'},{id:2,name:'Active',desc:'Up to 5 trades per session. Stop at 2 consecutive losses or net -2.'},{id:3,name:'Structured',desc:'Up to 3 trades per session. Stop at 2 losses. Advisory at 2 consecutive wins.'}].map(st=>(
@@ -1980,8 +2116,8 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const stake=calcStake(bal,settings);
   const active=getActive(ss,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
-  const amDisplayStake=liveAmNextStake(active,bal,settings,mode);
-  const amReasoning=amStakeReasoning(active,bal,settings,mode);
+  const amDisplayStake=liveEscalatingNextStake(active,bal,settings,mode,mmStyle);
+  const amReasoning=escalatingStakeReasoning(active,bal,settings,mode,mmStyle);
   // Read straight off the session's own counters — the same trades/wins/losses
   // fields chkLock and every save path maintain — instead of re-deriving them
   // by joining trades back to the session via date+sessionNum. That join is a
@@ -2076,7 +2212,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   useEffect(()=>{
     if(!active)return;
     if(active.pausedAt&&now-active.pausedAt>=PAUSE_AUTO_RESUME_MS)resumeSession();
-    else if(!active.pausedAt&&getMoneyMgmtStyleForMode(settings,mode)!=='ANTI_MARTINGALE'&&isSessionTimeExpired(active,now))endSession(active.trades===0?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',active.trades===0?'No qualifying setup found':'Time expired');
+    else if(!active.pausedAt&&!isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))&&isSessionTimeExpired(active,now))endSession(active.trades===0?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',active.trades===0?'No qualifying setup found':'Time expired');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[now]);
 
@@ -2240,7 +2376,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
         <div className="col-span-6 lg:col-span-3"><Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':'losses'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3">
-          {mmStyle==='ANTI_MARTINGALE'
+          {isEscalatingStyle(mmStyle)
             ?<Metric label="Next stake" value={f$(amDisplayStake)} sub={amReasoning} color="var(--text-primary)"/>
             :<Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/>}
         </div>
@@ -2378,7 +2514,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
       {!activeKey&&(
         <div style={{...card,background:'var(--bg-accent)',borderColor:'var(--border-accent)',marginBottom:12}}>
           <div style={{fontSize:13,fontWeight:500,color:'var(--text-accent)',marginBottom:4}}>Zone Analyzer needs an API key</div>
-          <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 10px'}}>This is the only feature that needs one — the Journal, Quick Log, Anti-Martingale, and Analytics all work fine without it. Add a free OpenRouter or Groq key to start grading zones.</p>
+          <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 10px'}}>This is the only feature that needs one — the Journal, Quick Log, Anti-Martingale, Profit Lock, and Analytics all work fine without it. Add a free OpenRouter or Groq key to start grading zones.</p>
           <button style={btn('pri')} onClick={()=>nav('settings')}>Add API key in Settings →</button>
         </div>
       )}
@@ -2587,10 +2723,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     // to a hardcoded pick — on a fresh browser with no prior choice this is
     // '', which addManual refuses to save without the user explicitly
     // picking one, so it's never silently assumed either way.
-    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategyId:lastStrategyId()};
+    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyId:lastStrategyId()};
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
+  // Per-trade draft payout % for resolving a PENDING trade's outcome — keyed
+  // by trade id since these render inline in a list, not their own component.
+  const[pendingPayoutDrafts,setPendingPayoutDrafts]=useState({});
   // Deep-link from Quick Log: opens the exact same Detail/Edit modal below,
   // rather than duplicating it — same component, same code path, just
   // triggered by a trade id instead of a row click inside this component.
@@ -2682,14 +2821,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     try{sessionStorage.setItem('gm_draft_mf',JSON.stringify(mf));}catch{}
   },[mf]);
 
-  // AM-aware: when Anti-Martingale is the active style for this mode, the
-  // "default" stake is the live escalation-aware suggestion, not Fixed-Risk
-  // math — same {calc,actual,eff} shape as calcStake so every call site
-  // (paStake, manualDefaultStake, the stake-mode buttons) works unchanged.
+  // Escalating-style-aware: when Anti-Martingale or Profit Lock is the
+  // active style for this mode, the "default" stake is the live
+  // escalation-aware suggestion, not Fixed-Risk math — same
+  // {calc,actual,eff} shape as calcStake so every call site (paStake,
+  // manualDefaultStake, the stake-mode buttons) works unchanged.
   const stakeFor=m=>{
     const modeBal=balForMode(settings,trades,wds,m);
-    if(getMoneyMgmtStyleForMode(settings,m)==='ANTI_MARTINGALE'){
-      const actual=liveAmNextStake(getActive(ss,m),modeBal,settings,m);
+    const style=getMoneyMgmtStyleForMode(settings,m);
+    if(isEscalatingStyle(style)){
+      const actual=liveEscalatingNextStake(getActive(ss,m),modeBal,settings,m,style);
       return{calc:actual,actual,eff:modeBal?(actual/modeBal)*100:0};
     }
     return calcStake(modeBal,settings);
@@ -2813,16 +2954,16 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(sess){
       const isW=outcome==='WIN';
       let us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
-      if(getMoneyMgmtStyleForMode(settings,tMode)==='ANTI_MARTINGALE'){
+      const tStyle=getMoneyMgmtStyleForMode(settings,tMode);
+      if(isEscalatingStyle(tStyle)){
         // t's prior pnl was 0 (it was PENDING), so trades still reflects
         // balance BEFORE this outcome — adding pnl gives balance after it,
         // which is what the next stake should be sized against.
         const balAfter=balForMode(settings,trades,wds,tMode)+pnl;
-        const am=advanceAntiMartingale({streak:sess.amStreak||0,nextStake:sess.amNextStake??amBaseStake(balAfter,settings)},outcome,balAfter,settings,tMode);
-        us={...us,amStreak:am.streak,amNextStake:am.nextStake};
-        const endReason=checkAntiMartingaleSessionEnd(us,tMode,settings);
+        us={...us,...advanceEscalatingStake(tStyle,sess,outcome,pnl,balAfter,settings,tMode)};
+        const endReason=checkEscalatingSessionEnd(us,tMode,settings);
         // No isLocked/lockReason/lockCode here — Strict Locking never applies
-        // to an Anti-Martingale profit/loss-target ending.
+        // to an Anti-Martingale/Profit Lock profit/loss-target ending.
         if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason};
       }else{
         const lk2=chkLock(us,getTradeStyleForMode(settings,tMode));
@@ -2863,6 +3004,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const entryBal=balForMode(settings,trades,wds,entryAccountMode);
       const entryStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,stakeFor(entryAccountMode).actual,entryBal);
       const payoutPct=outcome==='WIN'?parseFloat(mf.payoutPct)||undefined:undefined;
+      if(payoutPct)setLastPayoutPct(String(payoutPct));
       const pnl=calcPnl(entryStake,outcome,payoutPct);
 
       if (isToday) {
@@ -2886,9 +3028,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           const styleId=getTradeStyleForMode(settings,entryAccountMode);
           const amStyle=getMoneyMgmtStyleForMode(settings,entryAccountMode);
           // Trade Management's chkLock stop/take-profit rules (and the Strict
-          // Locking that can block on them) don't apply to Anti-Martingale
-          // sessions — those end on the AM profit/loss target instead.
-          if(amStyle!=='ANTI_MARTINGALE'){
+          // Locking that can block on them) don't apply to Anti-Martingale or
+          // Profit Lock sessions — those end on their own profit/loss target
+          // instead.
+          if(!isEscalatingStyle(amStyle)){
             const preLock=chkLock(sess,styleId);
             lockingModeAtTime=sess.strictAtStart?'STRICT':'SOFT';
             if(preLock.locked){
@@ -2914,11 +3057,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             netLoss:sess.netLoss+(isL?1:isW?-1:0),
             sPnl:sess.sPnl+pnl,
           };
-          if(amStyle==='ANTI_MARTINGALE'&&outcome!=='PENDING'){
+          if(isEscalatingStyle(amStyle)&&outcome!=='PENDING'){
             const balAfter=entryBal+pnl;
-            const am=advanceAntiMartingale({streak:sess.amStreak||0,nextStake:sess.amNextStake??amBaseStake(balAfter,settings)},outcome,balAfter,settings,entryAccountMode);
-            us={...us,amStreak:am.streak,amNextStake:am.nextStake};
-            const endReason=checkAntiMartingaleSessionEnd(us,entryAccountMode,settings);
+            us={...us,...advanceEscalatingStake(amStyle,sess,outcome,pnl,balAfter,settings,entryAccountMode)};
+            const endReason=checkEscalatingSessionEnd(us,entryAccountMode,settings);
             if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason};
           }
           const nextSessions=cur.sessions.map(s=>s.id===sess.id?us:s);
@@ -2943,7 +3085,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode,offPlan,lockingModeAtTime,payoutPct:payoutPct||null,strategyId:mf.strategyId};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:'',strategyId:mf.strategyId});setManualSuggestion(null);
+      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyId:mf.strategyId});setManualSuggestion(null);
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -2980,8 +3122,9 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const manualBal=balForMode(settings,trades,wds,manualAccountMode);
   const manualDefaultStake=stakeFor(manualAccountMode).actual;
   const manualStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,manualDefaultStake,manualBal);
-  const manualIsAm=getMoneyMgmtStyleForMode(settings,manualAccountMode)==='ANTI_MARTINGALE';
-  const manualAmReasoning=manualIsAm?amStakeReasoning(getActive(ss,manualAccountMode),manualBal,settings,manualAccountMode):null;
+  const manualStyle=getMoneyMgmtStyleForMode(settings,manualAccountMode);
+  const manualIsAm=isEscalatingStyle(manualStyle);
+  const manualAmReasoning=manualIsAm?escalatingStakeReasoning(getActive(ss,manualAccountMode),manualBal,settings,manualAccountMode,manualStyle):null;
 
   const tabTrades=trades.filter(t=>getTradeMode(t)===journalTab);
   // Outcome and strategy filters combine (AND), not exclusive alternatives —
@@ -3110,7 +3253,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={paStakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={paStakeValue} onChange={e=>setPaStakeValue(e.target.value)}/>
             )}
             <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:4}}>Will log {f$(paStake)}{paStakeMode==='PERCENT'?` (${fp(parseFloat(paStakeValue)||0)} of ${f$(paBal)} balance)`:''}.</div>
-            {getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE'&&paStakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>Anti-Martingale: {amStakeReasoning(active,paBal,settings,mode)}</div>}
+            {isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))&&paStakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>{getMoneyMgmtStyleForMode(settings,mode)==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {escalatingStakeReasoning(active,paBal,settings,mode,getMoneyMgmtStyleForMode(settings,mode))}</div>}
           </div>
           <div style={{display:'flex',gap:8}}>
             <button style={{...btn('suc'),flex:1}} onClick={()=>recordPA()} disabled={dailyLocked||strictLocked}>Create journal entry</button>
@@ -3180,7 +3323,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       {manual&&(
         <div style={card}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>Manual entry</div>
-          <div style={g2}>
+          <div className="grid-2">
             <div>
               <label style={lbl}>Pair</label>
               <input style={inp} value={mf.pair} onChange={e=>smf(m=>({...m,pair:e.target.value}))} onBlur={()=>addPairOption(mf.pair)} placeholder="Type any pair, e.g. EUR/USD OTC" list="manual-pair-options"/>
@@ -3216,7 +3359,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={mf.stakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={mf.stakeValue} onChange={e=>smf(m=>({...m,stakeValue:e.target.value}))}/>
             )}
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>This trade will log {f$(manualStake)}{mf.stakeMode==='PERCENT'?` (${fp(parseFloat(mf.stakeValue)||0)} of ${f$(manualBal)} balance)`:''}.</div>
-            {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Anti-Martingale: {manualAmReasoning}</div>}
+            {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{manualStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {manualAmReasoning}</div>}
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Strategy</label>
@@ -3323,13 +3466,18 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             </div>
           </div>
           {t.outcome==='PENDING'&&(
-            <div style={{display:'flex',gap:8}}>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <input type="number" min="1" max="100" step="1" aria-label="Payout %" style={{...inp,width:64,flex:'0 0 auto'}}
+                placeholder={String(Math.round(PAYOUT*100))}
+                value={pendingPayoutDrafts[t.id]??lastPayoutPct()}
+                onClick={e=>e.stopPropagation()}
+                onChange={e=>setPendingPayoutDrafts(d=>({...d,[t.id]:e.target.value}))}/>
               <button style={{...btn('suc'),flex:1}} onClick={e=>{
                 e.stopPropagation();
-                const input=window.prompt(`Payout % for this win (broker payout was different from the default ${Math.round(PAYOUT*100)}%? enter it here — leave blank to use ${Math.round(PAYOUT*100)}%):`,String(Math.round(PAYOUT*100)));
-                if(input===null)return;
-                const pct=parseFloat(input);
-                setOutcome(t.id,'WIN',Number.isFinite(pct)&&pct>0?pct:undefined);
+                const pct=parseFloat(pendingPayoutDrafts[t.id]??lastPayoutPct());
+                const payoutPct=Number.isFinite(pct)&&pct>0?pct:undefined;
+                if(payoutPct)setLastPayoutPct(String(payoutPct));
+                setOutcome(t.id,'WIN',payoutPct);
               }}>Win ✓</button>
               <button style={{...btn('dan'),flex:1}} onClick={e=>{e.stopPropagation();setOutcome(t.id,'LOSS');}}>Loss ✗</button>
             </div>
@@ -3381,7 +3529,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               </div>
               <div style={card}>
                 <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Direction, outcome &amp; grade</div>
-                <div style={g2}>
+                <div className="grid-2">
                   <div>
                     <label style={lbl}>Direction</label>
                     <div style={{display:'flex',gap:8}}>
@@ -3517,7 +3665,9 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 // rather than duplicating that ~800-line modal here.
 function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOpenTrade}){
   const active=getActive(ss,mode);
-  const isAm=getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE';
+  const style=getMoneyMgmtStyleForMode(settings,mode);
+  const isAm=isEscalatingStyle(style); // name kept for minimal diff — now covers both escalating styles
+  const styleLabel=style==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale';
   const bal=balForMode(settings,trades,wds,mode);
   const canLog=isAm&&active?.isActive;
 
@@ -3530,7 +3680,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
   let running=active?.startBalance??bal;
   const rows=sessionTrades.map(t=>{running+=t.pnl;return{t,balanceAfter:running};});
 
-  const liveStake=canLog?liveAmNextStake(active,bal,settings,mode):0;
+  const liveStake=canLog?liveEscalatingNextStake(active,bal,settings,mode,style):0;
   // This app's own local pair/direction quick-entry state, same tiny pattern
   // Journal's addPairOption uses — not lifted to shared state since it's a
   // session-local autocomplete convenience, not persisted data.
@@ -3538,8 +3688,10 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
   const[draftPair,setDraftPair]=useState('');
   const[draftDir,setDraftDir]=useState(lastDirection());
   const[draftStakeOverride,setDraftStakeOverride]=useState('');
+  const[draftPayoutOverride,setDraftPayoutOverride]=useState(lastPayoutPct());
   const[saving,setSaving]=useState(false);
   const draftStake=parseFloat(draftStakeOverride)||liveStake;
+  const draftPayoutPct=parseFloat(draftPayoutOverride)||undefined;
 
   function addPairOption(value){
     const trimmed=(value||'').trim();
@@ -3555,17 +3707,19 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
       addPairOption(pair);
       setLastDirection(draftDir);
       const stake=draftStake;
-      const pnl=calcPnl(stake,outcome);
+      // Captured from the draft row at the moment of commit, not a stored
+      // default — matters most under Profit Lock, where the next stake is
+      // derived directly from this trade's actual banked profit.
+      const payoutPct=outcome==='WIN'?draftPayoutPct:undefined;
+      if(payoutPct)setLastPayoutPct(String(payoutPct));
+      const pnl=calcPnl(stake,outcome,payoutPct);
       const balAfter=bal+pnl;
 
-      // Exact same AM state machine addManual already uses — no new logic.
-      const am=advanceAntiMartingale(
-        {streak:active.amStreak||0,nextStake:active.amNextStake??amBaseStake(balAfter,settings)},
-        outcome,balAfter,settings,mode);
+      // Exact same escalating-style state machine addManual/setOutcome use — no new logic.
       let us={...active,trades:active.trades+1,
         wins:active.wins+(outcome==='WIN'?1:0),losses:active.losses+(outcome==='LOSS'?1:0),
-        sPnl:active.sPnl+pnl,amStreak:am.streak,amNextStake:am.nextStake};
-      const endReason=checkAntiMartingaleSessionEnd(us,mode,settings);
+        sPnl:active.sPnl+pnl,...advanceEscalatingStake(style,active,outcome,pnl,balAfter,settings,mode)};
+      const endReason=checkEscalatingSessionEnd(us,mode,settings);
       if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason}; // non-blocking, no isLocked
 
       const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
@@ -3573,7 +3727,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
 
       const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:active.num,pair,direction:draftDir,
         zoneType:'',zoneGrade:'',stake,outcome,pnl,source:'QUICKLOG',screenshots:[],notes:'',
-        isAnalyzed:false,accountMode:mode,offPlan:false,lockingModeAtTime:'SOFT',payoutPct:null,
+        isAnalyzed:false,accountMode:mode,offPlan:false,lockingModeAtTime:'SOFT',payoutPct:payoutPct||null,
         strategyId:lastStrategyId()||'zone-sd'};
       await saveTrades(prev=>[t,...(prev||[])]);
 
@@ -3585,19 +3739,20 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
     <div>
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Quick log — {mode==='REAL'?'Real':'Demo'}</div>
 
-      {!isAm&&<Alert type="inf" title="Anti-Martingale only" body="Quick Log is built for Anti-Martingale's escalating-stake rhythm. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
-      {isAm&&!active&&<Alert type="inf" title="No active session" body="Start an Anti-Martingale session from the Dashboard to begin logging here."/>}
-      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason==='AM_PROFIT_TARGET'?'profit target reached':active.endReason==='AM_LOSS_TARGET'?'loss target reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
+      {!isAm&&<Alert type="inf" title="Anti-Martingale / Profit Lock only" body="Quick Log is built for the escalating-stake styles' fast pace. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
+      {isAm&&!active&&<Alert type="inf" title="No active session" body={`Start a ${styleLabel} session from the Dashboard to begin logging here.`}/>}
+      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':active.endReason?.endsWith('LOSS_TARGET')?'loss target reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
 
       {isAm&&active&&(()=>{
         // Targets are % of session START balance (matches
-        // checkAntiMartingaleSessionEnd exactly) — not live balance, so these
+        // checkEscalatingSessionEnd exactly) — not live balance, so these
         // dollar figures don't drift as the session's own P&L moves the
         // number they're measuring against.
         const startBal=active.startBalance??bal;
-        const profitTargetPct=getAmProfitTargetPctForMode(settings,mode);
-        const lossTargetPct=getAmLossTargetPctForMode(settings,mode);
-        const maxTrades=getAmMaxTradesForMode(settings,mode);
+        const isPL=style==='PROFIT_LOCK';
+        const profitTargetPct=isPL?getPlProfitTargetPctForMode(settings,mode):getAmProfitTargetPctForMode(settings,mode);
+        const lossTargetPct=isPL?getPlLossTargetPctForMode(settings,mode):getAmLossTargetPctForMode(settings,mode);
+        const maxTrades=isPL?getPlMaxTradesForMode(settings,mode):getAmMaxTradesForMode(settings,mode);
         const profitTargetDollars=startBal*(profitTargetPct/100);
         const lossTargetDollars=startBal*(lossTargetPct/100);
         const tradesRemaining=Math.max(0,maxTrades-active.trades);
@@ -3609,12 +3764,12 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
         const markerPct=active.sPnl<0?50-lossFrac*50:50+profitFrac*50;
         return(
           <>
-            <div style={g3}>
+            <div className="grid-3">
               <Metric label="Balance" value={f$(bal)}/>
               <Metric label="Session P&L" value={(active.sPnl>=0?'+':'')+f$(active.sPnl)} color={active.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
               <Metric label="Trades this session" value={`${active.wins}W / ${active.losses}L`}/>
             </div>
-            <div style={g3}>
+            <div className="grid-3">
               <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
               <Metric label="Loss stop" value={`-${f$(lossTargetDollars)}`} color="var(--text-danger)"/>
               <Metric label="Max trades" value={`${maxTrades} — ${tradesRemaining} left`}/>
@@ -3635,43 +3790,97 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
         );
       })()}
 
-      <table style={{width:'100%',borderCollapse:'collapse',marginTop:12}}>
-        <thead>
-          <tr style={{fontSize:11,color:'var(--text-muted)',textAlign:'left'}}>
-            <th style={{padding:'4px 6px'}}>Pair</th><th style={{padding:'4px 6px'}}>Dir</th><th style={{padding:'4px 6px'}}>Stake</th><th style={{padding:'4px 6px'}}>Outcome</th><th style={{padding:'4px 6px'}}>Balance after</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(({t,balanceAfter})=>(
-            <tr key={t.id} style={{cursor:'pointer',borderTop:'1px solid var(--border)'}} onClick={()=>onOpenTrade(t.id)}>
-              <td style={{padding:'6px'}}>{t.pair}</td>
-              <td style={{padding:'6px'}}><DirToggle value={t.direction}/></td>
-              <td style={{padding:'6px'}}>{f$(t.stake)}</td>
-              <td style={{padding:'6px',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)',fontWeight:600}}>{t.outcome}</td>
-              <td style={{padding:'6px'}}>{f$(balanceAfter)}</td>
+      {/* Desktop: dense table, hidden under 640px via CSS (ql-desktop/ql-mobile
+          in index.css) — no JS viewport detection, same approach as grid-2/3. */}
+      <div className="ql-desktop">
+        <table style={{width:'100%',borderCollapse:'collapse',marginTop:12}}>
+          <thead>
+            <tr style={{fontSize:11,color:'var(--text-muted)',textAlign:'left'}}>
+              <th style={{padding:'4px 6px'}}>Pair</th><th style={{padding:'4px 6px'}}>Dir</th><th style={{padding:'4px 6px'}}>Stake</th><th style={{padding:'4px 6px'}}>Payout %</th><th style={{padding:'4px 6px'}}>Outcome</th><th style={{padding:'4px 6px'}}>Balance after</th>
             </tr>
-          ))}
-          {canLog&&(
-            <tr style={{borderTop:'1px solid var(--border)'}}>
-              <td style={{padding:'6px'}}>
-                <input list="quicklog-pairs" style={inp} value={draftPair} onChange={e=>setDraftPair(e.target.value)} placeholder="EUR/USD OTC"/>
-                <datalist id="quicklog-pairs">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
-              </td>
-              <td style={{padding:'6px'}}><DirToggle value={draftDir} onChange={setDraftDir}/></td>
-              <td style={{padding:'6px'}}><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></td>
-              <td style={{padding:'6px'}}>
-                <button style={btn('suc')} onClick={()=>commitRow('WIN')} disabled={saving}>W</button>{' '}
-                <button style={btn('dan')} onClick={()=>commitRow('LOSS')} disabled={saving}>L</button>
-              </td>
-              <td style={{padding:'6px',fontSize:12}}>
-                <span style={{color:'var(--text-success)'}}>{f$(bal+calcPnl(draftStake,'WIN'))}</span>
-                {' / '}
-                <span style={{color:'var(--text-danger)'}}>{f$(bal+calcPnl(draftStake,'LOSS'))}</span>
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map(({t,balanceAfter})=>(
+              <tr key={t.id} style={{cursor:'pointer',borderTop:'1px solid var(--border)'}} onClick={()=>onOpenTrade(t.id)}>
+                <td style={{padding:'6px'}}>{t.pair}</td>
+                <td style={{padding:'6px'}}><DirToggle value={t.direction}/></td>
+                <td style={{padding:'6px'}}>{f$(t.stake)}</td>
+                <td style={{padding:'6px',color:'var(--text-muted)'}}>{t.outcome==='WIN'?`${t.payoutPct||Math.round(PAYOUT*100)}%`:'—'}</td>
+                <td style={{padding:'6px',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)',fontWeight:600}}>{t.outcome}</td>
+                <td style={{padding:'6px'}}>{f$(balanceAfter)}</td>
+              </tr>
+            ))}
+            {canLog&&(
+              <tr style={{borderTop:'1px solid var(--border)'}}>
+                <td style={{padding:'6px'}}>
+                  <input list="quicklog-pairs-desktop" style={inp} value={draftPair} onChange={e=>setDraftPair(e.target.value)} placeholder="EUR/USD OTC"/>
+                  <datalist id="quicklog-pairs-desktop">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
+                </td>
+                <td style={{padding:'6px'}}><DirToggle value={draftDir} onChange={setDraftDir}/></td>
+                <td style={{padding:'6px'}}><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></td>
+                <td style={{padding:'6px'}}><input type="number" min="1" max="100" step="1" style={inp} placeholder={String(Math.round(PAYOUT*100))} value={draftPayoutOverride} onChange={e=>setDraftPayoutOverride(e.target.value)}/></td>
+                <td style={{padding:'6px'}}>
+                  <button style={btn('suc')} onClick={()=>commitRow('WIN')} disabled={saving}>W</button>{' '}
+                  <button style={btn('dan')} onClick={()=>commitRow('LOSS')} disabled={saving}>L</button>
+                </td>
+                <td style={{padding:'6px',fontSize:12}}>
+                  <span style={{color:'var(--text-success)'}}>{f$(bal+calcPnl(draftStake,'WIN',draftPayoutPct))}</span>
+                  {' / '}
+                  <span style={{color:'var(--text-danger)'}}>{f$(bal+calcPnl(draftStake,'LOSS'))}</span>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Mobile: card-per-row, matching Journal's trade-list card pattern
+          (same `card` style, same badge-row-left/outcome-right shape) —
+          shown only under 640px via CSS, same rows/commitRow/state as above. */}
+      <div className="ql-mobile" style={{marginTop:12}}>
+        {rows.map(({t,balanceAfter})=>(
+          <div key={t.id} style={{...card,cursor:'pointer'}} role="button" tabIndex={0}
+            onClick={()=>onOpenTrade(t.id)}
+            onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onOpenTrade(t.id);}}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:500}}>{t.pair}</span>
+                <DirToggle value={t.direction}/>
+              </div>
+              <span style={{fontSize:13,fontWeight:600,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)'}}>{t.outcome}</span>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--text-muted)'}}>
+              <span>Stake {f$(t.stake)}</span>
+              <span>Payout {t.outcome==='WIN'?`${t.payoutPct||Math.round(PAYOUT*100)}%`:'—'}</span>
+              <span>Bal {f$(balanceAfter)}</span>
+            </div>
+          </div>
+        ))}
+        {canLog&&(
+          <div style={{...card,border:'1px dashed var(--border-strong)'}}>
+            <label style={lbl}>Pair</label>
+            <input list="quicklog-pairs-mobile" style={inp} value={draftPair} onChange={e=>setDraftPair(e.target.value)} placeholder="EUR/USD OTC"/>
+            <datalist id="quicklog-pairs-mobile">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
+            <div style={{marginTop:10}}>
+              <label style={lbl}>Direction</label>
+              <DirToggle value={draftDir} onChange={setDraftDir}/>
+            </div>
+            <div className="grid-2" style={{marginTop:10,marginBottom:0}}>
+              <div><label style={lbl}>Stake</label><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></div>
+              <div><label style={lbl}>Payout %</label><input type="number" min="1" max="100" step="1" style={inp} placeholder={String(Math.round(PAYOUT*100))} value={draftPayoutOverride} onChange={e=>setDraftPayoutOverride(e.target.value)}/></div>
+            </div>
+            <div style={{fontSize:12,marginTop:10}}>
+              <span style={{color:'var(--text-success)'}}>Win → {f$(bal+calcPnl(draftStake,'WIN',draftPayoutPct))}</span>
+              {' / '}
+              <span style={{color:'var(--text-danger)'}}>Loss → {f$(bal+calcPnl(draftStake,'LOSS'))}</span>
+            </div>
+            <div style={{display:'flex',gap:8,marginTop:10}}>
+              <button style={{...btn('suc'),flex:1,minHeight:44}} onClick={()=>commitRow('WIN')} disabled={saving}>Win</button>
+              <button style={{...btn('dan'),flex:1,minHeight:44}} onClick={()=>commitRow('LOSS')} disabled={saving}>Loss</button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3690,8 +3899,9 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   const stake=calcStake(bal,settings);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
   const activeAmSession=ss?getActive(ss,mode):null;
-  const amNextStake=mmStyle==='ANTI_MARTINGALE'?liveAmNextStake(activeAmSession,bal,settings,mode):null;
-  const amReasoning=mmStyle==='ANTI_MARTINGALE'?amStakeReasoning(activeAmSession,bal,settings,mode):null;
+  const mmIsEscalating=isEscalatingStyle(mmStyle);
+  const amNextStake=mmIsEscalating?liveEscalatingNextStake(activeAmSession,bal,settings,mode,mmStyle):null;
+  const amReasoning=mmIsEscalating?escalatingStakeReasoning(activeAmSession,bal,settings,mode,mmStyle):null;
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
   const actualWr=done.length?wins/done.length:0.65;
@@ -3723,19 +3933,24 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
 
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Position sizer</div>
-        <div style={g3}>
+        <div className="grid-3">
           <Metric label="Balance" value={f$(bal)}/>
-          {mmStyle==='ANTI_MARTINGALE'
-            ?<Metric label="Style" value="Anti-Martingale" sub={amReasoning}/>
+          {mmIsEscalating
+            ?<Metric label="Style" value={mmStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} sub={amReasoning}/>
             :<Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>}
-          <Metric label="Trade stake" value={f$(mmStyle==='ANTI_MARTINGALE'?amNextStake:stake.actual)} color="var(--text-accent)"/>
+          <Metric label="Trade stake" value={f$(mmIsEscalating?amNextStake:stake.actual)} color="var(--text-accent)"/>
         </div>
         {mmStyle==='ANTI_MARTINGALE'&&(
           <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
             {getAmMultiplierForMode(settings,mode).toFixed(1)}× multiplier per win, capped at {getAmCeilingPctForMode(settings,mode)}% of balance · ends at +{getAmProfitTargetPctForMode(settings,mode)}% or −{getAmLossTargetPctForMode(settings,mode)}% of this session's starting balance.
           </div>
         )}
-        {mmStyle!=='ANTI_MARTINGALE'&&settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
+        {mmStyle==='PROFIT_LOCK'&&(
+          <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
+            Stakes only banked profit, never base capital, capped at {getPlCeilingPctForMode(settings,mode)}% of balance · ends at +{getPlProfitTargetPctForMode(settings,mode)}% or −{getPlLossTargetPctForMode(settings,mode)}% of this session's starting balance.
+          </div>
+        )}
+        {!mmIsEscalating&&settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
           <div style={{fontSize:12,color:'var(--text-warning)',marginTop:8,padding:'6px 10px',background:'var(--bg-warning)',borderRadius:'var(--radius)'}}>
             ⚠ $1 minimum means effective risk is {fp(stake.eff)} — above your target {fp(settings.riskPercent)}. Balance needs {f$(1/(settings.riskPercent/100))} for correct sizing.
           </div>
@@ -3797,7 +4012,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
       {mode==='REAL'&&(
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Log withdrawal</div>
-        <div style={g2}>
+        <div className="grid-2">
           <div><label style={lbl}>Amount ($)</label><input style={inp} type="number" min={settings.brokerMin} placeholder={f$(settings.brokerMin)} value={amt} onChange={e=>setAmt(e.target.value)}/></div>
           <div><label style={lbl}>Notes</label><input style={inp} placeholder="Milestone..." value={note} onChange={e=>setNote(e.target.value)}/></div>
         </div>
@@ -3945,7 +4160,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
         <div style={{fontSize:14,fontWeight:500}}>{periodLabel} · {mode==='REAL'?'Real':'Demo'}</div>
         <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Auto-compiled from your logged trades — nothing to fill in.</div>
 
-        <div style={g2}>
+        <div className="grid-2">
           <Metric label="Total trades" value={cur.totalTrades} sub={`${cur.demoCount} Demo / ${cur.realCount} Real (all accounts)`}/>
           <Metric
             label="Win rate"
@@ -3986,7 +4201,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
         <div style={{fontSize:14,fontWeight:500}}>Discipline Impact · {mode==='REAL'?'Real':'Demo'}</div>
         <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Off-plan trades, counted the same way as everything else above.</div>
 
-        <div style={g2}>
+        <div className="grid-2">
           <Metric label="Off-plan trades" value={cur.offPlanCount} sub={`of ${cur.totalTrades} total this period`}/>
           <Metric
             label="Off-plan P&L"
@@ -4113,7 +4328,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
 
       {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds} range={range}/>:<>
 
-      <div style={g2}>
+      <div className="grid-2">
         <Metric label="Total trades" value={total} sub={`${wins}W / ${total-wins}L`}/>
         <Metric label="Win rate" value={fp(wr)} sub={total?<>Break-even: {fp(be*100)}<br/><WinRateCI wins={wins} total={total}/></>:`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
         <Metric label="Expected value/trade" value={(ev>=0?'+':'')+f$(ev)} color={ev>=0?'var(--text-success)':'var(--text-danger)'}/>
@@ -4123,7 +4338,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
       {scope==='ALL'&&(
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Performance by account mode</div>
-        <div style={g2}>
+        <div className="grid-2">
           {modeStats.map(stat=>(
             <div key={stat.mode} style={{...card,marginBottom:0,borderLeft:`3px solid ${stat.mode==='REAL'?'var(--fill-danger)':'var(--fill-accent)'}`}}>
               <div style={{fontSize:13,fontWeight:600,marginBottom:6,color:stat.mode==='REAL'?'var(--text-danger)':'var(--text-accent)'}}>{stat.mode==='REAL'?'Real':'Demo'}</div>
@@ -4150,7 +4365,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
       {(analyzed.length>0||manual.length>0)&&(
         <div style={card}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Zone analysis impact</div>
-          <div style={g2}>
+          <div className="grid-2">
             <div><div style={{fontSize:12,color:'var(--text-muted)',marginBottom:4}}>With analysis ({analyzed.length})</div><div style={{fontSize:20,fontWeight:500,fontFamily:'var(--font-mono)',color:'var(--text-success)'}}>{fp(aWr)}</div></div>
             <div><div style={{fontSize:12,color:'var(--text-muted)',marginBottom:4}}>Manual ({manual.length})</div><div style={{fontSize:20,fontWeight:500,fontFamily:'var(--font-mono)',color:mWr>=aWr?'var(--text-success)':'var(--text-danger)'}}>{fp(mWr)}</div></div>
           </div>
@@ -4441,12 +4656,17 @@ function StrategyRow({strategy,trades,updateStrategy,deleteStrategy}){
 function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStrategy,updateStrategy,deleteStrategy}){
   const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true,
     moneyMgmtStyleDemo:settings?.moneyMgmtStyleDemo ?? 'FIXED',moneyMgmtStyleReal:settings?.moneyMgmtStyleReal ?? 'FIXED',
-    amMultiplierDemo:settings?.amMultiplierDemo ?? 2,amMultiplierReal:settings?.amMultiplierReal ?? 2,
+    amMultiplierDemo:Math.min(1.5,Math.max(1.2,settings?.amMultiplierDemo ?? 1.3)),amMultiplierReal:Math.min(1.5,Math.max(1.2,settings?.amMultiplierReal ?? 1.3)),
     amCeilingPctDemo:settings?.amCeilingPctDemo ?? 20,amCeilingPctReal:settings?.amCeilingPctReal ?? 20,
     amProfitTargetPctDemo:settings?.amProfitTargetPctDemo ?? 10,amProfitTargetPctReal:settings?.amProfitTargetPctReal ?? 10,
     amLossTargetPctDemo:settings?.amLossTargetPctDemo ?? 10,amLossTargetPctReal:settings?.amLossTargetPctReal ?? 10,
     amMaxEscalationsDemo:settings?.amMaxEscalationsDemo ?? 1,amMaxEscalationsReal:settings?.amMaxEscalationsReal ?? 1,
     amMaxTradesDemo:settings?.amMaxTradesDemo ?? 8,amMaxTradesReal:settings?.amMaxTradesReal ?? 8,
+    plMaxEscalationsDemo:settings?.plMaxEscalationsDemo ?? 1,plMaxEscalationsReal:settings?.plMaxEscalationsReal ?? 1,
+    plCeilingPctDemo:settings?.plCeilingPctDemo ?? 20,plCeilingPctReal:settings?.plCeilingPctReal ?? 20,
+    plProfitTargetPctDemo:settings?.plProfitTargetPctDemo ?? 10,plProfitTargetPctReal:settings?.plProfitTargetPctReal ?? 10,
+    plLossTargetPctDemo:settings?.plLossTargetPctDemo ?? 10,plLossTargetPctReal:settings?.plLossTargetPctReal ?? 10,
+    plMaxTradesDemo:settings?.plMaxTradesDemo ?? 8,plMaxTradesReal:settings?.plMaxTradesReal ?? 8,
     riskCalcBalance:'',riskCalcTargetPct:'',riskCalcTradesPerSession:''});
   const[saved,setSaved]=useState(false);
   const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
@@ -4478,22 +4698,26 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
   const calcDone=(trades||[]).filter(t=>getTradeMode(t)===calcMode&&t.outcome!=='PENDING');
   const calcWinRate=calcDone.length?(calcDone.filter(t=>t.outcome==='WIN').length/calcDone.length)*100:65;
   const calcModeKey=calcMode==='REAL'?'Real':'Demo';
-  const calcIsAM=f[`moneyMgmtStyle${calcModeKey}`]==='ANTI_MARTINGALE';
-  const calcTargetPct=parseFloat(f.riskCalcTargetPct)||(calcIsAM?parseFloat(f[`amProfitTargetPct${calcModeKey}`])||10:10);
-  const calcTradesN=Math.max(1,parseFloat(f.riskCalcTradesPerSession)||(calcIsAM?getAmMaxTradesForMode(settings,calcMode):6));
+  const calcStyle=f[`moneyMgmtStyle${calcModeKey}`]||'FIXED';
+  const calcIsAM=isEscalatingStyle(calcStyle); // name kept for minimal diff — now covers both escalating styles
+  const calcLiveProfitTargetPct=()=>calcStyle==='PROFIT_LOCK'?getPlProfitTargetPctForMode(settings,calcMode):getAmProfitTargetPctForMode(settings,calcMode);
+  const calcLiveMaxTrades=()=>calcStyle==='PROFIT_LOCK'?getPlMaxTradesForMode(settings,calcMode):getAmMaxTradesForMode(settings,calcMode);
+  const calcTargetPct=parseFloat(f.riskCalcTargetPct)||(calcIsAM?calcLiveProfitTargetPct():10);
+  const calcTradesN=Math.max(1,parseFloat(f.riskCalcTradesPerSession)||(calcIsAM?calcLiveMaxTrades():6));
   // Auto-populates from the real, live values every time the calculator's
   // mode toggle changes (including the initial mount) — Balance always has a
   // live equivalent; Session profit target % and Trades per session only do
-  // under Anti-Martingale (Fixed Risk % has no direct equivalent for either,
-  // so those two are left as whatever's already there — the existing manual
-  // default/estimate — when Fixed is active). Typing over any field afterward
-  // is a hypothetical override that sticks until you switch mode or hit Reset.
+  // under Anti-Martingale/Profit Lock (Fixed Risk % has no direct equivalent
+  // for either, so those two are left as whatever's already there — the
+  // existing manual default/estimate — when Fixed is active). Typing over
+  // any field afterward is a hypothetical override that sticks until you
+  // switch mode or hit Reset.
   useEffect(()=>{
     const liveBalance=balForMode(settings,trades,wds,calcMode);
     sf(prev=>({...prev,riskCalcBalance:String(Math.round(liveBalance*100)/100),
       ...(calcIsAM?{
-        riskCalcTargetPct:String(getAmProfitTargetPctForMode(settings,calcMode)),
-        riskCalcTradesPerSession:String(getAmMaxTradesForMode(settings,calcMode)),
+        riskCalcTargetPct:String(calcLiveProfitTargetPct()),
+        riskCalcTradesPerSession:String(calcLiveMaxTrades()),
       }:{})}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[calcMode]);
@@ -4501,8 +4725,8 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
     const liveBalance=balForMode(settings,trades,wds,calcMode);
     set('riskCalcBalance',String(Math.round(liveBalance*100)/100));
     if(calcIsAM){
-      set('riskCalcTargetPct',String(getAmProfitTargetPctForMode(settings,calcMode)));
-      set('riskCalcTradesPerSession',String(getAmMaxTradesForMode(settings,calcMode)));
+      set('riskCalcTargetPct',String(calcLiveProfitTargetPct()));
+      set('riskCalcTradesPerSession',String(calcLiveMaxTrades()));
     }
   }
   // Simple heuristic, not a full Kelly/Monte-Carlo model: edge is win rate
@@ -4616,7 +4840,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Account</div>
-        <div style={g2}>
+        <div className="grid-2">
           <div><label style={lbl}>Demo starting balance ($)</label><input style={inp} type="number" min="1" value={f.startingBalanceDemo} onChange={e=>set('startingBalanceDemo',e.target.value)}/></div>
           <div><label style={lbl}>Real starting balance ($)</label><input style={inp} type="number" min="1" value={f.startingBalanceReal} onChange={e=>set('startingBalanceReal',e.target.value)}/></div>
         </div>
@@ -4627,7 +4851,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:6}}>Money management</div>
         <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
-          Switchable any time — takes effect from your next trade. Anti-Martingale escalates the stake after a win (up to your configured max escalations, capped at a % of balance) and resets on any loss; it ends its own session on a profit target, loss target, or max trades reached, instead of the Trade Management rules in the Fixed Risk % tab, so that selector is disabled for whichever mode uses it.
+          Switchable any time — takes effect from your next trade. Anti-Martingale escalates the stake after a win (up to your configured max escalations, capped at a % of balance); Profit Lock stakes only the profit just banked, never original capital. Both reset to base on any loss and end their own session on a profit target, loss target, or max trades reached, instead of the Trade Management rules in the Fixed Risk % tab, so that selector is disabled for whichever mode uses either.
         </p>
 
         {/* Active style — a compact segmented switch per mode, deliberately
@@ -4642,7 +4866,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
               <div key={m} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'4px 0'}}>
                 <span style={{fontSize:12,color:'var(--text-secondary)'}}>{modeLabel} is using</span>
                 <div style={{display:'flex',gap:2,background:'var(--surface-0)',border:'1px solid var(--border)',borderRadius:999,padding:2}}>
-                  {[{id:'FIXED',label:'Fixed Risk %'},{id:'ANTI_MARTINGALE',label:'Anti-Martingale'}].map(o=>(
+                  {MM_STYLES.map(o=>(
                     <button key={o.id} type="button" onClick={()=>applyMoneyMgmtStyle(m,o.id)}
                       style={{padding:'4px 10px',fontSize:11,fontWeight:600,borderRadius:999,border:'none',cursor:'pointer',
                         background:f[key]===o.id?'var(--fill-accent)':'transparent',
@@ -4664,7 +4888,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
             tab's content is showing. */}
         <div style={{border:'1px solid var(--border)',borderRadius:'var(--radius)',background:'var(--surface-0)',overflow:'hidden'}}>
           <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
-            {[{id:'FIXED',label:'Fixed Risk %'},{id:'ANTI_MARTINGALE',label:'Anti-Martingale'}].map(t=>(
+            {MM_STYLES.map(t=>(
               <button key={t.id} type="button" onClick={()=>setMmTab(t.id)}
                 style={{flex:1,padding:'10px 12px',fontSize:13,fontWeight:600,border:'none',cursor:'pointer',
                   background:mmTab===t.id?'var(--bg-accent)':'transparent',
@@ -4699,10 +4923,10 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
               <div style={{marginTop:16}}>
                 <label style={lbl}>Trade management style</label>
-                <div style={g2}>
-                  <div style={f.moneyMgmtStyleDemo==='ANTI_MARTINGALE'?{opacity:0.45,pointerEvents:'none'}:undefined}>
+                <div className="grid-2">
+                  <div style={isEscalatingStyle(f.moneyMgmtStyleDemo)?{opacity:0.45,pointerEvents:'none'}:undefined}>
                     <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Demo account</div>
-                    {f.moneyMgmtStyleDemo==='ANTI_MARTINGALE'&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Demo is on Anti-Martingale money management, which ends sessions on its own profit/loss target instead.</p>}
+                    {isEscalatingStyle(f.moneyMgmtStyleDemo)&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Demo is on {f.moneyMgmtStyleDemo==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
                     {STYLES.map(st=>(
                       <div key={`demo-${st.id}`} onClick={()=>applyStyle(st.id,'DEMO')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleDemo===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
                         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
@@ -4713,9 +4937,9 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
                       </div>
                     ))}
                   </div>
-                  <div style={f.moneyMgmtStyleReal==='ANTI_MARTINGALE'?{opacity:0.45,pointerEvents:'none'}:undefined}>
+                  <div style={isEscalatingStyle(f.moneyMgmtStyleReal)?{opacity:0.45,pointerEvents:'none'}:undefined}>
                     <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Real account</div>
-                    {f.moneyMgmtStyleReal==='ANTI_MARTINGALE'&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Real is on Anti-Martingale money management, which ends sessions on its own profit/loss target instead.</p>}
+                    {isEscalatingStyle(f.moneyMgmtStyleReal)&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Real is on {f.moneyMgmtStyleReal==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
                     {STYLES.map(st=>(
                       <div key={`real-${st.id}`} onClick={()=>applyStyle(st.id,'REAL')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleReal===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
                         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
@@ -4739,16 +4963,16 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
                 <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Used for money-management projections only — sessions no longer gate trade logging.</p>
               </div>
             </div>
-          ):(
-            <div style={g2}>
+          ):mmTab==='ANTI_MARTINGALE'?(
+            <div className="grid-2">
               {ACCOUNT_MODES.map(m=>{
                 const modeLabel=m==='REAL'?'Real':'Demo';
                 return(
                   <div key={m}>
                     <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{modeLabel} account</div>
                     <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
-                      <label style={lbl}>Multiplier: {(f[`amMultiplier${modeLabel}`]??2).toFixed(1)}×</label>
-                      <input type="range" min="1.2" max="3" step="0.1" value={f[`amMultiplier${modeLabel}`]??2} onChange={e=>set(`amMultiplier${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                      <label style={lbl}>Multiplier: {(f[`amMultiplier${modeLabel}`]??1.3).toFixed(1)}×</label>
+                      <input type="range" min="1.2" max="1.5" step="0.1" value={f[`amMultiplier${modeLabel}`]??1.3} onChange={e=>set(`amMultiplier${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
                       <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeLabel}`]??20}% of balance</label>
                       <input type="range" min="5" max="50" step="1" value={f[`amCeilingPct${modeLabel}`]??20} onChange={e=>set(`amCeilingPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
                       <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
@@ -4764,6 +4988,34 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
                       <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`amMaxTrades${modeLabel}`]??8}</label>
                       <input type="range" min="3" max="20" step="1" value={f[`amMaxTrades${modeLabel}`]??8} onChange={e=>set(`amMaxTrades${modeLabel}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
                       <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session also ends the moment this trade count is reached, regardless of P&L — a separate safety net from the profit/loss targets above.</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ):(
+            <div className="grid-2">
+              {ACCOUNT_MODES.map(m=>{
+                const modeLabel=m==='REAL'?'Real':'Demo';
+                return(
+                  <div key={m}>
+                    <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{modeLabel} account</div>
+                    <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
+                      <label style={lbl}>Ceiling: {f[`plCeilingPct${modeLabel}`]??20}% of balance</label>
+                      <input type="range" min="5" max="50" step="1" value={f[`plCeilingPct${modeLabel}`]??20} onChange={e=>set(`plCeilingPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                      <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
+                      <div style={{display:'flex',gap:8}}>
+                        {[1,2].map(n=>(
+                          <button key={n} type="button" style={{...btn((f[`plMaxEscalations${modeLabel}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`plMaxEscalations${modeLabel}`,n)}>{n}</button>
+                        ))}
+                      </div>
+                      <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeLabel}`]??10}% of session start balance</label>
+                      <input type="range" min="1" max="50" step="1" value={f[`plProfitTargetPct${modeLabel}`]??10} onChange={e=>set(`plProfitTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                      <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeLabel}`]??10}% of session start balance</label>
+                      <input type="range" min="1" max="50" step="1" value={f[`plLossTargetPct${modeLabel}`]??10} onChange={e=>set(`plLossTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                      <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`plMaxTrades${modeLabel}`]??8}</label>
+                      <input type="range" min="3" max="20" step="1" value={f[`plMaxTrades${modeLabel}`]??8} onChange={e=>set(`plMaxTrades${modeLabel}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+                      <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>No multiplier — growth comes from actual trade profit, not a configured rate. Session also ends the moment this trade count is reached, regardless of P&L.</p>
                     </div>
                   </div>
                 );
@@ -4795,7 +5047,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:-4,marginBottom:10}}>
             Auto-filled from your real {calcModeKey} balance{calcIsAM?', profit target, and max trades':''} — edit any field to explore a hypothetical instead.
           </p>
-          <div style={g2}>
+          <div className="grid-2">
             <div><label style={lbl}>Balance ($)</label><input style={inp} type="number" min="0" value={f.riskCalcBalance} onChange={e=>set('riskCalcBalance',e.target.value)}/></div>
             <div><label style={lbl}>Session profit target (%){!calcIsAM&&' — manual estimate, no live equivalent under Fixed Risk %'}</label><input style={inp} type="number" min="0.1" step="0.5" value={f.riskCalcTargetPct} onChange={e=>set('riskCalcTargetPct',e.target.value)}/></div>
           </div>
@@ -4817,7 +5069,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>
             To reach {calcTargetPct}% target from ~{calcTradesN} trades/session at {calcWinRate.toFixed(0)}% win rate ({calcDone.length} {calcModeKey} trade{calcDone.length===1?'':'s'} on record, defaults to 65% with none), ~{calcSuggestedRisk}% risk per trade keeps drawdown risk moderate. This is a simple heuristic, not a guarantee.
-            {calcIsAM&&<> {calcModeKey} is on Anti-Martingale — this sets the <em>base</em> stake size only (what escalation resets to after a loss); it has no effect on the profit/loss session-ending targets in the section above.</>}
+            {calcIsAM&&<> {calcModeKey} is on {calcStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} — this sets the <em>base</em> stake size only (what a loss always resets to); it has no effect on the profit/loss session-ending targets in the section above.</>}
           </p>
           </div>
           )}
@@ -4913,7 +5165,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
         ))}
         <div style={{marginTop:10,paddingTop:10,borderTop:'1px solid var(--border)'}}>
           <label style={lbl}>Add strategy</label>
-          <div style={g2}>
+          <div className="grid-2">
             <input style={inp} placeholder="Name" value={newStratName} onChange={e=>setNewStratName(e.target.value)}/>
             <input style={inp} placeholder="Description (optional)" value={newStratDesc} onChange={e=>setNewStratDesc(e.target.value)}/>
           </div>
@@ -4976,8 +5228,8 @@ function Landing({onLogin}){
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, trade grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by trade grade, strategy, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
     {icon:Target,title:'Custom Strategies',desc:'Define your own strategies beyond the built-in Zone (S&D) and Trend/Pattern — tag every trade and break down win rate and P&L by strategy in Analytics.'},
-    {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade) or Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss, session ends itself on a profit target, loss target, or max trades) — independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
-    {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
+    {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade), Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss), or Profit Lock (stakes only the profit just banked, never original capital) — each ends its own session on a profit target, loss target, or max trades, independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
+    {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale and Profit Lock’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
     {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first. Skipping a session with no qualifying setup gets a shorter cooldown instead of the full gap.'},
     {icon:Sparkles,title:'Focus Music',desc:'Free lofi and ambient tracks play in the background for the length of your session, then stop automatically when it ends.'},
@@ -5352,13 +5604,27 @@ export default function App(){
         supabase.from('strategies').select('*').eq('user_id',userId).order('created_at',{ascending:true}),
       ]);
       const sObj=s?fromSettingsRow(s):null;
-      const normalized=sObj&&{
+      let normalized=sObj&&{
         ...sObj,
         tradeStyleDemo:sObj.tradeStyleDemo ?? sObj.tradeStyle ?? 1,
         tradeStyleReal:sObj.tradeStyleReal ?? sObj.tradeStyle ?? 1,
         startingBalanceDemo:parseFloat(sObj.startingBalanceDemo||0),
         startingBalanceReal:parseFloat(sObj.startingBalanceReal||0),
       };
+      // One-time migration: the AM multiplier's max was tightened from 3x to
+      // 1.5x (peak exposure 2.25x-3.375x base at the 1-or-2 escalations cap,
+      // down from up to 9x). A value saved before this change could still be
+      // sitting above the new max, which the slider can no longer represent
+      // — clamp it down and persist immediately rather than leave it stuck.
+      // Self-resolving: once clamped, this condition is false on every
+      // future load, so the notice never repeats.
+      if(normalized&&(normalized.amMultiplierDemo>1.5||normalized.amMultiplierReal>1.5)){
+        normalized={...normalized,
+          amMultiplierDemo:Math.min(1.5,normalized.amMultiplierDemo??1.3),
+          amMultiplierReal:Math.min(1.5,normalized.amMultiplierReal??1.3)};
+        await supabase.from('settings').upsert(toSettingsRow(userId,normalized));
+        alert('Your Anti-Martingale multiplier was reduced to 1.5x, the new maximum.');
+      }
       setSettings(normalized||null);
       const tradesObj=(t||[]).map(fromTradeRow);
       const analysesObj=(a||[]).map(fromAnalysisRow);
@@ -5520,7 +5786,8 @@ export default function App(){
       if(!sessionTrades.length)return sess;
       // Rebuild counters from scratch (in order) so streaks are correct.
       const amStyle=getMoneyMgmtStyleForMode(settings,sess.accountMode);
-      let amStreak=0,amNextStake=amStyle==='ANTI_MARTINGALE'?amBaseStake(sess.startBalance??0,settings):null;
+      const isPL=amStyle==='PROFIT_LOCK';
+      let streak=0,nextStake=isEscalatingStyle(amStyle)?amBaseStake(sess.startBalance??0,settings):null;
       let runningBal=sess.startBalance??0;
       let w=0,l=0,tc=0,cl=0,cw=0,sp=0;
       for(const t of sessionTrades){
@@ -5529,28 +5796,31 @@ export default function App(){
         if(t.outcome==='WIN'){w++;cw++;cl=0;}
         if(t.outcome==='LOSS'){l++;cl++;cw=0;}
         sp+=t.pnl||0;
-        if(amStyle==='ANTI_MARTINGALE'){
+        if(isEscalatingStyle(amStyle)){
           runningBal+=t.pnl||0;
-          const am=advanceAntiMartingale({streak:amStreak,nextStake:amNextStake},t.outcome,runningBal,settings,sess.accountMode);
-          amStreak=am.streak;amNextStake=am.nextStake;
+          const r=isPL
+            ?advanceProfitLock({streak,nextStake},t.outcome,t.pnl||0,runningBal,settings,sess.accountMode)
+            :advanceAntiMartingale({streak,nextStake},t.outcome,runningBal,settings,sess.accountMode);
+          streak=r.streak;nextStake=r.nextStake;
         }
       }
       const nl=Math.max(0,l-w);
       const rebuilt={...sess,trades:tc,wins:w,losses:l,conLoss:cl,conWin:cw,netLoss:nl,sPnl:sp,
-        ...(amStyle==='ANTI_MARTINGALE'?{amStreak,amNextStake}:{})};
+        ...(isPL?{plStreak:streak,plNextStake:nextStake}:amStyle==='ANTI_MARTINGALE'?{amStreak:streak,amNextStake:nextStake}:{})};
       // Use the last resolved trade's timestamp as endTime so the 6h
       // session gap is measured from when trading actually stopped,
       // not from when this reconciliation runs.
       const lastTrade=sessionTrades.filter(t=>t.outcome!=='PENDING').pop();
       const endTime=lastTrade?lastTrade.timestamp:Date.now();
-      if(amStyle==='ANTI_MARTINGALE'){
+      if(isEscalatingStyle(amStyle)){
         // No chkLock/Strict Locking replay here — Trade Management stop
-        // rules don't apply to Anti-Martingale sessions.
-        const endReason=checkAntiMartingaleSessionEnd(rebuilt,sess.accountMode,settings);
+        // rules don't apply to Anti-Martingale or Profit Lock sessions.
+        const endReason=checkEscalatingSessionEnd(rebuilt,sess.accountMode,settings);
         if(endReason){changed=true;return{...rebuilt,isActive:false,endTime,endReason};}
         // A trade delete can leave streak/next-stake stale even with no end
         // event (e.g. an escalation trade removed) — still worth persisting.
-        if(rebuilt.amStreak!==(sess.amStreak||0)||rebuilt.amNextStake!==sess.amNextStake){changed=true;return rebuilt;}
+        const streakKey=isPL?'plStreak':'amStreak',stakeKey=isPL?'plNextStake':'amNextStake';
+        if(rebuilt[streakKey]!==(sess[streakKey]||0)||rebuilt[stakeKey]!==sess[stakeKey]){changed=true;return rebuilt;}
         return sess;
       }
       const lk=chkLock(rebuilt,getTradeStyleForMode(settings,sess.accountMode));
@@ -5568,16 +5838,17 @@ export default function App(){
   // the timer). The Dashboard's own tick does this immediately when visible;
   // this just guarantees it eventually happens so endTime/isActive never dangle.
   //
-  // Excludes Anti-Martingale sessions for the same reason as the Dashboard's
-  // own tick above: timer expiry is purely informational under AM, never a
-  // locking/ending trigger — only checkAntiMartingaleSessionEnd ends those.
+  // Excludes Anti-Martingale/Profit Lock sessions for the same reason as the
+  // Dashboard's own tick above: timer expiry is purely informational under
+  // either style, never a locking/ending trigger — only their own
+  // profit/loss/max-trades check ends those.
   useEffect(()=>{
     if(!todaySS)return;
     const id=setInterval(()=>{
       const now=Date.now();
       let changed=false;
       const nextSessions=todaySS.sessions.map(s=>{
-        if(s.isActive&&!s.isLocked&&getMoneyMgmtStyleForMode(settings,s.accountMode)!=='ANTI_MARTINGALE'&&isSessionTimeExpired(s,now)){
+        if(s.isActive&&!s.isLocked&&!isEscalatingStyle(getMoneyMgmtStyleForMode(settings,s.accountMode))&&isSessionTimeExpired(s,now)){
           changed=true;
           const noTrade=s.trades===0;
           return{...s,isActive:false,isLocked:true,lockReason:noTrade?'No qualifying setup found':'Time expired',lockCode:noTrade?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',endTime:now};
@@ -5642,10 +5913,10 @@ export default function App(){
     {id:'dashboard',icon:LayoutDashboard,label:'Dashboard'},
     {id:'analyzer',icon:ScanSearch,label:'Zone analyzer'},
     {id:'journal',icon:BookOpen,label:'Journal',badge:pending},
-    // Only relevant while Anti-Martingale is this mode's active Money
-    // Management Style — same gate QuickLog's own "Anti-Martingale only"
-    // alert uses, so the nav entry and the page content never disagree.
-    ...(getMoneyMgmtStyleForMode(settings,mode)==='ANTI_MARTINGALE'?[{id:'quicklog',icon:Zap,label:'Quick log'}]:[]),
+    // Only relevant while Anti-Martingale or Profit Lock is this mode's
+    // active Money Management Style — same gate QuickLog's own alert uses,
+    // so the nav entry and the page content never disagree.
+    ...(isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))?[{id:'quicklog',icon:Zap,label:'Quick log'}]:[]),
     {id:'money',icon:Wallet,label:'Money mgmt'},
     {id:'plan',icon:ClipboardList,label:'Trading plan'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},
