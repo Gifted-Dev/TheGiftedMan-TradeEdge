@@ -145,6 +145,7 @@ This application helps you:
      REACT_APP_SUPABASE_URL=your-project-url
      REACT_APP_SUPABASE_ANON_KEY=your-anon-key
      ```
+   - In Authentication → URL Configuration, set **Site URL** to your deployed app's actual domain (e.g. `https://your-app.vercel.app`), and add `https://your-app.vercel.app/auth/confirmed` (and `http://localhost:3000/auth/confirmed` for local dev) to **Redirect URLs**. Sign-up already passes `emailRedirectTo` pointing at this path, but Supabase only honors it if the URL is on this allow-list — otherwise it silently falls back to the Site URL's default confirmation page. Without this step, confirmation still works, it just lands on Supabase's generic page instead of the app's own "Email confirmed" screen.
 
 4. Configure AI provider keys
    - Sign up in the app, then add your OpenRouter or Groq API key in Settings.

@@ -1583,8 +1583,8 @@ function Setup({onDone}){
       <div style={card}>
         {step===1&&(
           <div>
-            <h2 style={{fontSize:16,fontWeight:500,marginBottom:12,margin:'0 0 12px'}}>AI provider for zone analysis</h2>
-            <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:14}}>Choose your AI provider. You can switch or add keys at any time in Settings.</p>
+            <h2 style={{fontSize:16,fontWeight:500,marginBottom:12,margin:'0 0 12px'}}>AI provider for zone analysis <span style={{fontSize:12,fontWeight:400,color:'var(--text-muted)'}}>(optional)</span></h2>
+            <p style={{fontSize:13,color:'var(--text-secondary)',marginBottom:14}}>Only needed for the Zone Analyzer's AI grading — the Journal, Quick Log, Anti-Martingale, strategies, and Analytics all work without one. Add a key now or skip and come back to Settings whenever you want to use the Analyzer.</p>
             <div style={{marginBottom:14}}>
               <label style={lbl}>OpenRouter API key <span style={{color:'var(--text-muted)'}}>(openrouter.ai — free tier)</span></label>
               <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey} onChange={e=>set('apiKey',e.target.value)}/>
@@ -1593,7 +1593,7 @@ function Setup({onDone}){
               <label style={lbl}>Groq API key <span style={{color:'var(--text-muted)'}}>(console.groq.com — free tier)</span></label>
               <input style={inp} type="password" placeholder="gsk_..." value={f.groqApiKey||''} onChange={e=>set('groqApiKey',e.target.value)}/>
             </div>
-            <p style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Keys are stored locally on your device only. At least one key is needed to use zone analysis.</p>
+            <p style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Keys are stored in your account and used only for zone analysis requests.</p>
           </div>
         )}
         {step===2&&(
@@ -1677,7 +1677,9 @@ function Setup({onDone}){
       <div style={{display:'flex',gap:8,justifyContent:'space-between',marginTop:error?12:0}}>
         {step>1?<button style={btn()} onClick={()=>setStep(s=>s-1)}>← Back</button>:<div/>}
         {step<4
-          ?<button style={btn('pri')} onClick={()=>setStep(s=>s+1)}>Next →</button>
+          ?<button style={btn('pri')} onClick={()=>setStep(s=>s+1)}>
+            {step===1&&!f.apiKey&&!f.groqApiKey?'Skip for now — I\'ll add this later →':'Next →'}
+          </button>
           :<button style={btn('pri')} onClick={finish} disabled={loading||!f.startingBalanceDemo||!f.startingBalanceReal}>
             {loading?'Saving…':'Start trading →'}
           </button>
@@ -2373,7 +2375,13 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
       {locked&&<Alert type="dan" title="🔒 Analyzer locked" body={`Daily ${MAX_DL}-loss limit reached for ${mode==='REAL'?'Real':'Demo'}. Resume tomorrow.`}/>}
       {lk.locked&&!locked&&<Alert type="warn" title="Off-plan" body={`${lk.reason} — logging a trade now will mark it off-plan.`}/>}
       {lk.adv&&!lk.locked&&!locked&&<Alert type="warn" title="Advisory" body={lk.adv}/>}
-      {!activeKey&&<Alert type="warn" title="No API key" body={`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings to enable zone analysis.`}/>}
+      {!activeKey&&(
+        <div style={{...card,background:'var(--bg-accent)',borderColor:'var(--border-accent)',marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:500,color:'var(--text-accent)',marginBottom:4}}>Zone Analyzer needs an API key</div>
+          <p style={{fontSize:12,color:'var(--text-secondary)',margin:'0 0 10px'}}>This is the only feature that needs one — the Journal, Quick Log, Anti-Martingale, and Analytics all work fine without it. Add a free OpenRouter or Groq key to start grading zones.</p>
+          <button style={btn('pri')} onClick={()=>nav('settings')}>Add API key in Settings →</button>
+        </div>
+      )}
 
       <div
         role="button"
@@ -4582,8 +4590,11 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
       )}
 
       <div style={card}>
-        <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>AI provider</div>
-        <div style={{display:'flex',gap:8,marginBottom:14}}>
+        <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>AI provider</div>
+        {!f.apiKey&&!f.groqApiKey&&(
+          <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:10}}>Not set up yet — only needed if you want to use the Zone Analyzer's AI grading. Everything else in the app works without one.</p>
+        )}
+        <div style={{display:'flex',gap:8,marginBottom:14,marginTop:f.apiKey||f.groqApiKey?8:0}}>
           {[{id:'gemini',label:'OpenRouter'},{id:'groq',label:'Groq'}].map(p=>(
             <button key={p.id} style={{...btn((f.aiProvider||'gemini')===p.id?'pri':'def'),flex:1}} onClick={()=>set('aiProvider',p.id)}>{p.label}</button>
           ))}
@@ -5170,7 +5181,7 @@ function Login({onBack}){
     }
     const{data,error}=mode==='signin'
       ?await supabase.auth.signInWithPassword({email,password})
-      :await supabase.auth.signUp({email,password});
+      :await supabase.auth.signUp({email,password,options:{emailRedirectTo:`${window.location.origin}/auth/confirmed`}});
     setBusy(false);
     if(error){setErr(error.message);return;}
     if(mode==='signup'&&!data.session)setMsg('Account created — check your email to confirm before logging in.');
@@ -5229,6 +5240,64 @@ function Login({onBack}){
           {mode!=='signin'&&<button type="button" className="login-link login-link-accent" onClick={()=>switchMode('signin')}>Already have an account? Log in</button>}
           {mode!=='reset'&&<button type="button" className="login-link login-link-muted" onClick={()=>switchMode('reset')}>Forgot password?</button>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Email confirmation landing (/auth/confirmed) ────────────────────────────
+// Supabase's confirmation link redirects here (via emailRedirectTo at signUp
+// time + this path added to the project's Redirect URLs allow-list — see
+// README). detectSessionInUrl (default on) means the session from the
+// link's token is already being established by the time this mounts;
+// getSession() awaits that in-flight work rather than racing it. A failed
+// or expired link comes back as ?error=...&error_description=... in the
+// URL (hash or query, depending on flow) — checked first so that case shows
+// its own message instead of a misleading generic "not confirmed" state.
+function EmailConfirmed({onLogin}){
+  const[status,setStatus]=useState('checking'); // 'checking'|'success'|'error'
+  const[errMsg,setErrMsg]=useState('');
+
+  useEffect(()=>{
+    const raw=window.location.hash.replace(/^#/,'')||window.location.search.replace(/^\?/,'');
+    const params=new URLSearchParams(raw);
+    const urlError=params.get('error_description')||params.get('error');
+    if(urlError){
+      setErrMsg(decodeURIComponent(urlError.replace(/\+/g,' ')));
+      setStatus('error');
+      return;
+    }
+    let cancelled=false;
+    supabase.auth.getSession().then(({data:{session}})=>{
+      if(cancelled)return;
+      setStatus(session?'success':'error');
+    }).catch(()=>{if(!cancelled)setStatus('error');});
+    return()=>{cancelled=true;};
+  },[]);
+
+  return(
+    <div className="login-wrap">
+      <div className="login-orb login-orb-1"/>
+      <div className="login-orb login-orb-2"/>
+      <div className="login-card">
+        <div className="login-header">
+          <div className="login-icon-wrap" style={{background:status==='error'?'var(--fill-danger)':undefined}}>
+            {status==='checking'?<Sparkles size={28} strokeWidth={2} color="#fff"/>
+              :status==='success'?<CircleCheck size={28} strokeWidth={2} color="#fff"/>
+              :<TriangleAlert size={28} strokeWidth={2} color="#fff"/>}
+          </div>
+          <div className="login-title">TheGiftedMan Trading Tool</div>
+          <div className="login-subtitle">
+            {status==='checking'&&'Confirming your email…'}
+            {status==='success'&&'Your email has been confirmed'}
+            {status==='error'&&"This confirmation link isn't valid"}
+          </div>
+        </div>
+
+        {status==='success'&&<div className="login-success">You're all set — log in to start using the app.</div>}
+        {status==='error'&&<div className="login-error">{errMsg||'This link may have expired or already been used. Try logging in — if your email still shows unconfirmed, sign up again to get a new link.'}</div>}
+
+        {status!=='checking'&&<button className="login-btn" type="button" onClick={onLogin}>Log in</button>}
       </div>
     </div>
   );
@@ -5557,6 +5626,14 @@ export default function App(){
       </div>
     </div>
   );
+  // No client-side router in this app (SPA rewrite in vercel.json serves
+  // index.html for every path) — a plain pathname check is enough for one
+  // dedicated route, and takes priority over the normal auth gate below:
+  // a just-confirmed session shouldn't silently drop the user straight into
+  // the dashboard, it should show the confirmation screen first.
+  if(window.location.pathname==='/auth/confirmed'){
+    return<EmailConfirmed onLogin={()=>{window.history.replaceState({},'','/');setPage('login');}}/>;
+  }
   if(!authUser)return page==='login'?<Login onBack={()=>setPage('landing')}/>:<Landing onLogin={()=>setPage('login')}/>;
   if(loading)return<Loading/>;
   if(!settings?.setupComplete)return<Setup onDone={saveSettings}/>;
