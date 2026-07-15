@@ -703,6 +703,32 @@ function dailyLossCount(trades,mode){
 function isDailyCircuitBroken(trades,mode){
   return dailyLossCount(trades,mode)>=MAX_DL;
 }
+// AM/PL's own daily lock — 2 sessions in one day for a mode that end via
+// their own Loss Target (not max-trades, not the 60-minute cap) is a more
+// meaningful "bad day" signal for these styles than the generic total-loss
+// count above: a Profit Lock loss mid-streak is often just giving back
+// banked profit, not real capital, so counting it the same as a Fixed Risk %
+// loss was a mismatch. ss.sessions is already today-only, same assumption
+// every other today-scoped read in this file makes — no extra date filter.
+const MAX_AM_PL_LOSS_TARGET_SESSIONS = 2;
+function amPlLossTargetSessionCount(ss,mode){
+  return(ss?.sessions||[]).filter(s=>s.accountMode===mode&&(s.endReason==='AM_LOSS_TARGET'||s.endReason==='PL_LOSS_TARGET')).length;
+}
+function isAmPlDailyLocked(ss,mode){
+  return amPlLossTargetSessionCount(ss,mode)>=MAX_AM_PL_LOSS_TARGET_SESSIONS;
+}
+// Single source of truth for whether a mode is locked for the rest of today.
+// Deliberately asymmetric: once the AM/PL rule above trips, the lock is
+// mode-wide and sticky — switching back to Fixed Risk % mid-day can't be
+// used to trade around a bad AM/PL day. The generic 4-total-loss rule stays
+// fully exempt for AM/PL otherwise (their own session-level protections —
+// loss target %, max trades, 60-minute cap — make individual trade-loss
+// counting a poor fit for these styles) and fully unchanged for Fixed Risk %.
+function isModeDayLocked(trades,ss,settings,mode){
+  if(isAmPlDailyLocked(ss,mode))return true;
+  const style=getMoneyMgmtStyleForMode(settings,mode);
+  return!isEscalatingStyle(style)&&isDailyCircuitBroken(trades,mode);
+}
 
 function getTradeMode(trade){return trade?.accountMode==='REAL'?'REAL':'DEMO';}
 
@@ -1481,6 +1507,40 @@ function EmptyState({icon:Icon=Inbox,title,body}){
   );
 }
 
+// Monotone cubic Hermite spline (same math as D3's curveMonotoneX / Recharts'
+// "monotone" curve type) through a set of (x,y) points — passes through
+// every real point exactly and never overshoots between two of them, unlike
+// a full/natural cubic spline. That distinction matters here: P&L only
+// actually changes at a completed trade, so a curve that dipped or spiked
+// somewhere BETWEEN two real points (even if it still touched both) would
+// misrepresent when the change happened. Monotone interpolation only ever
+// smooths the joint at each point — it can't invent a move that didn't
+// happen — so it's safe where a plain spline wouldn't be.
+function monotonePath(xs,ys){
+  const n=xs.length;
+  if(n<2)return'';
+  if(n===2)return`M ${xs[0].toFixed(2)} ${ys[0].toFixed(2)} L ${xs[1].toFixed(2)} ${ys[1].toFixed(2)}`;
+  const d=[];
+  for(let i=0;i<n-1;i++)d.push((ys[i+1]-ys[i])/(xs[i+1]-xs[i]));
+  const m=[d[0]];
+  for(let i=1;i<n-1;i++)m.push((d[i-1]<0)===(d[i]<0)&&d[i-1]!==0&&d[i]!==0?(d[i-1]+d[i])/2:0);
+  m.push(d[n-2]);
+  // Fritsch–Carlson: rescale each segment's tangent pair so the curve can't
+  // overshoot past either endpoint's value.
+  for(let i=0;i<n-1;i++){
+    if(d[i]===0){m[i]=0;m[i+1]=0;continue;}
+    const a=m[i]/d[i],b=m[i+1]/d[i],s=a*a+b*b;
+    if(s>9){const t=3/Math.sqrt(s);m[i]=t*a*d[i];m[i+1]=t*b*d[i];}
+  }
+  let path=`M ${xs[0].toFixed(2)} ${ys[0].toFixed(2)}`;
+  for(let i=0;i<n-1;i++){
+    const dx=(xs[i+1]-xs[i])/3;
+    const c1x=xs[i]+dx,c1y=ys[i]+m[i]*dx;
+    const c2x=xs[i+1]-dx,c2y=ys[i+1]-m[i+1]*dx;
+    path+=` C ${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${xs[i+1].toFixed(2)} ${ys[i+1].toFixed(2)}`;
+  }
+  return path;
+}
 // points: [{t:timestamp, v:cumulative P&L}], sorted ascending by t.
 // Renders as inline SVG (no charting library — every chart in this app is
 // hand-rolled) with real axes/gridlines/reference line/hover tooltip.
@@ -1503,7 +1563,8 @@ function TrendChart({points,color}){
   const x=i=>padL+(i/(points.length-1))*innerW;
   const y=v=>padT+innerH-((v-yMin)/yRange)*innerH;
 
-  const linePath=points.map((p,i)=>`${i===0?'M':'L'} ${x(i).toFixed(2)} ${y(p.v).toFixed(2)}`).join(' ');
+  const xs=points.map((p,i)=>x(i)),ys=points.map(p=>y(p.v));
+  const linePath=monotonePath(xs,ys);
   const areaPath=`${linePath} L ${x(points.length-1).toFixed(2)} ${(padT+innerH).toFixed(2)} L ${x(0).toFixed(2)} ${(padT+innerH).toFixed(2)} Z`;
 
   const yTickCount=4;
@@ -1539,7 +1600,7 @@ function TrendChart({points,color}){
         </defs>
         {yTicks.map((v,i)=>(
           <g key={i}>
-            <line x1={padL} x2={width-padR} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="1" strokeDasharray="3 4"/>
+            <line x1={padL} x2={width-padR} y1={y(v)} y2={y(v)} stroke="var(--border)" strokeWidth="1" strokeDasharray="2 3" opacity="0.6"/>
             <text x={padL-8} y={y(v)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="var(--text-muted)">{fmtAxisAmount(v)}</text>
           </g>
         ))}
@@ -2163,7 +2224,8 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const activeTradesCount = active?.trades||0;
   const activeWins = active?.wins||0;
   const activeLosses = active?.losses||0;
-  const isDailyLocked=isDailyCircuitBroken(trades,mode);
+  const isDailyLocked=isModeDayLocked(trades,ss,settings,mode);
+  const isAmPlLockCause=isAmPlDailyLocked(ss,mode);
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
   const nextMs=mode==='REAL'?settings.milestones.find(m=>bal<startBal*m.mul):null;
   const recent=[...modeTrades].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
@@ -2372,7 +2434,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                 <Lock size={17} style={{color:'var(--text-danger)'}}/>
               </div>
               <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Day locked</div>
-              <div style={{fontSize:12,color:'var(--text-muted)'}}>{MAX_DL} losses recorded today. Trading resumes tomorrow.</div>
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>{isAmPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock locked until tomorrow.`:`${MAX_DL} losses recorded today. Trading resumes tomorrow.`}</div>
             </div>
           ):active?(
             <div style={{flex:1}}>
@@ -2899,12 +2961,14 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // mid-session can never retroactively unlock (or lock) it.
   const active=getActive(ss,mode);
   const lk=active?chkLock(active,getTradeStyleForMode(settings,mode)):{locked:false};
-  const dailyLocked=isDailyCircuitBroken(trades,mode);
+  const dailyLocked=isModeDayLocked(trades,ss,settings,mode);
+  const amPlLockCause=isAmPlDailyLocked(ss,mode);
   const strictLocked=!!active?.strictAtStart&&lk.locked;
 
   const tabActive=getActive(ss,journalTab);
   const tabLk=tabActive?chkLock(tabActive,getTradeStyleForMode(settings,journalTab)):{locked:false};
-  const tabDailyLocked=isDailyCircuitBroken(trades,journalTab);
+  const tabDailyLocked=isModeDayLocked(trades,ss,settings,journalTab);
+  const tabAmPlLockCause=isAmPlDailyLocked(ss,journalTab);
   const tabStrictLocked=!!tabActive?.strictAtStart&&tabLk.locked;
   const[offPlanOverride,setOffPlanOverride]=useState(false);
 
@@ -3309,7 +3373,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             <button style={{...btn('suc'),flex:1}} onClick={()=>recordPA()} disabled={dailyLocked||strictLocked}>Create journal entry</button>
             <button style={btn()} onClick={()=>setPA(null)}>Discard</button>
           </div>
-          {dailyLocked&&<div style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>Daily loss limit reached — resume tomorrow.</div>}
+          {dailyLocked&&<div style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>{amPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock locked until tomorrow.`:'Daily loss limit reached — resume tomorrow.'}</div>}
           {!dailyLocked&&strictLocked&&(
             <div style={{marginTop:8}}>
               <div style={{fontSize:12,color:'var(--text-danger)',marginBottom:6}}>{lk.reason} — Strict Session Locking is on for this session.</div>
@@ -3334,7 +3398,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         ))}
       </div>
 
-      {tabDailyLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`}/>}
+      {tabDailyLocked&&<Alert type="dan" title={`${journalTab==='REAL'?'Real':'Demo'} day locked`} body={tabAmPlLockCause?`2 loss-target sessions today for ${journalTab==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock locked until tomorrow.`:`${MAX_DL}-loss daily limit reached for this account. Manual entries resume tomorrow.`}/>}
 
       {!tabDailyLocked&&tabStrictLocked&&(
         <div style={{...card,background:'var(--bg-danger)',borderColor:'var(--border-danger)'}}>
