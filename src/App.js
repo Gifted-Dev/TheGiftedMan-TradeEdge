@@ -1030,6 +1030,14 @@ function chkLock(sess,style){
 function getSessionDuration(settings,styleId){
   return settings?.sessionDurations?.[styleId] ?? DEF_DURATIONS[styleId] ?? DEF_DURATIONS[1];
 }
+// The duration actually used for a new session — Trade Management's
+// per-style value under Fixed Risk %, but the fixed 60-minute Anti-
+// Martingale/Profit Lock cap (in minutes) whenever either is active, since
+// Trade Management's duration setting has no bearing on those styles at all.
+function getEffectiveSessionDuration(settings,mode){
+  if(isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode)))return ESCALATING_TIME_LIMIT_MS/60000;
+  return getSessionDuration(settings,getTradeStyleForMode(settings,mode));
+}
 // strictAtStart is stamped from the CURRENT setting at creation time and
 // then belongs to this session for its whole lifetime — toggling the
 // setting later never retroactively changes an already-running session's
@@ -2190,7 +2198,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
     // own gesture as possible — see requestAutoStart's own comment for why
     // the actual play() usually still ends up deferred past that gesture.
     music?.requestAutoStart();
-    const duration=getSessionDuration(settings,getTradeStyleForMode(settings,mode));
+    const duration=getEffectiveSessionDuration(settings,mode);
     const strictAtStart=isStrictForMode(settings,mode);
     let base=ss;
     const tryInsert=async b=>{
@@ -2401,7 +2409,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
               </div>
               <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Ready for session {ss.sessions.filter(s=>s.accountMode===mode).length+1}</div>
               <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:12}}>Start a session to begin the timer, or analyze a zone / open the journal directly.</div>
-              <button style={{...btn('suc'),width:'100%'}} onClick={startSession}><Timer size={15}/>Start session ({getSessionDuration(settings,getTradeStyleForMode(settings,mode))}m)</button>
+              <button style={{...btn('suc'),width:'100%'}} onClick={startSession}><Timer size={15}/>Start session ({getEffectiveSessionDuration(settings,mode)}m)</button>
             </div>
           )}
 
@@ -2920,7 +2928,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const s=canStart(ssState,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return null;}
     const tryInsert=async base=>{
-      const candidate=buildSession(base,mode,getSessionDuration(settings,getTradeStyleForMode(settings,mode)),isStrictForMode(settings,mode),settings,balForMode(settings,trades,wds,mode));
+      const candidate=buildSession(base,mode,getEffectiveSessionDuration(settings,mode),isStrictForMode(settings,mode),settings,balForMode(settings,trades,wds,mode));
       const{error}=await supabase.from('sessions').insert(toSessionRow(userId,base.date,candidate));
       return{candidate,error};
     };
