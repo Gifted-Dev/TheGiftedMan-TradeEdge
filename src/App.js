@@ -4935,6 +4935,33 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
           </div>
         </div>
 
+        {/* Risk sizing — shared across all three styles, not Fixed-Risk-%-
+            specific: amBaseStake() (the base stake formula every style
+            escalates or resets to) reads riskPercent/riskAmount directly,
+            regardless of which Money Management style is active. Lives
+            above the tabs so it's always visible, never hidden by tab
+            selection. */}
+        <div style={{background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px',marginBottom:16}}>
+          <label style={lbl}>Risk sizing</label>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            {[{id:'PERCENT',label:'% of balance'},{id:'FIXED',label:'Fixed $ amount'}].map(m=>(
+              <button key={m.id} style={{...btn((f.riskMode||'PERCENT')===m.id?'pri':'def'),flex:1}} onClick={()=>set('riskMode',m.id)}>{m.label}</button>
+            ))}
+          </div>
+          {(f.riskMode||'PERCENT')==='PERCENT'?(
+            <>
+              <label style={lbl}>Risk per trade: {f.riskPercent}%</label>
+              <input type="range" min="1" max="20" step="0.5" value={f.riskPercent} onChange={e=>set('riskPercent',parseFloat(e.target.value))} style={{width:'100%'}}/>
+            </>
+          ):(
+            <>
+              <label style={lbl}>Fixed stake per trade ($)</label>
+              <input style={inp} type="number" min="1" step="0.5" value={f.riskAmount} onChange={e=>set('riskAmount',parseFloat(e.target.value))}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Every trade stakes this amount regardless of balance — change it anytime, it applies from your next stake calculation.</p>
+            </>
+          )}
+        </div>
+
         {/* Tab content — a distinct bordered/elevated card, tabs as its header
             (underline-active-tab pattern), so it reads as one unit clearly
             separate from the Active style switch above and the calculator
@@ -4958,26 +4985,10 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
           <div style={{padding:14}}>
           {mmTab==='FIXED'?(
             <div>
-              <label style={lbl}>Risk sizing</label>
-              <div style={{display:'flex',gap:8,marginBottom:10}}>
-                {[{id:'PERCENT',label:'% of balance'},{id:'FIXED',label:'Fixed $ amount'}].map(m=>(
-                  <button key={m.id} style={{...btn((f.riskMode||'PERCENT')===m.id?'pri':'def'),flex:1}} onClick={()=>set('riskMode',m.id)}>{m.label}</button>
-                ))}
-              </div>
-              {(f.riskMode||'PERCENT')==='PERCENT'?(
-                <>
-                  <label style={lbl}>Risk per trade: {f.riskPercent}%</label>
-                  <input type="range" min="1" max="20" step="0.5" value={f.riskPercent} onChange={e=>set('riskPercent',parseFloat(e.target.value))} style={{width:'100%'}}/>
-                </>
-              ):(
-                <>
-                  <label style={lbl}>Fixed stake per trade ($)</label>
-                  <input style={inp} type="number" min="1" step="0.5" value={f.riskAmount} onChange={e=>set('riskAmount',parseFloat(e.target.value))}/>
-                  <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Every trade stakes this amount regardless of balance — change it anytime, it applies from your next stake calculation.</p>
-                </>
-              )}
-
-              <div style={{marginTop:16}}>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
+                Risk per trade is set once above and shared by all three styles — this tab is just Fixed Risk %'s own session-ending rules: which Trade Management style governs the countdown/stop conditions, and how many sessions you run per day.
+              </p>
+              <div>
                 <label style={lbl}>Trade management style</label>
                 <div style={isEscalatingStyle(f[`moneyMgmtStyle${modeKey}`])?{opacity:0.45,pointerEvents:'none'}:undefined}>
                   {isEscalatingStyle(f[`moneyMgmtStyle${modeKey}`])&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — {modeKey} is on {f[`moneyMgmtStyle${modeKey}`]==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
