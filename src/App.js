@@ -845,7 +845,10 @@ function amStakeReasoning(session, balance, settings, mode) {
   }
   return `Escalation ${streak} of ${maxEscalations} — win again for $${onWin.toFixed(2)}, any loss resets to $${base.toFixed(2)} base.`;
 }
-function checkAntiMartingaleSessionEnd(session, mode, settings) {
+// 60-minute cap is fixed, not user-configurable — unlike Trade Management's
+// per-style duration, which only ever informs the (non-ending) countdown UI.
+const ESCALATING_TIME_LIMIT_MS = 60 * 60000;
+function checkAntiMartingaleSessionEnd(session, mode, settings, now = Date.now()) {
   if (!session?.isActive) return null;
   if (getMoneyMgmtStyleForMode(settings, mode) !== 'ANTI_MARTINGALE') return null;
   const startBal = session.startBalance;
@@ -855,6 +858,7 @@ function checkAntiMartingaleSessionEnd(session, mode, settings) {
   if (pnlPct >= profitTarget) return 'AM_PROFIT_TARGET';
   if (pnlPct <= -Math.abs(lossTarget)) return 'AM_LOSS_TARGET';
   if (session.trades >= getAmMaxTradesForMode(settings, mode)) return 'AM_MAX_TRADES';
+  if (sessionElapsedMs(session, now) >= ESCALATING_TIME_LIMIT_MS) return 'AM_TIME_LIMIT';
   return null;
 }
 
@@ -923,7 +927,7 @@ function plStakeReasoning(session, balance, settings, mode) {
   }
   return `Next stake: $${stake.toFixed(2)} — this is your banked profit from the last win. A loss here returns you to your $${base.toFixed(2)} base, never below it.`;
 }
-function checkProfitLockSessionEnd(session, mode, settings) {
+function checkProfitLockSessionEnd(session, mode, settings, now = Date.now()) {
   if (!session?.isActive) return null;
   if (getMoneyMgmtStyleForMode(settings, mode) !== 'PROFIT_LOCK') return null;
   const startBal = session.startBalance;
@@ -933,6 +937,7 @@ function checkProfitLockSessionEnd(session, mode, settings) {
   if (pnlPct >= profitTarget) return 'PL_PROFIT_TARGET';
   if (pnlPct <= -Math.abs(lossTarget)) return 'PL_LOSS_TARGET';
   if (session.trades >= getPlMaxTradesForMode(settings, mode)) return 'PL_MAX_TRADES';
+  if (sessionElapsedMs(session, now) >= ESCALATING_TIME_LIMIT_MS) return 'PL_TIME_LIMIT';
   return null;
 }
 
@@ -957,8 +962,8 @@ function escalatingStakeReasoning(session, balance, settings, mode, style) {
 // Each check function already gates on its own style match internally, so
 // calling both unconditionally and taking whichever fires is safe — at
 // most one of the two can ever return non-null for a given session.
-function checkEscalatingSessionEnd(session, mode, settings) {
-  return checkAntiMartingaleSessionEnd(session, mode, settings) ?? checkProfitLockSessionEnd(session, mode, settings);
+function checkEscalatingSessionEnd(session, mode, settings, now = Date.now()) {
+  return checkAntiMartingaleSessionEnd(session, mode, settings, now) ?? checkProfitLockSessionEnd(session, mode, settings, now);
 }
 // Advances whichever engine is active, and returns the update pre-keyed to
 // the right session fields (amStreak/amNextStake vs plStreak/plNextStake)
@@ -1853,9 +1858,10 @@ function useMusicPlayer(active){
   const fetchedForRef=useRef(null);
   const startedRef=useRef(false); // has a track been explicitly picked/started this session yet?
   const alertPlayingRef=useRef(false); // true while the shared <audio> element is borrowed for a lock alert
+  const autoStartWantedRef=useRef(false); // set by requestAutoStart(); consumed once tracks finish loading
 
   useEffect(()=>{
-    if(!active){fetchedForRef.current=null;startedRef.current=false;return;}
+    if(!active){fetchedForRef.current=null;startedRef.current=false;autoStartWantedRef.current=false;return;}
     if(fetchedForRef.current===active.id)return;
     fetchedForRef.current=active.id;
     startedRef.current=false;
@@ -1979,8 +1985,29 @@ function useMusicPlayer(active){
     setPlaying(false);
     if(audioRef.current)audioRef.current.pause();
   }
+  // Called from Start Session's click handler — best-effort gesture credit,
+  // same trust assumption onEnded already relies on (see its comment above):
+  // tracks usually aren't loaded yet at click time (the fetch only starts
+  // once `active` flips non-null), so the actual play() call is deferred to
+  // whichever fires first — the effect below, once tracks arrive.
+  function requestAutoStart(){
+    autoStartWantedRef.current=true;
+    if(tracks?.length&&!startedRef.current){
+      autoStartWantedRef.current=false;
+      startedRef.current=true;
+      playTrackAt(randTrackIndex(tracks.length,trackIdx));
+    }
+  }
+  useEffect(()=>{
+    if(autoStartWantedRef.current&&tracks?.length&&!startedRef.current){
+      autoStartWantedRef.current=false;
+      startedRef.current=true;
+      playTrackAt(randTrackIndex(tracks.length,trackIdx));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[tracks]);
 
-  return{tracks,trackIdx,track:tracks?.[trackIdx],playing,volume,setVolume,muted,setMuted,audioRef,toggle,next,selectTrack,playAlert};
+  return{tracks,trackIdx,track:tracks?.[trackIdx],playing,volume,setVolume,muted,setMuted,audioRef,toggle,next,selectTrack,playAlert,requestAutoStart};
 }
 
 // Full inline player — rendered inside the Dashboard grid while a session is active.
@@ -2159,6 +2186,10 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   // fix: insert directly so a uniq_session_slot conflict is attributable to
   // this call, and retry once against the mode's real current rows.
   async function startSession(){
+    // Fired synchronously, first thing, so it's as close to the click's
+    // own gesture as possible — see requestAutoStart's own comment for why
+    // the actual play() usually still ends up deferred past that gesture.
+    music?.requestAutoStart();
     const duration=getSessionDuration(settings,getTradeStyleForMode(settings,mode));
     const strictAtStart=isStrictForMode(settings,mode);
     let base=ss;
@@ -2212,7 +2243,18 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   useEffect(()=>{
     if(!active)return;
     if(active.pausedAt&&now-active.pausedAt>=PAUSE_AUTO_RESUME_MS)resumeSession();
-    else if(!active.pausedAt&&!isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))&&isSessionTimeExpired(active,now))endSession(active.trades===0?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',active.trades===0?'No qualifying setup found':'Time expired');
+    else if(isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))){
+      // 60-minute hard cap — same non-blocking end as the profit/loss/max-
+      // trades checks (checkEscalatingSessionEnd), just time-triggered
+      // instead of trade-triggered so it fires without a new trade.
+      const endReason=checkEscalatingSessionEnd(active,mode,settings,now);
+      if(endReason){
+        const us={...active,isActive:false,endTime:Date.now(),endReason};
+        const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+        saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+      }
+    }
+    else if(!active.pausedAt&&isSessionTimeExpired(active,now))endSession(active.trades===0?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',active.trades===0?'No qualifying setup found':'Time expired');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[now]);
 
@@ -3664,6 +3706,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 // Row clicks deep-link into Journal's own Detail/Edit modal (onOpenTrade)
 // rather than duplicating that ~800-line modal here.
 function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOpenTrade}){
+  const now=useNowTick(1000);
   const active=getActive(ss,mode);
   const style=getMoneyMgmtStyleForMode(settings,mode);
   const isAm=isEscalatingStyle(style); // name kept for minimal diff — now covers both escalating styles
@@ -3741,7 +3784,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
 
       {!isAm&&<Alert type="inf" title="Anti-Martingale / Profit Lock only" body="Quick Log is built for the escalating-stake styles' fast pace. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
       {isAm&&!active&&<Alert type="inf" title="No active session" body={`Start a ${styleLabel} session from the Dashboard to begin logging here.`}/>}
-      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':active.endReason?.endsWith('LOSS_TARGET')?'loss target reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
+      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':active.endReason?.endsWith('LOSS_TARGET')?'loss target reached':active.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
 
       {isAm&&active&&(()=>{
         // Targets are % of session START balance (matches
@@ -3756,6 +3799,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
         const profitTargetDollars=startBal*(profitTargetPct/100);
         const lossTargetDollars=startBal*(lossTargetPct/100);
         const tradesRemaining=Math.max(0,maxTrades-active.trades);
+        const timeRemainingMs=Math.max(0,ESCALATING_TIME_LIMIT_MS-sessionElapsedMs(active,now));
         // Normalized bar, not a raw dollar span: each half is independently
         // scaled to its own target, so zero always sits exactly at center
         // regardless of asymmetric profit/loss target %s.
@@ -3773,6 +3817,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
               <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
               <Metric label="Loss stop" value={`-${f$(lossTargetDollars)}`} color="var(--text-danger)"/>
               <Metric label="Max trades" value={`${maxTrades} — ${tradesRemaining} left`}/>
+              <Metric label="Time limit" value={`60 min — ${fmtClock(timeRemainingMs)} left`} color={timeRemainingMs<=60000?'var(--text-danger)':undefined}/>
             </div>
             <div style={{marginBottom:16}}>
               <div style={{position:'relative',height:10,borderRadius:999,overflow:'hidden',display:'flex',border:'1px solid var(--border)'}}>
@@ -4653,7 +4698,12 @@ function StrategyRow({strategy,trades,updateStrategy,deleteStrategy}){
   );
 }
 
-function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStrategy,updateStrategy,deleteStrategy}){
+function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy}){
+  // Same global account-mode toggle Dashboard/Journal/QuickLog already read
+  // — no separate mode concept for Settings. `f` still holds every Demo/Real
+  // field at once (storage stays per-mode); only which slice renders here
+  // changes with `modeKey`.
+  const modeKey=mode==='REAL'?'Real':'Demo';
   const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true,
     moneyMgmtStyleDemo:settings?.moneyMgmtStyleDemo ?? 'FIXED',moneyMgmtStyleReal:settings?.moneyMgmtStyleReal ?? 'FIXED',
     amMultiplierDemo:Math.min(1.5,Math.max(1.2,settings?.amMultiplierDemo ?? 1.3)),amMultiplierReal:Math.min(1.5,Math.max(1.2,settings?.amMultiplierReal ?? 1.3)),
@@ -4676,16 +4726,17 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
   const[resetDone,setResetDone]=useState(false);
   const[newStratName,setNewStratName]=useState('');
   const[newStratDesc,setNewStratDesc]=useState('');
-  const[calcMode,setCalcMode]=useState('DEMO');
   // Shared, not per-mode: a content-category switch (which style's fields am
-  // I configuring), not a mode switch — both Demo and Real already render
-  // side-by-side within whichever tab is open.
-  const[mmTab,setMmTab]=useState('FIXED');
+  // I configuring), not a mode switch.
+  // Starts synced to whichever style is currently active for this mode —
+  // the Active Style toggle and this tab selector move together from then
+  // on (each click updates both), so they can never end up disagreeing.
+  const[mmTab,setMmTab]=useState(()=>f[`moneyMgmtStyle${modeKey}`]||'FIXED');
   const[calcExpanded,setCalcExpanded]=useState(false);
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   const activeSession=ss?getActive(ss):null;
 
-  async function applyMoneyMgmtStyle(mode,styleVal){
+  async function applyMoneyMgmtStyle(styleVal){
     if(activeSession)setSessionWarn(true);
     const key=mode==='REAL'?'moneyMgmtStyleReal':'moneyMgmtStyleDemo';
     const updated={...f,[key]:styleVal};
@@ -4695,34 +4746,37 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
   // Suggested risk % — display-only, never writes to riskPercent or any other
   // setting. Reuses the same win-rate math Analytics uses (wins/total*100).
-  const calcDone=(trades||[]).filter(t=>getTradeMode(t)===calcMode&&t.outcome!=='PENDING');
+  // Drives off the same global `mode` as the rest of the page now — no
+  // independent calculator-only toggle; its existing manual-override fields
+  // (balance/target/trades) already cover exploring "what if I were on the
+  // other mode" without needing a dedicated switch.
+  const calcDone=(trades||[]).filter(t=>getTradeMode(t)===mode&&t.outcome!=='PENDING');
   const calcWinRate=calcDone.length?(calcDone.filter(t=>t.outcome==='WIN').length/calcDone.length)*100:65;
-  const calcModeKey=calcMode==='REAL'?'Real':'Demo';
-  const calcStyle=f[`moneyMgmtStyle${calcModeKey}`]||'FIXED';
+  const calcStyle=f[`moneyMgmtStyle${modeKey}`]||'FIXED';
   const calcIsAM=isEscalatingStyle(calcStyle); // name kept for minimal diff — now covers both escalating styles
-  const calcLiveProfitTargetPct=()=>calcStyle==='PROFIT_LOCK'?getPlProfitTargetPctForMode(settings,calcMode):getAmProfitTargetPctForMode(settings,calcMode);
-  const calcLiveMaxTrades=()=>calcStyle==='PROFIT_LOCK'?getPlMaxTradesForMode(settings,calcMode):getAmMaxTradesForMode(settings,calcMode);
+  const calcLiveProfitTargetPct=()=>calcStyle==='PROFIT_LOCK'?getPlProfitTargetPctForMode(settings,mode):getAmProfitTargetPctForMode(settings,mode);
+  const calcLiveMaxTrades=()=>calcStyle==='PROFIT_LOCK'?getPlMaxTradesForMode(settings,mode):getAmMaxTradesForMode(settings,mode);
   const calcTargetPct=parseFloat(f.riskCalcTargetPct)||(calcIsAM?calcLiveProfitTargetPct():10);
   const calcTradesN=Math.max(1,parseFloat(f.riskCalcTradesPerSession)||(calcIsAM?calcLiveMaxTrades():6));
-  // Auto-populates from the real, live values every time the calculator's
-  // mode toggle changes (including the initial mount) — Balance always has a
-  // live equivalent; Session profit target % and Trades per session only do
+  // Auto-populates from the real, live values every time the global mode
+  // changes (including the initial mount) — Balance always has a live
+  // equivalent; Session profit target % and Trades per session only do
   // under Anti-Martingale/Profit Lock (Fixed Risk % has no direct equivalent
   // for either, so those two are left as whatever's already there — the
   // existing manual default/estimate — when Fixed is active). Typing over
-  // any field afterward is a hypothetical override that sticks until you
-  // switch mode or hit Reset.
+  // any field afterward is a hypothetical override that sticks until the
+  // global mode changes or you hit Reset.
   useEffect(()=>{
-    const liveBalance=balForMode(settings,trades,wds,calcMode);
+    const liveBalance=balForMode(settings,trades,wds,mode);
     sf(prev=>({...prev,riskCalcBalance:String(Math.round(liveBalance*100)/100),
       ...(calcIsAM?{
         riskCalcTargetPct:String(calcLiveProfitTargetPct()),
         riskCalcTradesPerSession:String(calcLiveMaxTrades()),
       }:{})}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[calcMode]);
+  },[mode]);
   function resetCalcToLive(){
-    const liveBalance=balForMode(settings,trades,wds,calcMode);
+    const liveBalance=balForMode(settings,trades,wds,mode);
     set('riskCalcBalance',String(Math.round(liveBalance*100)/100));
     if(calcIsAM){
       set('riskCalcTargetPct',String(calcLiveProfitTargetPct()));
@@ -4769,7 +4823,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
     setTimeout(()=>setResetDone(false),3000);
   }
 
-  async function applyStyle(id,mode){
+  async function applyStyle(id){
     if(activeSession)setSessionWarn(true);
     const updated=mode==='REAL'?{...f,tradeStyleReal:id}:{...f,tradeStyleDemo:id};
     sf(updated);
@@ -4788,7 +4842,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
   // creation), not by re-reading this setting live. Toggling OFF while a
   // strict-mode session is currently locked only changes what the NEXT
   // session (for this mode) will do.
-  async function applyStrictLocking(mode,on){
+  async function applyStrictLocking(on){
     const key=mode==='REAL'?'strictLockingReal':'strictLockingDemo';
     const activeForMode=ss?getActive(ss,mode):null;
     if(!on&&activeForMode?.strictAtStart){
@@ -4807,7 +4861,15 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
   return(
     <div>
-      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Settings</div>
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Settings</div>
+        {/* Same badge treatment as the sidebar's own mode indicator — Real
+            stays visually loud on purpose, same reasoning as everywhere else
+            in the app: it's real money. */}
+        <span style={{fontSize:11,fontWeight:700,letterSpacing:'0.04em',padding:'3px 9px',borderRadius:999,background:mode==='REAL'?'var(--bg-danger)':'var(--bg-accent)',color:mode==='REAL'?'var(--text-danger)':'var(--text-accent)',border:`1px solid ${mode==='REAL'?'var(--border-danger)':'var(--border-accent)'}`}}>
+          Configuring: {modeKey} account
+        </span>
+      </div>
 
       {sessionWarn&&(
         <Alert type="warn" title="Active session in progress" body="This change will apply starting from your next session. Your current session continues under its original rules."/>
@@ -4840,11 +4902,8 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Account</div>
-        <div className="grid-2">
-          <div><label style={lbl}>Demo starting balance ($)</label><input style={inp} type="number" min="1" value={f.startingBalanceDemo} onChange={e=>set('startingBalanceDemo',e.target.value)}/></div>
-          <div><label style={lbl}>Real starting balance ($)</label><input style={inp} type="number" min="1" value={f.startingBalanceReal} onChange={e=>set('startingBalanceReal',e.target.value)}/></div>
-        </div>
-        <div><label style={lbl}>Broker min withdrawal ($)</label><input style={inp} type="number" min="1" value={f.brokerMin} onChange={e=>set('brokerMin',parseFloat(e.target.value))}/></div>
+        <div><label style={lbl}>{modeKey} starting balance ($)</label><input style={inp} type="number" min="1" value={f[`startingBalance${modeKey}`]} onChange={e=>set(`startingBalance${modeKey}`,e.target.value)}/></div>
+        <div style={{marginTop:10}}><label style={lbl}>Broker min withdrawal ($)</label><input style={inp} type="number" min="1" value={f.brokerMin} onChange={e=>set('brokerMin',parseFloat(e.target.value))}/></div>
       </div>
 
       {/* ── Money management ──────────────────────────────────────────── */}
@@ -4854,42 +4913,39 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
           Switchable any time — takes effect from your next trade. Anti-Martingale escalates the stake after a win (up to your configured max escalations, capped at a % of balance); Profit Lock stakes only the profit just banked, never original capital. Both reset to base on any loss and end their own session on a profit target, loss target, or max trades reached, instead of the Trade Management rules in the Fixed Risk % tab, so that selector is disabled for whichever mode uses either.
         </p>
 
-        {/* Active style — a compact segmented switch per mode, deliberately
-            NOT styled like the tab headers below: this picks what's actually
-            live, the tabs below are just for editing either style's fields. */}
+        {/* Active style — a compact segmented switch, deliberately NOT styled
+            like the tab headers below: this picks what's actually live for
+            {modeKey}. Synced two-way with the tab selector below — picking a
+            style here also switches the tab to it, and picking a tab down
+            there also makes that style active, so the two can never disagree. */}
         <div style={{background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px',marginBottom:16}}>
           <div style={{fontSize:10,fontWeight:600,color:'var(--text-muted)',textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:8}}>Active style</div>
-          {ACCOUNT_MODES.map(m=>{
-            const key=m==='REAL'?'moneyMgmtStyleReal':'moneyMgmtStyleDemo';
-            const modeLabel=m==='REAL'?'Real':'Demo';
-            return(
-              <div key={m} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,padding:'4px 0'}}>
-                <span style={{fontSize:12,color:'var(--text-secondary)'}}>{modeLabel} is using</span>
-                <div style={{display:'flex',gap:2,background:'var(--surface-0)',border:'1px solid var(--border)',borderRadius:999,padding:2}}>
-                  {MM_STYLES.map(o=>(
-                    <button key={o.id} type="button" onClick={()=>applyMoneyMgmtStyle(m,o.id)}
-                      style={{padding:'4px 10px',fontSize:11,fontWeight:600,borderRadius:999,border:'none',cursor:'pointer',
-                        background:f[key]===o.id?'var(--fill-accent)':'transparent',
-                        color:f[key]===o.id?'#fff':'var(--text-muted)'}}>
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+            <span style={{fontSize:12,color:'var(--text-secondary)'}}>{modeKey} is using</span>
+            <div style={{display:'flex',gap:2,background:'var(--surface-0)',border:'1px solid var(--border)',borderRadius:999,padding:2}}>
+              {MM_STYLES.map(o=>(
+                <button key={o.id} type="button" onClick={()=>{applyMoneyMgmtStyle(o.id);setMmTab(o.id);}}
+                  style={{padding:'4px 10px',fontSize:11,fontWeight:600,borderRadius:999,border:'none',cursor:'pointer',
+                    background:f[`moneyMgmtStyle${modeKey}`]===o.id?'var(--fill-accent)':'transparent',
+                    color:f[`moneyMgmtStyle${modeKey}`]===o.id?'#fff':'var(--text-muted)'}}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* Tab content — a distinct bordered/elevated card, tabs as its header
             (underline-active-tab pattern), so it reads as one unit clearly
             separate from the Active style switch above and the calculator
-            below. Tabs are shared (not per-mode): a content-category switch,
-            not a mode switch — Demo and Real already coexist within whichever
-            tab's content is showing. */}
+            below. Tabs are shared (not per-mode) and, per the sync note
+            above, selecting one also applies it as {modeKey}'s active style —
+            the fields inside each tab are mode-filtered to {modeKey} like the
+            rest of the page. */}
         <div style={{border:'1px solid var(--border)',borderRadius:'var(--radius)',background:'var(--surface-0)',overflow:'hidden'}}>
           <div style={{display:'flex',borderBottom:'1px solid var(--border)'}}>
             {MM_STYLES.map(t=>(
-              <button key={t.id} type="button" onClick={()=>setMmTab(t.id)}
+              <button key={t.id} type="button" onClick={()=>{setMmTab(t.id);applyMoneyMgmtStyle(t.id);}}
                 style={{flex:1,padding:'10px 12px',fontSize:13,fontWeight:600,border:'none',cursor:'pointer',
                   background:mmTab===t.id?'var(--bg-accent)':'transparent',
                   color:mmTab===t.id?'var(--text-accent)':'var(--text-muted)',
@@ -4923,33 +4979,17 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
 
               <div style={{marginTop:16}}>
                 <label style={lbl}>Trade management style</label>
-                <div className="grid-2">
-                  <div style={isEscalatingStyle(f.moneyMgmtStyleDemo)?{opacity:0.45,pointerEvents:'none'}:undefined}>
-                    <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Demo account</div>
-                    {isEscalatingStyle(f.moneyMgmtStyleDemo)&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Demo is on {f.moneyMgmtStyleDemo==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
-                    {STYLES.map(st=>(
-                      <div key={`demo-${st.id}`} onClick={()=>applyStyle(st.id,'DEMO')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleDemo===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
-                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
-                          <div style={{fontWeight:500,fontSize:13,color:'var(--text-primary)'}}>{st.name}</div>
-                          {f.tradeStyleDemo===st.id&&<i className="ti ti-circle-check" style={{color:'var(--text-accent)',fontSize:16}} aria-hidden="true"/>}
-                        </div>
-                        <div style={{fontSize:12,color:'var(--text-secondary)'}}>{st.desc}</div>
+                <div style={isEscalatingStyle(f[`moneyMgmtStyle${modeKey}`])?{opacity:0.45,pointerEvents:'none'}:undefined}>
+                  {isEscalatingStyle(f[`moneyMgmtStyle${modeKey}`])&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — {modeKey} is on {f[`moneyMgmtStyle${modeKey}`]==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
+                  {STYLES.map(st=>(
+                    <div key={st.id} onClick={()=>applyStyle(st.id)} style={{...card,cursor:'pointer',marginBottom:8,border:f[`tradeStyle${modeKey}`]===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
+                        <div style={{fontWeight:500,fontSize:13,color:'var(--text-primary)'}}>{st.name}</div>
+                        {f[`tradeStyle${modeKey}`]===st.id&&<i className="ti ti-circle-check" style={{color:'var(--text-accent)',fontSize:16}} aria-hidden="true"/>}
                       </div>
-                    ))}
-                  </div>
-                  <div style={isEscalatingStyle(f.moneyMgmtStyleReal)?{opacity:0.45,pointerEvents:'none'}:undefined}>
-                    <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>Real account</div>
-                    {isEscalatingStyle(f.moneyMgmtStyleReal)&&<p style={{fontSize:11,color:'var(--text-muted)',marginBottom:8}}>Disabled — Real is on {f.moneyMgmtStyleReal==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} money management, which ends sessions on its own profit/loss target instead.</p>}
-                    {STYLES.map(st=>(
-                      <div key={`real-${st.id}`} onClick={()=>applyStyle(st.id,'REAL')} style={{...card,cursor:'pointer',marginBottom:8,border:f.tradeStyleReal===st.id?'1.5px solid var(--border-accent)':'1px solid var(--border)'}}>
-                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:3}}>
-                          <div style={{fontWeight:500,fontSize:13,color:'var(--text-primary)'}}>{st.name}</div>
-                          {f.tradeStyleReal===st.id&&<i className="ti ti-circle-check" style={{color:'var(--text-accent)',fontSize:16}} aria-hidden="true"/>}
-                        </div>
-                        <div style={{fontSize:12,color:'var(--text-secondary)'}}>{st.desc}</div>
-                      </div>
-                    ))}
-                  </div>
+                      <div style={{fontSize:12,color:'var(--text-secondary)'}}>{st.desc}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
@@ -4964,62 +5004,42 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
               </div>
             </div>
           ):mmTab==='ANTI_MARTINGALE'?(
-            <div className="grid-2">
-              {ACCOUNT_MODES.map(m=>{
-                const modeLabel=m==='REAL'?'Real':'Demo';
-                return(
-                  <div key={m}>
-                    <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{modeLabel} account</div>
-                    <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
-                      <label style={lbl}>Multiplier: {(f[`amMultiplier${modeLabel}`]??1.3).toFixed(1)}×</label>
-                      <input type="range" min="1.2" max="1.5" step="0.1" value={f[`amMultiplier${modeLabel}`]??1.3} onChange={e=>set(`amMultiplier${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeLabel}`]??20}% of balance</label>
-                      <input type="range" min="5" max="50" step="1" value={f[`amCeilingPct${modeLabel}`]??20} onChange={e=>set(`amCeilingPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
-                      <div style={{display:'flex',gap:8}}>
-                        {[1,2].map(n=>(
-                          <button key={n} type="button" style={{...btn((f[`amMaxEscalations${modeLabel}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`amMaxEscalations${modeLabel}`,n)}>{n}</button>
-                        ))}
-                      </div>
-                      <label style={{...lbl,marginTop:8}}>Profit target: {f[`amProfitTargetPct${modeLabel}`]??10}% of session start balance</label>
-                      <input type="range" min="1" max="50" step="1" value={f[`amProfitTargetPct${modeLabel}`]??10} onChange={e=>set(`amProfitTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Loss target: {f[`amLossTargetPct${modeLabel}`]??10}% of session start balance</label>
-                      <input type="range" min="1" max="50" step="1" value={f[`amLossTargetPct${modeLabel}`]??10} onChange={e=>set(`amLossTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`amMaxTrades${modeLabel}`]??8}</label>
-                      <input type="range" min="3" max="20" step="1" value={f[`amMaxTrades${modeLabel}`]??8} onChange={e=>set(`amMaxTrades${modeLabel}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
-                      <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session also ends the moment this trade count is reached, regardless of P&L — a separate safety net from the profit/loss targets above.</p>
-                    </div>
-                  </div>
-                );
-              })}
+            <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
+              <label style={lbl}>Multiplier: {(f[`amMultiplier${modeKey}`]??1.3).toFixed(1)}×</label>
+              <input type="range" min="1.2" max="1.5" step="0.1" value={f[`amMultiplier${modeKey}`]??1.3} onChange={e=>set(`amMultiplier${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeKey}`]??20}% of balance</label>
+              <input type="range" min="5" max="50" step="1" value={f[`amCeilingPct${modeKey}`]??20} onChange={e=>set(`amCeilingPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
+              <div style={{display:'flex',gap:8}}>
+                {[1,2].map(n=>(
+                  <button key={n} type="button" style={{...btn((f[`amMaxEscalations${modeKey}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`amMaxEscalations${modeKey}`,n)}>{n}</button>
+                ))}
+              </div>
+              <label style={{...lbl,marginTop:8}}>Profit target: {f[`amProfitTargetPct${modeKey}`]??10}% of session start balance</label>
+              <input type="range" min="1" max="50" step="1" value={f[`amProfitTargetPct${modeKey}`]??10} onChange={e=>set(`amProfitTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Loss target: {f[`amLossTargetPct${modeKey}`]??10}% of session start balance</label>
+              <input type="range" min="1" max="50" step="1" value={f[`amLossTargetPct${modeKey}`]??10} onChange={e=>set(`amLossTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`amMaxTrades${modeKey}`]??8}</label>
+              <input type="range" min="3" max="20" step="1" value={f[`amMaxTrades${modeKey}`]??8} onChange={e=>set(`amMaxTrades${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session also ends the moment this trade count is reached, regardless of P&L — a separate safety net from the profit/loss targets above.</p>
             </div>
           ):(
-            <div className="grid-2">
-              {ACCOUNT_MODES.map(m=>{
-                const modeLabel=m==='REAL'?'Real':'Demo';
-                return(
-                  <div key={m}>
-                    <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{modeLabel} account</div>
-                    <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
-                      <label style={lbl}>Ceiling: {f[`plCeilingPct${modeLabel}`]??20}% of balance</label>
-                      <input type="range" min="5" max="50" step="1" value={f[`plCeilingPct${modeLabel}`]??20} onChange={e=>set(`plCeilingPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
-                      <div style={{display:'flex',gap:8}}>
-                        {[1,2].map(n=>(
-                          <button key={n} type="button" style={{...btn((f[`plMaxEscalations${modeLabel}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`plMaxEscalations${modeLabel}`,n)}>{n}</button>
-                        ))}
-                      </div>
-                      <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeLabel}`]??10}% of session start balance</label>
-                      <input type="range" min="1" max="50" step="1" value={f[`plProfitTargetPct${modeLabel}`]??10} onChange={e=>set(`plProfitTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeLabel}`]??10}% of session start balance</label>
-                      <input type="range" min="1" max="50" step="1" value={f[`plLossTargetPct${modeLabel}`]??10} onChange={e=>set(`plLossTargetPct${modeLabel}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-                      <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`plMaxTrades${modeLabel}`]??8}</label>
-                      <input type="range" min="3" max="20" step="1" value={f[`plMaxTrades${modeLabel}`]??8} onChange={e=>set(`plMaxTrades${modeLabel}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
-                      <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>No multiplier — growth comes from actual trade profit, not a configured rate. Session also ends the moment this trade count is reached, regardless of P&L.</p>
-                    </div>
-                  </div>
-                );
-              })}
+            <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
+              <label style={lbl}>Ceiling: {f[`plCeilingPct${modeKey}`]??20}% of balance</label>
+              <input type="range" min="5" max="50" step="1" value={f[`plCeilingPct${modeKey}`]??20} onChange={e=>set(`plCeilingPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
+              <div style={{display:'flex',gap:8}}>
+                {[1,2].map(n=>(
+                  <button key={n} type="button" style={{...btn((f[`plMaxEscalations${modeKey}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`plMaxEscalations${modeKey}`,n)}>{n}</button>
+                ))}
+              </div>
+              <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeKey}`]??10}% of session start balance</label>
+              <input type="range" min="1" max="50" step="1" value={f[`plProfitTargetPct${modeKey}`]??10} onChange={e=>set(`plProfitTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeKey}`]??10}% of session start balance</label>
+              <input type="range" min="1" max="50" step="1" value={f[`plLossTargetPct${modeKey}`]??10} onChange={e=>set(`plLossTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`plMaxTrades${modeKey}`]??8}</label>
+              <input type="range" min="3" max="20" step="1" value={f[`plMaxTrades${modeKey}`]??8} onChange={e=>set(`plMaxTrades${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>No multiplier — growth comes from actual trade profit, not a configured rate. Session also ends the moment this trade count is reached, regardless of P&L.</p>
             </div>
           )}
           </div>
@@ -5038,14 +5058,11 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
           </button>
           {calcExpanded&&(
           <div style={{marginTop:10}}>
-          <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
-            {ACCOUNT_MODES.map(m=>(
-              <button key={m} style={{...btn(calcMode===m?'pri':'def'),flex:1,fontSize:12}} onClick={()=>setCalcMode(m)}>{m==='REAL'?'Real':'Demo'}</button>
-            ))}
+          <div style={{display:'flex',justifyContent:'flex-end',marginBottom:10}}>
             <button type="button" onClick={resetCalcToLive} style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'var(--text-accent)',flexShrink:0,padding:'0 4px'}}>Reset to my current settings</button>
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:-4,marginBottom:10}}>
-            Auto-filled from your real {calcModeKey} balance{calcIsAM?', profit target, and max trades':''} — edit any field to explore a hypothetical instead.
+            Auto-filled from your real {modeKey} balance{calcIsAM?', profit target, and max trades':''} — edit any field to explore a hypothetical instead. Switch the account mode in the sidebar to calculate for the other account.
           </p>
           <div className="grid-2">
             <div><label style={lbl}>Balance ($)</label><input style={inp} type="number" min="0" value={f.riskCalcBalance} onChange={e=>set('riskCalcBalance',e.target.value)}/></div>
@@ -5068,8 +5085,8 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
             )}
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>
-            To reach {calcTargetPct}% target from ~{calcTradesN} trades/session at {calcWinRate.toFixed(0)}% win rate ({calcDone.length} {calcModeKey} trade{calcDone.length===1?'':'s'} on record, defaults to 65% with none), ~{calcSuggestedRisk}% risk per trade keeps drawdown risk moderate. This is a simple heuristic, not a guarantee.
-            {calcIsAM&&<> {calcModeKey} is on {calcStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} — this sets the <em>base</em> stake size only (what a loss always resets to); it has no effect on the profit/loss session-ending targets in the section above.</>}
+            To reach {calcTargetPct}% target from ~{calcTradesN} trades/session at {calcWinRate.toFixed(0)}% win rate ({calcDone.length} {modeKey} trade{calcDone.length===1?'':'s'} on record, defaults to 65% with none), ~{calcSuggestedRisk}% risk per trade keeps drawdown risk moderate. This is a simple heuristic, not a guarantee.
+            {calcIsAM&&<> {modeKey} is on {calcStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} — this sets the <em>base</em> stake size only (what a loss always resets to); it has no effect on the profit/loss session-ending targets in the section above.</>}
           </p>
           </div>
           )}
@@ -5079,6 +5096,13 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
       <div style={card}>
         <div style={{fontSize:14,fontWeight:500,marginBottom:12}}>Session rules</div>
 
+        {isEscalatingStyle(f[`moneyMgmtStyle${modeKey}`])?(
+          <p style={{fontSize:12,color:'var(--text-muted)',marginBottom:4}}>
+            Strict Session Locking and per-style session duration only apply to Trade Management (Fixed Risk %) sessions —
+            {' '}{modeKey} is on {f[`moneyMgmtStyle${modeKey}`]==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}, which ends its own
+            sessions on profit target, loss target, max trades, or the fixed 60-minute limit instead.
+          </p>
+        ):(<>
         {/* ── Strict Session Locking ──────────────────────────────────── */}
         <div style={{marginTop:14}}>
           <label style={lbl}>Strict Session Locking</label>
@@ -5087,15 +5111,10 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
             On: reaching it blocks the normal Journal/Analyzer flow for that session, same as the original hard lock. A separate
             "Log an off-plan trade anyway" action still lets you record a trade taken outside the lock.
           </p>
-          {ACCOUNT_MODES.map(m=>{
-            const key=m==='REAL'?'strictLockingReal':'strictLockingDemo';
-            return(
-              <label key={m} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13,marginBottom:6}}>
-                <input type="checkbox" checked={!!f[key]} onChange={e=>applyStrictLocking(m,e.target.checked)}/>
-                {m==='REAL'?'Real':'Demo'} account
-              </label>
-            );
-          })}
+          <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13,marginBottom:6}}>
+            <input type="checkbox" checked={!!f[`strictLocking${modeKey}`]} onChange={e=>applyStrictLocking(e.target.checked)}/>
+            {modeKey} account
+          </label>
           <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
             Changing this never affects a session already in progress — it only takes effect for your next session. The daily
             loss circuit breaker is unaffected either way; it always blocks new trades once hit.
@@ -5119,9 +5138,12 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,addStr
           })}
           <p style={{fontSize:11,color:'var(--text-muted)'}}>Applies to new sessions only — an active session keeps the duration it started with.</p>
         </div>
+        </>)}
 
 
-        {/* ── Session-lock alert ───────────────────────────────────────── */}
+        {/* ── Session-lock alert (shared — plays on ANY session end, Fixed
+            Risk % lock or Anti-Martingale/Profit Lock's own natural end,
+            so this stays visible regardless of active style). ─────────── */}
         <div style={{marginTop:14}}>
           <label style={{...lbl,display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
             <input type="checkbox" checked={f.soundAlertOn!==false} onChange={e=>set('soundAlertOn',e.target.checked)}/>
@@ -5838,17 +5860,24 @@ export default function App(){
   // the timer). The Dashboard's own tick does this immediately when visible;
   // this just guarantees it eventually happens so endTime/isActive never dangle.
   //
-  // Excludes Anti-Martingale/Profit Lock sessions for the same reason as the
-  // Dashboard's own tick above: timer expiry is purely informational under
-  // either style, never a locking/ending trigger — only their own
-  // profit/loss/max-trades check ends those.
+  // Excludes Anti-Martingale/Profit Lock sessions from the Trade-Management
+  // timer-expiry branch for the same reason as the Dashboard's own tick
+  // above: that countdown is purely informational under either style, never
+  // a locking/ending trigger — only their own profit/loss/max-trades/60min
+  // check (checkEscalatingSessionEnd) ends those, non-blockingly, below.
   useEffect(()=>{
     if(!todaySS)return;
     const id=setInterval(()=>{
       const now=Date.now();
       let changed=false;
       const nextSessions=todaySS.sessions.map(s=>{
-        if(s.isActive&&!s.isLocked&&!isEscalatingStyle(getMoneyMgmtStyleForMode(settings,s.accountMode))&&isSessionTimeExpired(s,now)){
+        const style=getMoneyMgmtStyleForMode(settings,s.accountMode);
+        if(s.isActive&&!s.isLocked&&isEscalatingStyle(style)){
+          const endReason=checkEscalatingSessionEnd(s,s.accountMode,settings,now);
+          if(endReason){changed=true;return{...s,isActive:false,endTime:now,endReason};} // non-blocking, no isLocked
+          return s;
+        }
+        if(s.isActive&&!s.isLocked&&!isEscalatingStyle(style)&&isSessionTimeExpired(s,now)){
           changed=true;
           const noTrade=s.trades===0;
           return{...s,isActive:false,isLocked:true,lockReason:noTrade?'No qualifying setup found':'Time expired',lockCode:noTrade?'TIME_EXPIRED_NO_TRADE':'TIME_EXPIRED',endTime:now};
@@ -6097,7 +6126,7 @@ export default function App(){
             {view==='plan'&&<Plan settings={settings}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
             {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies}/>}
-            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>}
+            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>}
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}
