@@ -1196,19 +1196,22 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1}
 const ASK_CLASSIFY_PROMPT=`You are a query classifier for a trading journal app. You have NOT been given any trade data and must never state a number, percentage, date, or fact about the user's trades. Your only job: read the question and output JSON describing what's being asked. Output ONLY valid JSON, no prose, matching exactly this shape:
 
 {
-  "intent": "DATA_QUERY" | "ADVICE_OR_OPINION" | "OUT_OF_SCOPE",
+  "intent": "DATA_QUERY" | "TRADING_ADVISORY" | "ADVICE_OR_OPINION" | "OUT_OF_SCOPE",
   "mode": "DEMO" | "REAL" | "AMBIGUOUS",
-  "metric": "WIN_RATE" | "PNL" | "TRADE_COUNT" | "STREAK" | "GRADE_BREAKDOWN" | "PAIR_BREAKDOWN" | "STRATEGY_BREAKDOWN" | "OFF_PLAN_IMPACT" | "DAY_OF_WEEK" | "SESSION_NUMBER" | "TIME_OF_DAY" | null,
+  "metric": "WIN_RATE" | "PNL" | "TRADE_COUNT" | "STREAK" | "GRADE_BREAKDOWN" | "PAIR_BREAKDOWN" | "STRATEGY_BREAKDOWN" | "OFF_PLAN_IMPACT" | "DAY_OF_WEEK" | "SESSION_NUMBER" | "TIME_OF_DAY" | "MONEY_MGMT" | "RISK_ASSESSMENT" | "DISCIPLINE" | "ZONE_QUALITY" | "SESSION_PATTERNS" | "PERFORMANCE_REVIEW" | "SESSION_PREP" | null,
   "range": "TODAY" | "YESTERDAY" | "WEEK" | "MONTH" | "CURRENT_MONTH" | "PREV_MONTH" | "ALL" | null,
-  "impliesAdvice": true | false
+  "impliesAdvice": true | false,
+  "advisoryType": "RISK_REVIEW" | "MONEY_MGMT_GUIDANCE" | "DISCIPLINE_CHECK" | "PERFORMANCE_REVIEW" | "SESSION_PREP" | null
 }
 
 Rules:
-- intent=ADVICE_OR_OPINION only when the question has NO answerable data component at all — pure opinion/prediction/reassurance requests ("should I keep using Structured style?", "am I ready to go live?", "is my win rate good?").
+- intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading").
+- intent=ADVICE_OR_OPINION only when the question has NO answerable data component at all — pure market opinion/prediction/reassurance requests that have nothing to do with the trader's own data ("will EUR/USD go up?", "what's the best strategy for scalping?", "should I trade gold today?").
 - impliesAdvice=true whenever the question attaches a should/stop/change hook to an otherwise answerable data question ("should I stop trading Wednesdays?" -> intent=DATA_QUERY, metric=DAY_OF_WEEK, impliesAdvice=true). The data half still gets answered; only the "should" half is declined.
 - intent=DATA_QUERY for anything answerable by counting/aggregating/cross-referencing the user's own logged trades, including broad questions ("how am I doing this month") — leave metric as the closest single primary metric (e.g. WIN_RATE); the app checks other dimensions automatically.
 - intent=OUT_OF_SCOPE for anything not about the user's own trade data.
 - mode=AMBIGUOUS whenever Demo/Real isn't specified or clearly implied — do not guess or default.
+- If intent=TRADING_ADVISORY, fill advisoryType with the most relevant domain: RISK_REVIEW for risk%/edge questions, MONEY_MGMT_GUIDANCE for AM/PL/Fixed style questions, DISCIPLINE_CHECK for off-plan/following-rules questions, PERFORMANCE_REVIEW for broad review requests, SESSION_PREP for pre-session questions.
 - If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to (e.g. STRATEGY_BREAKDOWN for the Structured-style example) so the app can offer that breakdown instead of just refusing.
 - "range" defaults to "ALL" if the question doesn't specify a time period.
 
@@ -1407,6 +1410,185 @@ function factsToText(facts){
   else if('wins'in facts&&!('wr'in facts))base=`${facts.n} trades — ${facts.wins}W / ${facts.losses}L`;
   else base=facts.wr==null?'No completed trades in this range.':`${facts.wr}% (95% CI: ${facts.ciLower}%-${facts.ciUpper}%, n=${facts.n})`;
   return facts.secondaryPattern?`${base} ${patternToText(facts.secondaryPattern)}`:base;
+}
+
+// ── Trader Profile Builder (Ask Advisory) ─────────────────────────────────────
+// Aggregates every available data source into one holistic object the LLM can
+// reason about for advisory responses — trades, sessions, withdrawals, zone
+// analyses, money management settings, strategies, and discipline patterns.
+function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mode){
+  const modeTrades=(trades||[]).filter(t=>getTradeMode(t)===mode);
+  const done=modeTrades.filter(t=>t.outcome!=='PENDING');
+  const wins=done.filter(t=>t.outcome==='WIN').length;
+  const wr=done.length?Math.round((wins/done.length)*1000)/10:0;
+  const ci=wilsonInterval(wins,done.length);
+  const edge=Math.max(0,(wr/100)-((100-wr)/100));
+  const totalPnl=Math.round(done.reduce((s,t)=>s+t.pnl,0)*100)/100;
+  const startBal=getStartingBalanceForMode(settings,mode);
+  const curBal=balForMode(settings,trades,wds,mode);
+  const style=getMoneyMgmtStyleForMode(settings,mode);
+  const tradeStyle=getTradeStyleForMode(settings,mode);
+  // Rolling windows
+  const now=Date.now();
+  const last7=computeDigest({trades,analyses,mode,start:now-7*DAY_MS,end:now});
+  const last30=computeDigest({trades,analyses,mode,start:now-30*DAY_MS,end:now});
+  // Grade breakdown
+  const grades={};
+  done.forEach(t=>{const g=t.zoneGrade||'UNGRADED';if(!grades[g])grades[g]={wins:0,n:0,pnl:0};grades[g].n++;if(t.outcome==='WIN')grades[g].wins++;grades[g].pnl+=t.pnl;});
+  const gradeBreakdown=Object.entries(grades).map(([g,d])=>({grade:g,n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100})).sort((a,b)=>b.n-a.n);
+  // Strategy breakdown with descriptions
+  const stratMap={};
+  done.forEach(t=>{const sid=t.strategyId||'zone-sd';if(!stratMap[sid])stratMap[sid]={wins:0,n:0,pnl:0};stratMap[sid].n++;if(t.outcome==='WIN')stratMap[sid].wins++;stratMap[sid].pnl+=t.pnl;});
+  const strategyBreakdown=Object.entries(stratMap).map(([id,d])=>{
+    const strat=(strategies||[]).find(s=>s.id===id);
+    return{id,name:strat?.name||strategyLabel(id,strategies),description:strat?.description||null,n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100};
+  }).sort((a,b)=>b.n-a.n);
+  // Recent trades (last 15 with notes and grades — gives AI context on recent behavior)
+  const recentTrades=[...done].sort((a,b)=>b.timestamp-a.timestamp).slice(0,15).map(t=>({
+    timestamp:new Date(t.timestamp).toISOString().split('T')[0],
+    pair:t.pair,direction:t.direction,zoneGrade:t.zoneGrade,outcome:t.outcome,
+    pnl:Math.round(t.pnl*100)/100,stake:t.stake,offPlan:!!t.offPlan,
+    strategy:strategyLabel(t.strategyId||'zone-sd',strategies),
+    notes:t.notes||null,source:t.source||null,
+    accountMode:getTradeMode(t),
+  }));
+  // Session history (all completed sessions for this mode)
+  const modeSessions=(sessions||[]).filter(s=>s.accountMode===mode).sort((a,b)=>b.startTime-a.startTime);
+  const completedSessions=modeSessions.filter(s=>!s.isActive&&s.endTime);
+  const sessionEndReasons={};
+  completedSessions.forEach(s=>{const r=s.lockReason||s.endReason||'COMPLETED';sessionEndReasons[r]=(sessionEndReasons[r]||0)+1;});
+  const avgTradesPerSession=completedSessions.length?Math.round(completedSessions.reduce((s,x)=>s+x.trades,0)/completedSessions.length*10)/10:0;
+  // Escalation stats (AM/PL)
+  let escalationStats=null;
+  if(isEscalatingStyle(style)){
+    const amSessions=completedSessions.filter(s=>s.amStreak>0||s.plStreak>0);
+    let maxStreak=0,totalEscalations=0;
+    modeSessions.forEach(s=>{
+      const ms=Math.max(s.amStreak||0,s.plStreak||0);
+      if(ms>maxStreak)maxStreak=ms;
+      totalEscalations+=ms;
+    });
+    escalationStats={maxStreak,totalEscalations,sessionsWithEscalation:amSessions.length};
+  }
+  // Discipline — off-plan vs on-plan
+  const offPlan=done.filter(t=>t.offPlan);
+  const onPlan=done.filter(t=>!t.offPlan);
+  const offPlanWr=offPlan.length?Math.round((offPlan.filter(t=>t.outcome==='WIN').length/offPlan.length)*1000)/10:0;
+  const onPlanWr=onPlan.length?Math.round((onPlan.filter(t=>t.outcome==='WIN').length/onPlan.length)*1000)/10:0;
+  const offPlanPnl=Math.round(offPlan.reduce((s,t)=>s+t.pnl,0)*100)/100;
+  // Zone analysis quality
+  const linkedIds=new Set(modeTrades.map(t=>t.analysisId).filter(Boolean));
+  const linkedAnalyses=(analyses||[]).filter(a=>linkedIds.has(a.id));
+  const gateFails={};
+  linkedAnalyses.forEach(a=>{(a.gateResults||[]).forEach(g=>{if(!g.pass)gateFails[g.label]=(gateFails[g.label]||0)+1;});});
+  const topGateFailures=Object.entries(gateFails).sort((a,b)=>b[1]-a[1]).slice(0,3);
+  const avgConfidence=linkedAnalyses.length?Math.round(linkedAnalyses.reduce((s,a)=>s+(a.confidence||0),0)/linkedAnalyses.length):0;
+  // Risk patterns — after streaks
+  const chrono=[...done].sort((a,b)=>a.timestamp-b.timestamp);
+  let streakType=null,streakLen=0;
+  const afterWinStreak=[],afterLossStreak=[];
+  chrono.forEach(t=>{
+    if(streakType==='WIN'&&streakLen>=3)afterWinStreak.push(t);
+    if(streakType==='LOSS'&&streakLen>=3)afterLossStreak.push(t);
+    if(t.outcome===streakType)streakLen++;else{streakType=t.outcome;streakLen=1;}
+  });
+  const afterWinWr=afterWinStreak.length?Math.round((afterWinStreak.filter(t=>t.outcome==='WIN').length/afterWinStreak.length)*1000)/10:null;
+  const afterLossWr=afterLossStreak.length?Math.round((afterLossStreak.filter(t=>t.outcome==='WIN').length/afterLossStreak.length)*1000)/10:null;
+  // Current streak
+  const recency=[...done].sort((a,b)=>b.timestamp-a.timestamp);
+  let curStreak=0,curType=null;
+  for(const t of recency){if(!curType){curType=t.outcome;curStreak=1;}else if(t.outcome===curType)curStreak++;else break;}
+  // Largest drawdown (max consecutive losses)
+  let maxConLoss=0,curConLoss=0;
+  chrono.forEach(t=>{if(t.outcome==='LOSS'){curConLoss++;if(curConLoss>maxConLoss)maxConLoss=curConLoss;}else{curConLoss=0;}});
+  // Withdrawal summary (Real only)
+  const modeWds=mode==='REAL'?(wds||[]):[];
+  return{
+    account:{mode,startingBalance:startBal,currentBalance:curBal,totalPnl,edge:Math.round(edge*1000)/10,tradeCount:done.length,winCount:wins,lossCount:done.length-wins,
+      withdrawals:mode==='REAL'?{count:modeWds.length,totalAmount:Math.round(modeWds.reduce((s,w)=>s+w.amount,0)*100)/100}:null},
+    performance:{allTime:{wr,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10,n:done.length,pnl:totalPnl,wins,losses:done.length-wins},
+      last7Days:{wr:last7.wr,ciLower:last7.ci?Math.round(last7.ci.lower*1000)/10:null,ciUpper:last7.ci?Math.round(last7.ci.upper*1000)/10:null,n:last7.total,pnl:last7.realPnl,wins:last7.wins,losses:last7.total-last7.wins},
+      last30Days:{wr:last30.wr,ciLower:last30.ci?Math.round(last30.ci.lower*1000)/10:null,ciUpper:last30.ci?Math.round(last30.ci.upper*1000)/10:null,n:last30.total,pnl:last30.realPnl,wins:last30.wins,losses:last30.total-last30.wins}},
+    configuration:{activeStyle:styleName(tradeStyle),moneyMgmtStyle:style,riskPercent:settings?.riskPercent??5,
+      sessionsPerDay:settings?.sessionsPerDay??2,brokerMin:settings?.brokerMin??10,
+      strictLocking:isStrictForMode(settings,mode),
+      ...(isEscalatingStyle(style)?{
+        multiplier:getAmMultiplierForMode(settings,mode),ceilingPct:getAmCeilingPctForMode(settings,mode),
+        profitTargetPct:getAmProfitTargetPctForMode(settings,mode),lossTargetPct:getAmLossTargetPctForMode(settings,mode),
+        maxEscalations:getAmMaxEscalationsForMode(settings,mode),maxTrades:getAmMaxTradesForMode(settings,mode),
+      }:null)},
+    gradeBreakdown,strategyBreakdown,recentTrades,
+    sessions:{completedCount:completedSessions.length,avgTradesPerSession,endReasons:sessionEndReasons,
+      lastSession:completedSessions.length?{trades:completedSessions[0].trades,wins:completedSessions[0].wins,losses:completedSessions[0].losses,
+        pnl:Math.round(completedSessions[0].sPnl*100)/100,endReason:completedSessions[0].lockReason||completedSessions[0].endReason||null}:null,
+      escalationStats},
+    discipline:{offPlanCount:offPlan.length,offPlanRate:done.length?Math.round((offPlan.length/done.length)*1000)/10:0,
+      offPlanWr,offPlanPnl,onPlanWr,onPlanCount:onPlan.length},
+    riskPatterns:{currentStreak:curStreak,currentStreakType:curType,maxConsecutiveLosses:maxConLoss,
+      afterWinStreakWr:afterWinWr,afterWinStreakN:afterWinStreak.length,
+      afterLossStreakWr:afterLossWr,afterLossStreakN:afterLossStreak.length},
+    zoneAnalysis:{totalAnalyzed:linkedAnalyses.length,avgConfidence,
+      gradeDistribution:gradeBreakdown,topGateFailures:topGateFailures.map(([l,c])=>({gate:l,count:c}))},
+  };
+}
+
+// ── Advisory Pipeline (Ask) ───────────────────────────────────────────────────
+// Builds the specific data slice the LLM needs for a given advisory domain,
+// keeping the prompt context focused and token-efficient.
+function buildAdvisoryContext(profile,question,advisoryType){
+  switch(advisoryType){
+    case'RISK_REVIEW':return{type:advisoryType,currentRisk:profile.configuration.riskPercent,
+      edge:profile.account.edge,winRate:profile.performance.allTime.wr,n:profile.performance.allTime.n,
+      moneyMgmtStyle:profile.configuration.moneyMgmtStyle,sessionsPerDay:profile.configuration.sessionsPerDay,
+      recent7:profile.performance.last7Days,recent30:profile.performance.last30Days};
+    case'MONEY_MGMT_GUIDANCE':return{type:advisoryType,style:profile.configuration.moneyMgmtStyle,
+      config:{multiplier:profile.configuration.multiplier,ceilingPct:profile.configuration.ceilingPct,
+        profitTargetPct:profile.configuration.profitTargetPct,lossTargetPct:profile.configuration.lossTargetPct,
+        maxEscalations:profile.configuration.maxEscalations,maxTrades:profile.configuration.maxTrades},
+      escalationStats:profile.sessions.escalationStats,currentBalance:profile.account.currentBalance,
+      recentSessions:profile.sessions.lastSession};
+    case'DISCIPLINE_CHECK':return{type:advisoryType,offPlanRate:profile.discipline.offPlanRate,
+      offPlanWr:profile.discipline.offPlanWr,offPlanPnl:profile.discipline.offPlanPnl,
+      onPlanWr:profile.discipline.onPlanWr,offPlanCount:profile.discipline.offPlanCount,
+      onPlanCount:profile.discipline.onPlanCount,totalTrades:profile.account.tradeCount};
+    case'PERFORMANCE_REVIEW':return{type:advisoryType,allTime:profile.performance.allTime,
+      last7:profile.performance.last7Days,last30:profile.performance.last30Days,
+      gradeBreakdown:profile.gradeBreakdown,strategyBreakdown:profile.strategyBreakdown,
+      riskPatterns:profile.riskPatterns,zoneAnalysis:profile.zoneAnalysis};
+    case'SESSION_PREP':return{type:advisoryType,config:profile.configuration,
+      recentSessions:profile.sessions,endReasons:profile.sessions.endReasons,
+      currentBalance:profile.account.currentBalance,riskPatterns:profile.riskPatterns};
+    default:return{type:advisoryType,profile};
+  }
+}
+const ADVISORY_COMPOSE_PROMPT=`You are a trading performance advisor with full access to a trader's journal data, money management settings, trade grades, notes, strategies, session history, and discipline metrics. You have been given a complete TRADER_PROFILE and an ADVISORY_CONTEXT containing the specific data relevant to this question.
+
+RULES:
+1. Base ALL advice on the actual numbers in TRADER_PROFILE and ADVISORY_CONTEXT. Never invent statistics.
+2. Always reference specific data points (grades, strategy names, session outcomes) to support your reasoning.
+3. Keep advice actionable and specific — "reduce risk from X% to Y%" not "consider adjusting risk".
+4. Frame advice as observations and suggestions, not commands. The trader makes the final call.
+5. Acknowledge trade-offs and uncertainty — there is no single "right" answer in trading.
+6. If the data is insufficient for a confident recommendation, say so clearly.
+7. Always end with ONE specific, actionable takeaway the trader can act on today.
+8. You MAY reference specific trade notes and grade patterns from recentTrades when relevant.
+9. You MAY reference strategy descriptions and per-strategy performance from strategyBreakdown.
+10. Never predict market direction, recommend specific entries/exits, or guarantee outcomes.
+11. Tone: Professional, direct, no sugar-coating, no empty encouragement, no sympathy.
+
+TRADER_PROFILE:
+`;
+function buildAdvisoryFallback(profile,advisoryType){
+  const p=profile.performance.allTime;
+  const base=`All-time: ${p.wr}% win rate (95% CI: ${p.ciLower}%-${p.ciUpper}%, n=${p.n}). P&L: ${p.pnl>=0?'+':''}$${p.pnl}.`;
+  switch(advisoryType){
+    case'RISK_REVIEW':return`${base} Current risk: ${profile.configuration.riskPercent}%. Edge: ${profile.account.edge}%. Money management: ${profile.configuration.moneyMgmtStyle}.`;
+    case'MONEY_MGMT_GUIDANCE':return`${base} Style: ${profile.configuration.moneyMgmtStyle}. Sessions completed: ${profile.sessions.completedCount}. ${profile.sessions.lastSession?`Last session: ${profile.sessions.lastSession.wins}W/${profile.sessions.lastSession.losses}L.`:''}`;
+    case'DISCIPLINE_CHECK':return`${base} Off-plan rate: ${profile.discipline.offPlanRate}% (${profile.discipline.offPlanCount} of ${profile.account.tradeCount}). Off-plan WR: ${profile.discipline.offPlanWr}% vs on-plan ${profile.discipline.onPlanWr}%.`;
+    case'PERFORMANCE_REVIEW':return`${base} Last 7 days: ${profile.performance.last7Days.n} trades, ${profile.performance.last7Days.wins}W/${profile.performance.last7Days.losses}L. Last 30 days: ${profile.performance.last30Days.n} trades, ${profile.performance.last30Days.wins}W/${profile.performance.last30Days.losses}L.`;
+    case'SESSION_PREP':return`${base} Style: ${profile.configuration.activeStyle}. Risk: ${profile.configuration.riskPercent}%. Sessions/day: ${profile.configuration.sessionsPerDay}. ${profile.riskPatterns.currentStreakType?`Current streak: ${profile.riskPatterns.currentStreak} ${profile.riskPatterns.currentStreakType}.`:'No active streak.'}`;
+    default:return base;
+  }
 }
 
 // ── Style helpers ─────────────────────────────────────────────────────────────
@@ -4659,7 +4841,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
 // component's only jobs: render messages, resolve Demo/Real ambiguity via a
 // button reply (not a guess), and log each finished Q&A to Supabase — it does
 // not accumulate any user "profile", each question is answered from scratch.
-function Ask({trades,settings,mode,userId,strategies}){
+function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   const[messages,setMessages]=useState([]);
   const[input,setInput]=useState('');
   const[busy,setBusy]=useState(false);
@@ -4711,6 +4893,17 @@ function Ask({trades,settings,mode,userId,strategies}){
     if(spec.intent==='ADVICE_OR_OPINION'){
       const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode,strategies):null;
       const text=`I can show you the data on this, but I can't tell you what to do with it.`+(facts?` ${factsToText(facts)}`:'');
+      await persistAndShow(question,text,resolvedMode);
+      return;
+    }
+    if(spec.intent==='TRADING_ADVISORY'){
+      const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,settings,strategies,resolvedMode);
+      const advisoryContext=buildAdvisoryContext(profile,question,spec.advisoryType||'PERFORMANCE_REVIEW');
+      let text;
+      try{text=await aiChat(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}\n\nQuestion: ${question}`,settings,{maxTokens:600,temperature:0.3});}
+      catch{text=buildAdvisoryFallback(profile,spec.advisoryType||'PERFORMANCE_REVIEW');}
+      // Code-enforced safety boundaries — never trust the prompt alone.
+      if(text.length>2000)text=text.slice(0,1997)+'...';
       await persistAndShow(question,text,resolvedMode);
       return;
     }
@@ -4779,13 +4972,13 @@ function Ask({trades,settings,mode,userId,strategies}){
         <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Ask</div>
         <button style={btn()} onClick={handleSurface} disabled={busy}><Sparkles size={14}/>Surface something interesting</button>
       </div>
-      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>Ask factual questions about your own logged trades — win rate, P&L, streaks, breakdowns. This looks up your data; it doesn't give advice.</div>
+      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>Ask questions about your trades, grades, notes, strategies, and money management. It can report your data, review your performance, or advise on risk and discipline — all based on your own journal.</div>
 
       <div style={{...card,padding:0,display:'flex',flexDirection:'column',height:480}}>
         <div ref={listRef} style={{flex:1,overflowY:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
           {messages.length===0&&!busy&&(
             <div style={{fontSize:12,color:'var(--text-muted)',textAlign:'center',marginTop:20}}>
-              Try: "What's my win rate on Grade A zones?" or "How many trades did I take this week?"
+              Try: "What's my win rate on Grade A zones?" or "Review my performance this month" or "Am I disciplined enough?"
             </div>
           )}
           {messages.map(m=>(
@@ -4806,7 +4999,7 @@ function Ask({trades,settings,mode,userId,strategies}){
           {busy&&<div style={{alignSelf:'flex-start',fontSize:12,color:'var(--text-muted)'}}>Looking up your data…</div>}
         </div>
         <form onSubmit={handleAsk} style={{display:'flex',gap:8,padding:12,borderTop:'1px solid var(--border)'}}>
-          <input style={{...inp,flex:1}} placeholder="Ask about your trades…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
+          <input style={{...inp,flex:1}} placeholder="Ask about your trades, grades, strategies, or request a review…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
           <button type="submit" style={{...btn('pri'),padding:'9px 14px'}} disabled={busy||!input.trim()} aria-label="Send"><Send size={15}/></button>
         </form>
       </div>
@@ -6305,7 +6498,7 @@ export default function App(){
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
             {view==='plan'&&<Plan settings={settings}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
-            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies}/>}
+            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
             {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>}
           </div>
 
