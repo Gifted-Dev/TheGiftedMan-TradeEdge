@@ -186,7 +186,7 @@ function toSessionRow(userId,date,s){
     is_locked:s.isLocked,lock_reason:s.lockReason,
     extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,strictAtStart:s.strictAtStart||false,
       startBalance:s.startBalance,amStreak:s.amStreak||0,amNextStake:s.amNextStake??null,
-      plStreak:s.plStreak||0,plNextStake:s.plNextStake??null,endReason:s.endReason||null}};
+      plStreak:s.plStreak||0,plNextStake:s.plNextStake??null,endReason:s.endReason||null,lateTradeLogged:s.lateTradeLogged||false}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
@@ -1906,6 +1906,24 @@ function Setup({onDone}){
 // direct streamable "audio" URL per track. Fetched once per session id, never
 // on every render; a missing key or failed fetch degrades to a quiet inline
 // message rather than touching the timer or blocking trading.
+// A genuinely valid, tiny (45-byte) 1-sample silent WAV, built from the
+// format spec directly rather than a hand-typed/guessed base64 string — a
+// malformed data URI would throw instead of playing, defeating the whole
+// point. Used purely to consume real user-gesture credit synchronously
+// inside a click handler, before the actual Jamendo track is available.
+let _silentWavUrl=null;
+function silentWavUrl(){
+  if(_silentWavUrl)return _silentWavUrl;
+  const buf=new ArrayBuffer(45);
+  const dv=new DataView(buf);
+  const writeStr=(o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i));};
+  writeStr(0,'RIFF');dv.setUint32(4,37,true);writeStr(8,'WAVE');
+  writeStr(12,'fmt ');dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+  dv.setUint32(24,8000,true);dv.setUint32(28,8000,true);dv.setUint16(32,1,true);dv.setUint16(34,8,true);
+  writeStr(36,'data');dv.setUint32(40,1,true);dv.setUint8(44,128);
+  _silentWavUrl=URL.createObjectURL(new Blob([buf],{type:'audio/wav'}));
+  return _silentWavUrl;
+}
 function randTrackIndex(len,exclude){
   if(len<=1)return 0;
   let i=Math.floor(Math.random()*len);
@@ -2054,25 +2072,47 @@ function useMusicPlayer(active){
     setPlaying(false);
     if(audioRef.current)audioRef.current.pause();
   }
-  // Called from Start Session's click handler — best-effort gesture credit,
-  // same trust assumption onEnded already relies on (see its comment above):
-  // tracks usually aren't loaded yet at click time (the fetch only starts
-  // once `active` flips non-null), so the actual play() call is deferred to
-  // whichever fires first — the effect below, once tracks arrive.
+  // Called from Start Session's click handler, first thing, before any
+  // await. Tracks are essentially never loaded yet at this exact moment —
+  // the Jamendo fetch only starts once `active` flips non-null, which
+  // itself only happens after the session-creation await resolves — so
+  // the real track's play() call was always landing in the effect below,
+  // genuinely async and outside the click's call stack. Browsers (mobile
+  // Safari especially) can and do silently reject that, and because the
+  // element never had a single successful gesture-driven play, onEnded's
+  // later calls inherited the same distrust. Fix: play a real (if silent)
+  // clip on THIS SAME element synchronously, right here, so the click
+  // genuinely unlocks it — then hot-swap to the real track once it's
+  // fetched, on an element that's already proven trusted.
   function requestAutoStart(){
     autoStartWantedRef.current=true;
+    if(audioRef.current&&!startedRef.current){
+      alertPlayingRef.current=true; // borrow the same guard playAlert uses, so this clip's near-instant 'ended' can't be misread by onEnded as a track finishing
+      audioRef.current.src=silentWavUrl();
+      audioRef.current.load();
+      const p=audioRef.current.play();
+      if(p&&typeof p.catch==='function')p.catch(()=>{});
+    }
     if(tracks?.length&&!startedRef.current){
       autoStartWantedRef.current=false;
       startedRef.current=true;
+      alertPlayingRef.current=false;
       playTrackAt(randTrackIndex(tracks.length,trackIdx));
     }
   }
   useEffect(()=>{
-    if(autoStartWantedRef.current&&tracks?.length&&!startedRef.current){
-      autoStartWantedRef.current=false;
+    if(!autoStartWantedRef.current||tracks===null)return; // still loading — wait for it to resolve one way or the other
+    if(tracks.length&&!startedRef.current){
       startedRef.current=true;
+      alertPlayingRef.current=false;
       playTrackAt(randTrackIndex(tracks.length,trackIdx));
+    }else{
+      // Music unavailable this session (no key / fetch failed) — nothing to
+      // swap to, but the warm-up guard must still release, or next()/
+      // playAlert stay silently blocked by alertPlayingRef forever.
+      alertPlayingRef.current=false;
     }
+    autoStartWantedRef.current=false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[tracks]);
 
@@ -3821,23 +3861,34 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 // rather than duplicating that ~800-line modal here.
 function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOpenTrade}){
   const now=useNowTick(1000);
-  const active=getActive(ss,mode);
+  // The most recent session for this mode today, active or not — NOT
+  // getActive()'s strict isActive filter. getActive() would go straight to
+  // null the instant this session ends (profit target/loss target/max
+  // trades/60min cap), which used to silently blank the whole rows table,
+  // balance, and stake — not just block new commits. Falling back to "most
+  // recent" keeps the just-ended session's history visible and gives
+  // commitRow's one-shot grace trade (below) something real to attribute to.
+  const sessionForMode=(ss?.sessions||[]).filter(s=>s.accountMode===mode).sort((a,b)=>b.startTime-a.startTime)[0]||null;
   const style=getMoneyMgmtStyleForMode(settings,mode);
   const isAm=isEscalatingStyle(style); // name kept for minimal diff — now covers both escalating styles
   const styleLabel=style==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale';
   const bal=balForMode(settings,trades,wds,mode);
-  const canLog=isAm&&active?.isActive;
+  // A session that just ended can still take exactly ONE more commit — the
+  // trade the user was plausibly mid-entry on when it closed — then locks
+  // for good via lateTradeLogged, so this can never become an open door for
+  // logging arbitrarily many trades into a closed session.
+  const canLog=isAm&&!!sessionForMode&&(sessionForMode.isActive||!sessionForMode.lateTradeLogged);
 
   const sessionTrades=trades
-    .filter(t=>getTradeMode(t)===mode&&t.sessionNum===active?.num&&t.date===tod())
+    .filter(t=>getTradeMode(t)===mode&&t.sessionNum===sessionForMode?.num&&t.date===tod())
     .sort((a,b)=>a.timestamp-b.timestamp);
   // Running balance per row, folded from the session's own starting point —
   // "balance after" always reads as "what it was right after that trade,"
   // not today's live figure.
-  let running=active?.startBalance??bal;
+  let running=sessionForMode?.startBalance??bal;
   const rows=sessionTrades.map(t=>{running+=t.pnl;return{t,balanceAfter:running};});
 
-  const liveStake=canLog?liveEscalatingNextStake(active,bal,settings,mode,style):0;
+  const liveStake=canLog?liveEscalatingNextStake(sessionForMode,bal,settings,mode,style):0;
   // This app's own local pair/direction quick-entry state, same tiny pattern
   // Journal's addPairOption uses — not lifted to shared state since it's a
   // session-local autocomplete convenience, not persisted data.
@@ -3873,16 +3924,19 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
       const balAfter=bal+pnl;
 
       // Exact same escalating-style state machine addManual/setOutcome use — no new logic.
-      let us={...active,trades:active.trades+1,
-        wins:active.wins+(outcome==='WIN'?1:0),losses:active.losses+(outcome==='LOSS'?1:0),
-        sPnl:active.sPnl+pnl,...advanceEscalatingStake(style,active,outcome,pnl,balAfter,settings,mode)};
+      let us={...sessionForMode,trades:sessionForMode.trades+1,
+        wins:sessionForMode.wins+(outcome==='WIN'?1:0),losses:sessionForMode.losses+(outcome==='LOSS'?1:0),
+        sPnl:sessionForMode.sPnl+pnl,...advanceEscalatingStake(style,sessionForMode,outcome,pnl,balAfter,settings,mode)};
       const endReason=checkEscalatingSessionEnd(us,mode,settings);
       if(endReason)us={...us,isActive:false,endTime:Date.now(),endReason}; // non-blocking, no isLocked
+      // Grace trade landing in an already-ended session: stamp it used so a
+      // second late commit can't slip in behind this one (see canLog above).
+      if(!sessionForMode.isActive)us={...us,lateTradeLogged:true};
 
-      const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+      const nextSessions=ss.sessions.map(s=>s.id===sessionForMode.id?us:s);
       await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
 
-      const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:active.num,pair,direction:draftDir,
+      const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sessionForMode.num,pair,direction:draftDir,
         zoneType:'',zoneGrade:'',stake,outcome,pnl,source:'QUICKLOG',screenshots:[],notes:'',
         isAnalyzed:false,accountMode:mode,offPlan:false,lockingModeAtTime:'SOFT',payoutPct:payoutPct||null,
         strategyId:lastStrategyId()||'zone-sd'};
@@ -3897,35 +3951,36 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Quick log — {mode==='REAL'?'Real':'Demo'}</div>
 
       {!isAm&&<Alert type="inf" title="Anti-Martingale / Profit Lock only" body="Quick Log is built for the escalating-stake styles' fast pace. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
-      {isAm&&!active&&<Alert type="inf" title="No active session" body={`Start a ${styleLabel} session from the Dashboard to begin logging here.`}/>}
-      {isAm&&active&&!active.isActive&&<Alert type="suc" title="Session ended" body={`Ended — ${active.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':active.endReason?.endsWith('LOSS_TARGET')?'loss target reached':active.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
+      {isAm&&!sessionForMode&&<Alert type="inf" title="No active session" body={`Start a ${styleLabel} session from the Dashboard to begin logging here.`}/>}
+      {isAm&&sessionForMode&&!sessionForMode.isActive&&canLog&&<Alert type="warn" title="Session ended" body={`Ended — ${sessionForMode.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':sessionForMode.endReason?.endsWith('LOSS_TARGET')?'loss target reached':sessionForMode.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. If you had a trade mid-entry when it ended, you can still log it below — this locks after that one entry.`}/>}
+      {isAm&&sessionForMode&&!sessionForMode.isActive&&!canLog&&<Alert type="suc" title="Session ended" body={`Ended — ${sessionForMode.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':sessionForMode.endReason?.endsWith('LOSS_TARGET')?'loss target reached':sessionForMode.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
 
-      {isAm&&active&&(()=>{
+      {isAm&&sessionForMode&&(()=>{
         // Targets are % of session START balance (matches
         // checkEscalatingSessionEnd exactly) — not live balance, so these
         // dollar figures don't drift as the session's own P&L moves the
         // number they're measuring against.
-        const startBal=active.startBalance??bal;
+        const startBal=sessionForMode.startBalance??bal;
         const isPL=style==='PROFIT_LOCK';
         const profitTargetPct=isPL?getPlProfitTargetPctForMode(settings,mode):getAmProfitTargetPctForMode(settings,mode);
         const lossTargetPct=isPL?getPlLossTargetPctForMode(settings,mode):getAmLossTargetPctForMode(settings,mode);
         const maxTrades=isPL?getPlMaxTradesForMode(settings,mode):getAmMaxTradesForMode(settings,mode);
         const profitTargetDollars=startBal*(profitTargetPct/100);
         const lossTargetDollars=startBal*(lossTargetPct/100);
-        const tradesRemaining=Math.max(0,maxTrades-active.trades);
-        const timeRemainingMs=Math.max(0,ESCALATING_TIME_LIMIT_MS-sessionElapsedMs(active,now));
+        const tradesRemaining=Math.max(0,maxTrades-sessionForMode.trades);
+        const timeRemainingMs=Math.max(0,ESCALATING_TIME_LIMIT_MS-sessionElapsedMs(sessionForMode,now));
         // Normalized bar, not a raw dollar span: each half is independently
         // scaled to its own target, so zero always sits exactly at center
         // regardless of asymmetric profit/loss target %s.
-        const lossFrac=lossTargetDollars>0?Math.min(1,Math.max(0,-active.sPnl)/lossTargetDollars):0;
-        const profitFrac=profitTargetDollars>0?Math.min(1,Math.max(0,active.sPnl)/profitTargetDollars):0;
-        const markerPct=active.sPnl<0?50-lossFrac*50:50+profitFrac*50;
+        const lossFrac=lossTargetDollars>0?Math.min(1,Math.max(0,-sessionForMode.sPnl)/lossTargetDollars):0;
+        const profitFrac=profitTargetDollars>0?Math.min(1,Math.max(0,sessionForMode.sPnl)/profitTargetDollars):0;
+        const markerPct=sessionForMode.sPnl<0?50-lossFrac*50:50+profitFrac*50;
         return(
           <>
             <div className="grid-3">
               <Metric label="Balance" value={f$(bal)}/>
-              <Metric label="Session P&L" value={(active.sPnl>=0?'+':'')+f$(active.sPnl)} color={active.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
-              <Metric label="Trades this session" value={`${active.wins}W / ${active.losses}L`}/>
+              <Metric label="Session P&L" value={(sessionForMode.sPnl>=0?'+':'')+f$(sessionForMode.sPnl)} color={sessionForMode.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+              <Metric label="Trades this session" value={`${sessionForMode.wins}W / ${sessionForMode.losses}L`}/>
             </div>
             <div className="grid-3">
               <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
@@ -3937,7 +3992,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
               <div style={{position:'relative',height:10,borderRadius:999,overflow:'hidden',display:'flex',border:'1px solid var(--border)'}}>
                 <div style={{flex:1,background:'var(--fill-danger)',opacity:0.25}}/>
                 <div style={{flex:1,background:'var(--fill-success)',opacity:0.25}}/>
-                <div style={{position:'absolute',top:-2,bottom:-2,left:`calc(${Math.max(0,Math.min(100,markerPct))}% - 2px)`,width:4,borderRadius:2,background:active.sPnl>=0?'var(--fill-success)':'var(--fill-danger)',boxShadow:'0 0 0 1px var(--surface-0)'}}/>
+                <div style={{position:'absolute',top:-2,bottom:-2,left:`calc(${Math.max(0,Math.min(100,markerPct))}% - 2px)`,width:4,borderRadius:2,background:sessionForMode.sPnl>=0?'var(--fill-success)':'var(--fill-danger)',boxShadow:'0 0 0 1px var(--surface-0)'}}/>
               </div>
               <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--text-muted)',marginTop:4}}>
                 <span>-{f$(lossTargetDollars)}</span>
