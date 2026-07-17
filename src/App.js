@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import {
   Activity,
@@ -221,10 +221,10 @@ function fromAnalysisRow(r){
     ...(r.extra||{})};
 }
 function toQueryRow(userId,q){
-  return{id:q.id,user_id:userId,timestamp:new Date(q.timestamp).toISOString(),question:q.question,answer:q.answer,mode:q.mode||null,extra:{}};
+  return{id:q.id,user_id:userId,timestamp:new Date(q.timestamp).toISOString(),question:q.question,answer:q.answer,mode:q.mode||null,extra:{chatId:q.chatId||null}};
 }
 function fromQueryRow(r){
-  return{id:r.id,timestamp:new Date(r.timestamp).getTime(),question:r.question,answer:r.answer,mode:r.mode};
+  return{id:r.id,timestamp:new Date(r.timestamp).getTime(),question:r.question,answer:r.answer,mode:r.mode,...(r.extra||{})};
 }
 // Sessions no longer gate anything — the ONE hard stop (the daily circuit
 // breaker) is computed straight from trades (dailyLossCount, below), not
@@ -747,24 +747,48 @@ function setLastDirection(d){try{localStorage.setItem('gm_last_direction',d);}ca
 function lastPayoutPct(){try{return localStorage.getItem('gm_last_payout_pct')||'';}catch{return'';}}
 function setLastPayoutPct(v){try{localStorage.setItem('gm_last_payout_pct',v);}catch{}}
 // Compact two-button BUY/SELL toggle. Pass `onChange` for an editable picker
-// (Quick Log's draft row); omit it for a read-only pill (committed rows) —
-// both directions stay visible so the row's still scannable at a glance.
-function DirToggle({value,onChange}){
-  // Only the editable (onChange) case is a real tap target — read-only pills
-  // (committed rows) aren't interactive and stay compact on purpose.
+// — the draft row's big touch-target style by default, or `compact` for a
+// small always-interactive pill (committed rows, fixing a mis-tapped
+// direction in place); omit `onChange` entirely for a read-only pill.
+// stopPropagation everywhere `onChange` is set, since compact usage renders
+// inside clickable row/card elements that otherwise navigate away.
+function DirToggle({value,onChange,compact,disabled}){
   const opt=(d,label)=>{
     const on=value===d;
-    const base=onChange
+    const interactive=!!onChange&&!disabled;
+    const base=(onChange&&!compact)
       ?{padding:'10px 16px',fontSize:13,fontWeight:600,borderRadius:6,border:'1px solid var(--border)',minHeight:44,minWidth:44}
       :{padding:'2px 8px',fontSize:11,fontWeight:600,borderRadius:4,border:'1px solid var(--border)'};
     const style=on
       ?{...base,background:d==='BUY'?'var(--bg-success)':'var(--bg-danger)',color:d==='BUY'?'var(--text-success)':'var(--text-danger)',borderColor:d==='BUY'?'var(--border-success)':'var(--border-danger)'}
-      :{...base,background:'transparent',color:'var(--text-muted)',cursor:onChange?'pointer':'default'};
+      :{...base,background:'transparent',color:'var(--text-muted)',cursor:interactive?'pointer':'default'};
     return onChange
-      ?<button key={d} type="button" style={style} onClick={()=>onChange(d)}>{label}</button>
+      ?<button key={d} type="button" disabled={disabled} style={{...style,opacity:disabled?0.6:1}} onClick={e=>{e.stopPropagation();if(interactive)onChange(d);}}>{label}</button>
       :<span key={d} style={{...style,opacity:on?1:0.35}}>{label}</span>;
   };
-  return<div style={{display:'flex',gap:4}}>{opt('BUY','BUY')}{opt('SELL','SELL')}</div>;
+  return<div style={{display:'flex',gap:4}} onClick={onChange?e=>e.stopPropagation():undefined}>{opt('BUY','BUY')}{opt('SELL','SELL')}</div>;
+}
+// Compact WIN/LOSS toggle for a COMMITTED row — same segmented-pill pattern
+// as DirToggle, but always interactive (correcting a mistaken outcome is the
+// whole point) rather than switching between an editable and read-only mode.
+// stopPropagation on each button since these render inside clickable
+// row/card elements that otherwise navigate to the trade's detail view.
+function OutcomeToggle({value,onChange,disabled}){
+  const opt=(o,label)=>{
+    const on=value===o;
+    return(
+      <button key={o} type="button" disabled={disabled}
+        onClick={e=>{e.stopPropagation();if(!disabled&&o!==value)onChange(o);}}
+        style={{padding:'3px 9px',fontSize:11,fontWeight:700,borderRadius:6,border:'1px solid var(--border)',
+          cursor:disabled?'default':'pointer',opacity:disabled?0.6:1,
+          background:on?(o==='WIN'?'var(--bg-success)':'var(--bg-danger)'):'transparent',
+          color:on?(o==='WIN'?'var(--text-success)':'var(--text-danger)'):'var(--text-muted)',
+          borderColor:on?(o==='WIN'?'var(--border-success)':'var(--border-danger)'):'var(--border)'}}>
+        {label}
+      </button>
+    );
+  };
+  return<div style={{display:'flex',gap:4}} onClick={e=>e.stopPropagation()}>{opt('WIN','W')}{opt('LOSS','L')}</div>;
 }
 // `strategies` is the user's full loaded list (Journal/Analytics/Settings/Ask
 // all thread it through). Falls back to the two reserved builtins, then the
@@ -1171,13 +1195,18 @@ function userError(msg){const e=new Error(msg);e.userFacing=true;return e;}
 // Shared text-completion call — same provider/key/url/model switch as
 // polishJournalNote, factored out since Ask needs it twice (classify, then
 // compose) instead of once.
-async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1}={}){
+async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,reasoningEffort='none'}={}){
   const provider=settings?.aiProvider||'gemini';
   const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
   if(!key)throw userError(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
   const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
   const model=provider==='groq'?'qwen/qwen3.6-27b':'nvidia/nemotron-nano-12b-v2-vl:free';
-  const body={model,messages:[{role:'user',content:prompt}],temperature,max_tokens:maxTokens,reasoning_effort:'none'};
+  // 'none' everywhere by default (classifier/compose calls are cheap
+  // structuring tasks, not worth the latency) — the advisory/coach call
+  // below is the one call site that opts into real reasoning effort, since
+  // it's the one place actually synthesizing a judgment from the data
+  // rather than just reporting or reformatting it.
+  const body={model,messages:[{role:'user',content:prompt}],temperature,max_tokens:maxTokens,reasoning_effort:reasoningEffort};
   if(json)body.response_format={type:'json_object'};
   const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify(body)});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw userError(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
@@ -1185,6 +1214,24 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1}
   const txt=d.choices?.[0]?.message?.content;
   if(!txt)throw userError('No response from AI. Try again.');
   return txt.trim();
+}
+// 'none' is the only reasoning_effort value every call site has actually
+// exercised successfully — 'low'/'high' are unverified against whatever
+// model is really configured (see the model-string caveat elsewhere in this
+// file). If a call requesting one of those fails, retry once at 'none'
+// before giving up, so a rejected param costs latency, not the whole
+// answer — and log loudly either way, since silently swallowing this into a
+// deterministic fallback (the previous behavior) makes a broken AI call
+// indistinguishable from the AI just being terse.
+async function aiChatResilient(prompt,settings,opts){
+  try{return await aiChat(prompt,settings,opts);}
+  catch(err){
+    if(opts.reasoningEffort&&opts.reasoningEffort!=='none'){
+      console.error(`aiChat failed at reasoningEffort='${opts.reasoningEffort}', retrying at 'none':`,err);
+      return aiChat(prompt,settings,{...opts,reasoningEffort:'none'});
+    }
+    throw err;
+  }
 }
 
 // Stage 1: turn the question into a structured, checkable spec. This model
@@ -1196,22 +1243,23 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1}
 const ASK_CLASSIFY_PROMPT=`You are a query classifier for a trading journal app. You have NOT been given any trade data and must never state a number, percentage, date, or fact about the user's trades. Your only job: read the question and output JSON describing what's being asked. Output ONLY valid JSON, no prose, matching exactly this shape:
 
 {
-  "intent": "DATA_QUERY" | "TRADING_ADVISORY" | "ADVICE_OR_OPINION" | "OUT_OF_SCOPE",
+  "intent": "DATA_QUERY" | "TRADING_ADVISORY" | "ADVICE_OR_OPINION" | "GENERAL_KNOWLEDGE" | "OUT_OF_SCOPE",
   "mode": "DEMO" | "REAL" | "AMBIGUOUS",
   "metric": "WIN_RATE" | "PNL" | "TRADE_COUNT" | "STREAK" | "GRADE_BREAKDOWN" | "PAIR_BREAKDOWN" | "STRATEGY_BREAKDOWN" | "OFF_PLAN_IMPACT" | "DAY_OF_WEEK" | "SESSION_NUMBER" | "TIME_OF_DAY" | "MONEY_MGMT" | "RISK_ASSESSMENT" | "DISCIPLINE" | "ZONE_QUALITY" | "SESSION_PATTERNS" | "PERFORMANCE_REVIEW" | "SESSION_PREP" | null,
   "range": "TODAY" | "YESTERDAY" | "WEEK" | "MONTH" | "CURRENT_MONTH" | "PREV_MONTH" | "ALL" | null,
   "impliesAdvice": true | false,
-  "advisoryType": "RISK_REVIEW" | "MONEY_MGMT_GUIDANCE" | "DISCIPLINE_CHECK" | "PERFORMANCE_REVIEW" | "SESSION_PREP" | null
+  "advisoryType": "RISK_REVIEW" | "MONEY_MGMT_GUIDANCE" | "DISCIPLINE_CHECK" | "PERFORMANCE_REVIEW" | "SESSION_PREP" | "STRATEGY_GUIDANCE" | null
 }
 
 Rules:
-- intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading").
-- intent=ADVICE_OR_OPINION only when the question has NO answerable data component at all — pure market opinion/prediction/reassurance requests that have nothing to do with the trader's own data ("will EUR/USD go up?", "what's the best strategy for scalping?", "should I trade gold today?").
+- intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading", "what strategy should I stay consistent with?", "which strategy would you say is working best for me?", "which strategy should I focus on?", "what's my most reliable setup?"). This includes ANY question phrased as asking for the assistant's own read/opinion/recommendation grounded in the trader's data — "what would you say...", "which X would you recommend...", "what's your take on..." — not just literal "should I" phrasing.
+- intent=GENERAL_KNOWLEDGE for trading education/concept questions that do NOT ask about the trader's own data and do NOT ask for a market prediction or a live trade opinion — pure "what is/explain/how does X work" questions ("what is a supply zone?", "explain RSI", "what does OTC mean?", "what's the difference between Demand and Supply zones?", "how does binary options payout work?", "what is Anti-Martingale money management?", "what's a good risk percent for beginners in general?"). These get a real, helpful, conversational answer from general trading knowledge — never refused just because they're not about the user's own trades.
+- intent=ADVICE_OR_OPINION when the question asks for a specific market call, prediction, or live-trade opinion — "will EUR/USD go up?", "what's the best strategy for scalping?" (asking which one to pick, not what they are), "should I trade gold today?". The line vs GENERAL_KNOWLEDGE: explaining a concept is fine, predicting/recommending a specific market action is not.
 - impliesAdvice=true whenever the question attaches a should/stop/change hook to an otherwise answerable data question ("should I stop trading Wednesdays?" -> intent=DATA_QUERY, metric=DAY_OF_WEEK, impliesAdvice=true). The data half still gets answered; only the "should" half is declined.
 - intent=DATA_QUERY for anything answerable by counting/aggregating/cross-referencing the user's own logged trades, including broad questions ("how am I doing this month") — leave metric as the closest single primary metric (e.g. WIN_RATE); the app checks other dimensions automatically.
-- intent=OUT_OF_SCOPE for anything not about the user's own trade data.
+- intent=OUT_OF_SCOPE only for questions that have nothing to do with trading or this journal at all (general life questions, unrelated topics, requests to do something outside a trading journal's scope).
 - mode=AMBIGUOUS whenever Demo/Real isn't specified or clearly implied — do not guess or default.
-- If intent=TRADING_ADVISORY, fill advisoryType with the most relevant domain: RISK_REVIEW for risk%/edge questions, MONEY_MGMT_GUIDANCE for AM/PL/Fixed style questions, DISCIPLINE_CHECK for off-plan/following-rules questions, PERFORMANCE_REVIEW for broad review requests, SESSION_PREP for pre-session questions.
+- If intent=TRADING_ADVISORY, fill advisoryType with the most relevant domain: RISK_REVIEW for risk%/edge questions, MONEY_MGMT_GUIDANCE for AM/PL/Fixed style questions, DISCIPLINE_CHECK for off-plan/following-rules questions, PERFORMANCE_REVIEW for broad review requests, SESSION_PREP for pre-session questions, STRATEGY_GUIDANCE for questions about which strategy/setup to use, favor, or stay consistent with.
 - If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to (e.g. STRATEGY_BREAKDOWN for the Structured-style example) so the app can offer that breakdown instead of just refusing.
 - "range" defaults to "ALL" if the question doesn't specify a time period.
 
@@ -1235,9 +1283,43 @@ const ASK_COMPOSE_PROMPT=`You are a factual data-reporting assistant for a tradi
 7. Never suggest changing strategy, trade style, risk, or behavior.
 8. 1-4 sentences (up to 4 only when a secondary pattern is included). No bullet essays, no follow-up questions.
 9. Always state which mode (Demo or Real) and date range the numbers cover — both are given in FACTS.
+10. If FACTS.rows is present (a breakdown across grades/strategies/pairs/etc.), you MUST state each row's win rate (with its CI, per rule 2) — never reduce a breakdown to trade counts alone. Counts by themselves don't answer which one performed better.
+11. If FACTS.impliesAdvice is true, the question attached a should/stop/change hook to itself — after stating the data (rule 5 still applies, no recommendation), close with a brief, natural note that the decision is theirs. Don't skip this when impliesAdvice is true, but don't use a canned line either.
 
 FACTS:
 `;
+
+// General trading education — deliberately separate from ASK_COMPOSE_PROMPT
+// (which is only ever allowed to cite FACTS) since this path has no user
+// data at all and must never pretend otherwise. Conversational and helpful
+// like a normal chatbot, but still fenced away from the two things that
+// actually matter for a real-money app: it can't touch the user's own
+// numbers (it has none), and it can't turn into a market call.
+const GENERAL_KNOWLEDGE_PROMPT=`You are a knowledgeable, conversational trading educator inside a binary options trading journal app. Answer the question naturally and helpfully, like a real chat assistant — not a rigid data report.
+
+1. You have NOT been given any of this user's personal trade data — never reference or imply anything about their specific performance, balance, or history. If the question drifts into "how am I doing," redirect: that part needs their own data, which this path doesn't have.
+2. Explain concepts, terminology, mechanics, and general trading education clearly — supply/demand zones, money management styles, risk concepts, indicators, session structure, general best practices, etc.
+3. Never predict specific market direction, never recommend a specific live trade, entry, or exit, and never state or imply a guaranteed outcome. If asked for one, say plainly that's outside what you'll do here, and offer the general concept instead if there is one.
+4. It's fine to be opinionated about well-established trading principles (e.g. "most traders find X excessive") as long as you're not predicting a market or guaranteeing a result.
+5. Normal conversational length and tone — this isn't capped to a rigid sentence count like the data-reporting path. Be concise but natural, and feel free to ask a clarifying question if the request is genuinely ambiguous.
+
+Question: `;
+
+// Market-opinion/live-trade questions — previously a fixed refusal string
+// with no LLM call at all. Now a real generated response: the "no
+// prediction/no guarantee" boundary is a prompt instruction here (soft),
+// same trust level as the rest of the model's behavior, rather than a
+// hardcoded non-answer. FACTS (if the question has a data angle) stays
+// real/computed either way — this prompt doesn't get to invent stats.
+const ADVICE_OPINION_PROMPT=`You are a trading assistant inside a binary options journal app. The user is asking something in the direction of a market opinion, a prediction, or a specific live-trade call.
+
+1. Never predict specific market direction, never recommend a specific live trade/entry/exit, and never state or imply a guaranteed outcome — this is real money and you could simply be wrong.
+2. Don't just refuse the whole question — engage with what's actually answerable: general considerations, what a trader would typically weigh, why a confident directional call isn't something you'll offer, or the general concept behind what they're asking.
+3. If FACTS (their own data, when relevant to the question) is included below, you may reference it — but it answers "what have I done," never "what will the market do." Don't stretch it into a prediction.
+4. Be direct and natural declining the prediction/guarantee part specifically, in your own words — not a canned refusal line.
+5. Normal conversational length, not a rigid sentence count.
+
+Question: `;
 
 async function classifyAskQuery(question,settings){
   const txt=await aiChat(ASK_CLASSIFY_PROMPT+question,settings,{json:true,maxTokens:200});
@@ -1246,6 +1328,15 @@ async function classifyAskQuery(question,settings){
 }
 async function composeAskAnswer(question,facts,settings){
   return aiChat(`${ASK_COMPOSE_PROMPT}${JSON.stringify(facts)}\n\nQuestion: ${question}`,settings,{maxTokens:300,temperature:0.2});
+}
+async function composeGeneralKnowledge(question,settings,recentHistory){
+  const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}\n`:'';
+  return aiChatResilient(`${GENERAL_KNOWLEDGE_PROMPT}${question}${historyBlock}`,settings,{maxTokens:700,temperature:0.5,reasoningEffort:'low'});
+}
+async function composeAdviceOpinion(question,facts,settings,recentHistory){
+  const factsBlock=facts?`\n\nFACTS:${JSON.stringify(facts)}\n`:'';
+  const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}\n`:'';
+  return aiChatResilient(`${ADVICE_OPINION_PROMPT}${question}${factsBlock}${historyBlock}`,settings,{maxTokens:700,temperature:0.5,reasoningEffort:'low'});
 }
 
 // ── Pattern detection (deterministic, no LLM) ───────────────────────────────
@@ -1436,12 +1527,29 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   const grades={};
   done.forEach(t=>{const g=t.zoneGrade||'UNGRADED';if(!grades[g])grades[g]={wins:0,n:0,pnl:0};grades[g].n++;if(t.outcome==='WIN')grades[g].wins++;grades[g].pnl+=t.pnl;});
   const gradeBreakdown=Object.entries(grades).map(([g,d])=>({grade:g,n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100})).sort((a,b)=>b.n-a.n);
-  // Strategy breakdown with descriptions
+  // Strategy breakdown with descriptions — plus a per-strategy grade cross-tab
+  // and off-plan rate, so refinement coaching can point at WHERE within a
+  // strategy the real edge is (e.g. "your Trend/Pattern description says any
+  // clear trend, but only A/A+ trades in it clear breakeven") rather than
+  // only comparing whole strategies against each other.
   const stratMap={};
-  done.forEach(t=>{const sid=t.strategyId||'zone-sd';if(!stratMap[sid])stratMap[sid]={wins:0,n:0,pnl:0};stratMap[sid].n++;if(t.outcome==='WIN')stratMap[sid].wins++;stratMap[sid].pnl+=t.pnl;});
+  done.forEach(t=>{
+    const sid=t.strategyId||'zone-sd';
+    if(!stratMap[sid])stratMap[sid]={wins:0,n:0,pnl:0,offPlan:0,grades:{}};
+    const s=stratMap[sid];
+    s.n++;if(t.outcome==='WIN')s.wins++;s.pnl+=t.pnl;if(t.offPlan)s.offPlan++;
+    const g=t.zoneGrade||'UNGRADED';
+    if(!s.grades[g])s.grades[g]={wins:0,n:0};
+    s.grades[g].n++;if(t.outcome==='WIN')s.grades[g].wins++;
+  });
   const strategyBreakdown=Object.entries(stratMap).map(([id,d])=>{
     const strat=(strategies||[]).find(s=>s.id===id);
-    return{id,name:strat?.name||strategyLabel(id,strategies),description:strat?.description||null,n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100};
+    const gradeBreakdownWithinStrategy=Object.entries(d.grades)
+      .map(([g,gd])=>({grade:g,n:gd.n,wins:gd.wins,wr:gd.n?Math.round((gd.wins/gd.n)*1000)/10:0}))
+      .sort((a,b)=>b.n-a.n);
+    return{id,name:strat?.name||strategyLabel(id,strategies),description:strat?.description||null,
+      n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
+      offPlanRate:d.n?Math.round((d.offPlan/d.n)*1000)/10:0,gradeBreakdownWithinStrategy};
   }).sort((a,b)=>b.n-a.n);
   // Recent trades (last 15 with notes and grades — gives AI context on recent behavior)
   const recentTrades=[...done].sort((a,b)=>b.timestamp-a.timestamp).slice(0,15).map(t=>({
@@ -1558,23 +1666,28 @@ function buildAdvisoryContext(profile,question,advisoryType){
     case'SESSION_PREP':return{type:advisoryType,config:profile.configuration,
       recentSessions:profile.sessions,endReasons:profile.sessions.endReasons,
       currentBalance:profile.account.currentBalance,riskPatterns:profile.riskPatterns};
+    case'STRATEGY_GUIDANCE':return{type:advisoryType,strategyBreakdown:profile.strategyBreakdown,
+      gradeBreakdown:profile.gradeBreakdown,allTime:profile.performance.allTime,
+      recentTrades:profile.recentTrades,zoneAnalysis:profile.zoneAnalysis};
     default:return{type:advisoryType,profile};
   }
 }
-const ADVISORY_COMPOSE_PROMPT=`You are a trading performance advisor with full access to a trader's journal data, money management settings, trade grades, notes, strategies, session history, and discipline metrics. You have been given a complete TRADER_PROFILE and an ADVISORY_CONTEXT containing the specific data relevant to this question.
+const ADVISORY_COMPOSE_PROMPT=`You are a professional trader acting as this trader's personal coach, with full access to their journal data, money management settings, trade grades, notes, strategies, session history, and discipline metrics. You have been given a complete TRADER_PROFILE and an ADVISORY_CONTEXT containing the specific data relevant to this question, and possibly a CONVERSATION_HISTORY of recent prior exchanges in this same session.
 
 RULES:
 1. Base ALL advice on the actual numbers in TRADER_PROFILE and ADVISORY_CONTEXT. Never invent statistics.
 2. Always reference specific data points (grades, strategy names, session outcomes) to support your reasoning.
 3. Keep advice actionable and specific — "reduce risk from X% to Y%" not "consider adjusting risk".
-4. Frame advice as observations and suggestions, not commands. The trader makes the final call.
+4. Give a clear, direct recommendation when the data supports one — say what you'd do, not just what's observable. State it as your read of their data, not an order; the trader can still disagree and always makes the final call, but don't retreat into "just something to consider" when the numbers point somewhere specific.
 5. Acknowledge trade-offs and uncertainty — there is no single "right" answer in trading.
 6. If the data is insufficient for a confident recommendation, say so clearly.
 7. Always end with ONE specific, actionable takeaway the trader can act on today.
 8. You MAY reference specific trade notes and grade patterns from recentTrades when relevant.
 9. You MAY reference strategy descriptions and per-strategy performance from strategyBreakdown.
 10. Never predict market direction, recommend specific entries/exits, or guarantee outcomes.
-11. Tone: Professional, direct, no sugar-coating, no empty encouragement, no sympathy.
+11. Tone: direct and invested, like a coach who's actually looked at the numbers — not a compliance disclaimer. Still no sugar-coating and no empty cheerleading, but when the data genuinely shows real improvement or good discipline, say so plainly instead of staying neutral out of caution.
+12. If CONVERSATION_HISTORY is present, treat this as a continuing conversation — build on what you already told them rather than re-explaining from scratch, and note if new data changes a previous read.
+13. Strategy refinement (not just strategy selection): each strategyBreakdown entry includes gradeBreakdownWithinStrategy (win rate by grade INSIDE that strategy) and offPlanRate. Use these to propose a concrete refinement, not just "strategy A beats strategy B" — e.g. which grade floor to require, whether off-plan entries are what's actually dragging a strategy down, or specific wording to tighten the strategy's own description toward what the data shows actually wins. Quote the strategy's current description when proposing a change to it.
 
 TRADER_PROFILE:
 `;
@@ -1587,6 +1700,7 @@ function buildAdvisoryFallback(profile,advisoryType){
     case'DISCIPLINE_CHECK':return`${base} Off-plan rate: ${profile.discipline.offPlanRate}% (${profile.discipline.offPlanCount} of ${profile.account.tradeCount}). Off-plan WR: ${profile.discipline.offPlanWr}% vs on-plan ${profile.discipline.onPlanWr}%.`;
     case'PERFORMANCE_REVIEW':return`${base} Last 7 days: ${profile.performance.last7Days.n} trades, ${profile.performance.last7Days.wins}W/${profile.performance.last7Days.losses}L. Last 30 days: ${profile.performance.last30Days.n} trades, ${profile.performance.last30Days.wins}W/${profile.performance.last30Days.losses}L.`;
     case'SESSION_PREP':return`${base} Style: ${profile.configuration.activeStyle}. Risk: ${profile.configuration.riskPercent}%. Sessions/day: ${profile.configuration.sessionsPerDay}. ${profile.riskPatterns.currentStreakType?`Current streak: ${profile.riskPatterns.currentStreak} ${profile.riskPatterns.currentStreakType}.`:'No active streak.'}`;
+    case'STRATEGY_GUIDANCE':return`${base} By strategy: ${profile.strategyBreakdown.map(s=>`${s.name} ${s.wr}% (n=${s.n})`).join(', ')||'no strategy data yet'}.`;
     default:return base;
   }
 }
@@ -2411,6 +2525,58 @@ function MusicWidget({music}){
   );
 }
 
+// Session start/pause/resume/end — shared by Dashboard and Quick Log, so
+// starting or stopping a session never requires navigating back to
+// Dashboard. `active` is the caller's own getActive(ss,mode) result
+// (pause/resume/end only apply to a truly active session); the
+// insert-with-retry race handling (two tabs pressing Start Session for the
+// same mode before either write is visible to the other) lives here once,
+// not duplicated per caller.
+function useSessionControls({userId,ss,saveSS,mode,settings,bal,music,active}){
+  async function startSession(){
+    // Fired synchronously, first thing, so it's as close to the click's
+    // own gesture as possible — see requestAutoStart's own comment for why
+    // the actual play() usually still ends up deferred past that gesture.
+    music?.requestAutoStart();
+    const duration=getEffectiveSessionDuration(settings,mode);
+    const strictAtStart=isStrictForMode(settings,mode);
+    let base=ss;
+    const tryInsert=async b=>{
+      const candidate=buildSession(b,mode,duration,strictAtStart,settings,bal);
+      const{error}=await supabase.from('sessions').insert(toSessionRow(userId,b.date,candidate));
+      return{candidate,error};
+    };
+    let{candidate,error}=await tryInsert(base);
+    if(error&&error.code==='23505'){
+      const{data:rows}=await supabase.from('sessions').select('*')
+        .eq('user_id',userId).eq('date',base.date).eq('account_mode',mode);
+      base={...base,sessions:[...base.sessions.filter(s=>s.accountMode!==mode),...(rows||[]).map(fromSessionRow)]};
+      ({candidate,error}=await tryInsert(base));
+    }
+    if(error){alert(`Couldn't start a new ${mode==='REAL'?'Real':'Demo'} session — please try again.`);return;}
+    const nextSessions=[...base.sessions,candidate];
+    await saveSS({...base,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  }
+  async function pauseSession(){
+    if(!active||active.pausedAt)return;
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?{...s,pausedAt:Date.now()}:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  }
+  async function resumeSession(){
+    if(!active||!active.pausedAt)return;
+    const us={...active,pausedMsTotal:(active.pausedMsTotal||0)+(Date.now()-active.pausedAt),pausedAt:null};
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  }
+  async function endSession(code,reason){
+    if(!active)return;
+    const us={...active,isActive:false,isLocked:true,lockReason:reason,lockCode:code,endTime:Date.now()};
+    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
+    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+  }
+  return{startSession,pauseSession,resumeSession,endSession};
+}
+
 export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,userId}){
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
@@ -2473,51 +2639,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const[endToast,setEndToast]=useState(null);
   const prevActiveRef=useRef(active);
 
-  // Same race as Journal's mkSession (two tabs both pressing "Start Session"
-  // for the same mode before either write is visible to the other) — same
-  // fix: insert directly so a uniq_session_slot conflict is attributable to
-  // this call, and retry once against the mode's real current rows.
-  async function startSession(){
-    // Fired synchronously, first thing, so it's as close to the click's
-    // own gesture as possible — see requestAutoStart's own comment for why
-    // the actual play() usually still ends up deferred past that gesture.
-    music?.requestAutoStart();
-    const duration=getEffectiveSessionDuration(settings,mode);
-    const strictAtStart=isStrictForMode(settings,mode);
-    let base=ss;
-    const tryInsert=async b=>{
-      const candidate=buildSession(b,mode,duration,strictAtStart,settings,bal);
-      const{error}=await supabase.from('sessions').insert(toSessionRow(userId,b.date,candidate));
-      return{candidate,error};
-    };
-    let{candidate,error}=await tryInsert(base);
-    if(error&&error.code==='23505'){
-      const{data:rows}=await supabase.from('sessions').select('*')
-        .eq('user_id',userId).eq('date',base.date).eq('account_mode',mode);
-      base={...base,sessions:[...base.sessions.filter(s=>s.accountMode!==mode),...(rows||[]).map(fromSessionRow)]};
-      ({candidate,error}=await tryInsert(base));
-    }
-    if(error){alert(`Couldn't start a new ${mode==='REAL'?'Real':'Demo'} session — please try again.`);return;}
-    const nextSessions=[...base.sessions,candidate];
-    await saveSS({...base,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
-  }
-  async function pauseSession(){
-    if(!active||active.pausedAt)return;
-    const nextSessions=ss.sessions.map(s=>s.id===active.id?{...s,pausedAt:Date.now()}:s);
-    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
-  }
-  async function resumeSession(){
-    if(!active||!active.pausedAt)return;
-    const us={...active,pausedMsTotal:(active.pausedMsTotal||0)+(Date.now()-active.pausedAt),pausedAt:null};
-    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
-    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
-  }
-  async function endSession(code,reason){
-    if(!active)return;
-    const us={...active,isActive:false,isLocked:true,lockReason:reason,lockCode:code,endTime:Date.now()};
-    const nextSessions=ss.sessions.map(s=>s.id===active.id?us:s);
-    await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
-  }
+  const{startSession,pauseSession,resumeSession,endSession}=useSessionControls({userId,ss,saveSS,mode,settings,bal,music,active});
 
   // Local, immediate handling of pause auto-resume and time expiry while the
   // Dashboard is mounted — the App-level interval is just the backstop for
@@ -3031,8 +3153,23 @@ function TradeDetailView({trade,onZoom,strategies}){
   );
 }
 
+// Directly overwriting a controlled textarea's React state clears the
+// browser's native undo stack (Ctrl+Z stops working). Using execCommand
+// routes the change through the same input pipeline as real typing, so
+// undo/redo keeps working after an AI suggestion is accepted. Shared by
+// Journal's manual-entry notes and TradeDetailModal's edit notes.
+function applyTextWithUndo(ref,text){
+  const el=ref.current;
+  if(el&&document.execCommand){
+    el.focus();
+    el.select();
+    if(document.execCommand('insertText',false,text))return true;
+  }
+  return false;
+}
+
 // ── Journal ───────────────────────────────────────────────────────────────────
-export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies,openTradeId,onConsumedJump}){
+export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
@@ -3065,50 +3202,19 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // Per-trade draft payout % for resolving a PENDING trade's outcome — keyed
   // by trade id since these render inline in a list, not their own component.
   const[pendingPayoutDrafts,setPendingPayoutDrafts]=useState({});
-  // Deep-link from Quick Log: opens the exact same Detail/Edit modal below,
-  // rather than duplicating it — same component, same code path, just
-  // triggered by a trade id instead of a row click inside this component.
-  useEffect(()=>{
-    if(!openTradeId)return;
-    const t=trades.find(x=>x.id===openTradeId);
-    if(t)setSelectedTrade(t);
-    onConsumedJump?.();
-  },[openTradeId,trades,onConsumedJump]);
-  // Opening a trade always lands on the read-only Detail view first —
-  // Edit is a deliberate secondary action, never the default.
-  const[editingTrade,setEditingTrade]=useState(false);
-  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategyId:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
+  // Zoom viewer for the manual-entry draft's own screenshots (not yet a
+  // saved trade, so TradeDetailModal's own preview state can't cover this —
+  // that only exists once `selectedTrade` is set).
   const[preview,setPreview]=useState(null); // {items:[url,...], index}
   const[saving,setSaving]=useState(false);
-  const[savingEdit,setSavingEdit]=useState(false);
-  const[editErr,setEditErr]=useState(null);
-  const[savedFlash,setSavedFlash]=useState(false);
   const[journalNotice,setJournalNotice]=useState(null);
   function flashNotice(msg){setJournalNotice(msg);setTimeout(()=>setJournalNotice(null),6000);}
-  const[confirmingDelete,setConfirmingDelete]=useState(false);
   const[paStakeMode,setPaStakeMode]=useState('DEFAULT');
   const[paStakeValue,setPaStakeValue]=useState('');
   const[polishingManual,setPolishingManual]=useState(false);
   const[manualPolishErr,setManualPolishErr]=useState(null);
   const[manualSuggestion,setManualSuggestion]=useState(null);
-  const[polishingTrade,setPolishingTrade]=useState(false);
-  const[tradeSuggestion,setTradeSuggestion]=useState(null);
   const manualNotesRef=useRef(null);
-  const tradeNotesRef=useRef(null);
-
-  // Directly overwriting a controlled textarea's React state clears the
-  // browser's native undo stack (Ctrl+Z stops working). Using execCommand
-  // routes the change through the same input pipeline as real typing, so
-  // undo/redo keeps working after an AI suggestion is accepted.
-  function applyTextWithUndo(ref,text){
-    const el=ref.current;
-    if(el&&document.execCommand){
-      el.focus();
-      el.select();
-      if(document.execCommand('insertText',false,text))return true;
-    }
-    return false;
-  }
 
   async function polishManualNotes(){
     if(polishingManual||!mf.notes?.trim())return;
@@ -3125,22 +3231,6 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(manualSuggestion==null)return;
     if(!applyTextWithUndo(manualNotesRef,manualSuggestion))smf(m=>({...m,notes:manualSuggestion}));
     setManualSuggestion(null);
-  }
-  async function polishTradeNotes(){
-    if(polishingTrade||!editDraft.notes?.trim())return;
-    setPolishingTrade(true);setEditErr(null);
-    try{
-      setTradeSuggestion(await polishJournalNote(editDraft.notes,settings));
-    }catch(e){
-      setEditErr(e.message||'Could not polish notes. Try again.');
-    }finally{
-      setPolishingTrade(false);
-    }
-  }
-  function acceptTradePolish(){
-    if(tradeSuggestion==null)return;
-    if(!applyTextWithUndo(tradeNotesRef,tradeSuggestion))setEditDraft(d=>({...d,notes:tradeSuggestion}));
-    setTradeSuggestion(null);
   }
 
   // A new analyzer result to log always starts back at the default stake —
@@ -3486,102 +3576,6 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const filteredCI=wilsonInterval(filteredWins,filteredCompleted.length);
   const filteredPnl=filteredCompleted.reduce((a,t)=>a+t.pnl,0);
 
-  async function saveTradeEdits(){
-    if(!selectedTrade||savingEdit)return;
-    setSavingEdit(true);setEditErr(null);
-    try{
-      const screenshots=editDraft.screenshots.map(x=>x.b64||x).filter(Boolean);
-      const pair=(editDraft.pair||'').trim()||selectedTrade.pair;
-      addPairOption(pair);
-      const stake=parseFloat(editDraft.stake);
-      const validStake=Number.isFinite(stake)&&stake>0?stake:selectedTrade.stake;
-      const payoutPct=editDraft.outcome==='WIN'?parseFloat(editDraft.payoutPct)||undefined:undefined;
-      const pnl=calcPnl(validStake,editDraft.outcome,payoutPct);
-      const updated={...selectedTrade,notes:editDraft.notes,screenshots,pair,strategyId:editDraft.strategyId,
-        direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
-        payoutPct:payoutPct||null};
-      await saveTrades(prev=>prev.map(t=>t.id===selectedTrade.id?updated:t));
-      setSelectedTrade(updated);
-      setEditingTrade(false); // back to the read-only Detail view, not the list
-      setSavedFlash(true);
-      setTimeout(()=>setSavedFlash(false),1800);
-    }catch(e){
-      setEditErr(e.message||'Could not save edits. Try again.');
-    }finally{
-      setSavingEdit(false);
-    }
-  }
-
-  async function addTradeImage(file){
-    if(!file||!selectedTrade)return;
-    const b=await toB64(file);
-    const url=typeof URL.createObjectURL==='function'?URL.createObjectURL(file):`data:${file.type||'image/png'};base64,${b}`;
-    const next=[...(editDraft.screenshots||selectedTrade.screenshots||[]),{url,b64:b,mime:file.type||'image/png'}];
-    setEditDraft(d=>({...d,screenshots:next}));
-    setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);
-  }
-
-  function openTradeImage(i){
-    setPreview({items:editDraft.screenshots.map(s=>s.url),index:i});
-  }
-  // Detail view reads straight off selectedTrade (read-only), not editDraft
-  // (which only exists for the Edit view) — same zoom modal, different source.
-  function openSelectedTradeImage(i){
-    const items=(selectedTrade.screenshots||[]).map(src=>{
-      const raw=typeof src==='string'?src:(src?.b64||src?.b);
-      return toDataUrl(raw,src?.mime);
-    });
-    setPreview({items,index:i});
-  }
-
-  // addTradeImage closes over editDraft/selectedTrade directly (not via a
-  // functional state updater), so it must always be called through a ref
-  // that's refreshed every render — otherwise a paste effect that only
-  // re-attaches when selectedTrade's identity changes could fire a stale
-  // closure and drop screenshots added earlier in the same edit session.
-  const addTradeImageRef=useRef(addTradeImage);
-  addTradeImageRef.current=addTradeImage;
-
-  // Global (document-level), matching the Analyzer's paste handling — an
-  // onPaste prop on just the notes textarea only fires while that exact
-  // element has focus, which is easy to miss. Keyed on presence (not the
-  // object itself) so it attaches once per trade opened, not on every edit.
-  const hasSelectedTrade=!!selectedTrade;
-  useEffect(()=>{
-    if(!hasSelectedTrade)return;
-    function onPaste(e){
-      const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
-      if(!item)return;
-      e.preventDefault();
-      const file=item.getAsFile();
-      if(file)addTradeImageRef.current(file);
-    }
-    document.addEventListener('paste',onPaste);
-    return()=>document.removeEventListener('paste',onPaste);
-  },[hasSelectedTrade]);
-
-  // Keyed on trade id (not the whole object) — addTradeImage/removeTradeImage
-  // update selectedTrade in place to keep other displays in sync, and re-keying
-  // on every such mutation would blow away in-progress notes edits mid-typing.
-  useEffect(()=>{
-    if(selectedTrade){
-      setEditDraft({notes:selectedTrade.notes||'',pair:selectedTrade.pair||'',strategyId:selectedTrade.strategyId||'zone-sd',
-        dir:selectedTrade.direction||'BUY',outcome:selectedTrade.outcome||'PENDING',grade:selectedTrade.zoneGrade||'UNGRADED',
-        stake:String(selectedTrade.stake??''),payoutPct:selectedTrade.payoutPct?String(selectedTrade.payoutPct):'',
-        screenshots:(selectedTrade.screenshots||[]).map((src,i)=>{
-        const isStr=typeof src==='string';
-        const raw=isStr?src:(src?.b64||src?.b);
-        return{id:i,url:toDataUrl(raw,src?.mime),b64:raw,mime:src?.mime||'image/png'};
-      })});
-      setEditErr(null);
-      setPreview(null);
-      setConfirmingDelete(false);
-      setTradeSuggestion(null);
-      setEditingTrade(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[selectedTrade?.id]);
-
   return(
     <div>
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Trading journal</div>
@@ -3864,145 +3858,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         </div>
       ))}
 
-      {selectedTrade&&(
-        <div role="dialog" aria-modal="true" aria-label={editingTrade?'Edit trade':'Trade detail'} style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1000}} onClick={()=>setSelectedTrade(null)}>
-          <div style={{...card,width:'100%',maxWidth:820,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
-              <div>
-                <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>{editingTrade?'Edit trade':'Trade detail'}</div>
-                <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                  <span>{selectedTrade.pair} · {selectedTrade.direction}</span>
-                </div>
-              </div>
-              <div style={{display:'flex',gap:8}}>
-                {!editingTrade&&<button style={btn('pri')} onClick={()=>setEditingTrade(true)}><i className="ti ti-pencil" aria-hidden="true" style={{marginRight:5}}/>Edit</button>}
-                <button style={btn()} onClick={()=>editingTrade?setEditingTrade(false):setSelectedTrade(null)}>{editingTrade?'Back':'Close'}</button>
-              </div>
-            </div>
-
-            {!editingTrade?(
-              <TradeDetailView trade={selectedTrade} onZoom={openSelectedTradeImage} strategies={strategies}/>
-            ):(
-            <div style={{display:'grid',gap:12}}>
-              <div style={card}>
-                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Pair &amp; strategy</div>
-                <label style={lbl}>Pair</label>
-                <input style={inp} value={editDraft.pair} onChange={e=>setEditDraft(d=>({...d,pair:e.target.value}))} onBlur={()=>addPairOption(editDraft.pair)} placeholder="Type any pair, e.g. EUR/USD OTC" list="edit-pair-options"/>
-                <datalist id="edit-pair-options">
-                  {pairOptions.map(p=><option key={p} value={p}/>)}
-                </datalist>
-                <div style={{marginTop:10}}>
-                  <label style={lbl}>Strategy</label>
-                  <select aria-label="Strategy" style={inp} value={editDraft.strategyId||''} onChange={e=>setEditDraft(d=>({...d,strategyId:e.target.value}))}>
-                    <option value="">Select a strategy…</option>
-                    {[...activeStrategies,
-                      // Keep the trade's current strategy selectable inline even if it's
-                      // since been archived — an archived strategy is only hidden from
-                      // NEW entries, not erased from a trade that already references it.
-                      ...(editDraft.strategyId&&!activeStrategies.some(s=>s.id===editDraft.strategyId)
-                        ?(strategies||[]).filter(s=>s.id===editDraft.strategyId):[])
-                    ].map(s=><option key={s.id} value={s.id}>{s.name}{s.archived?' (archived)':''}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div style={card}>
-                <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Direction, outcome &amp; grade</div>
-                <div className="grid-2">
-                  <div>
-                    <label style={lbl}>Direction</label>
-                    <div style={{display:'flex',gap:8}}>
-                      {['BUY','SELL'].map(d=><button key={d} type="button" style={{...btn(editDraft.dir===d?(d==='BUY'?'suc':'dan'):'def'),flex:1}} onClick={()=>setEditDraft(x=>({...x,dir:d}))}>{d}</button>)}
-                    </div>
-                  </div>
-                  <div>
-                    <label style={lbl}>Stake ($)</label>
-                    <input style={inp} type="number" min="0" step="0.01" value={editDraft.stake} onChange={e=>setEditDraft(d=>({...d,stake:e.target.value}))}/>
-                  </div>
-                </div>
-                <div style={{marginTop:10}}>
-                  <label style={lbl}>Outcome</label>
-                  <div style={{display:'flex',gap:8}}>
-                    {['PENDING','WIN','LOSS'].map(o=><button key={o} type="button" style={{...btn(editDraft.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':'pri'):'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,outcome:o}))}>{o}</button>)}
-                  </div>
-                </div>
-                {editDraft.outcome==='WIN'&&(
-                  <div style={{marginTop:10}}>
-                    <label style={lbl}>Payout % <span style={{fontWeight:400,color:'var(--text-muted)'}}>(default {Math.round(PAYOUT*100)}% if left blank)</span></label>
-                    <input style={inp} type="number" min="1" max="100" step="1" placeholder={String(Math.round(PAYOUT*100))} value={editDraft.payoutPct} onChange={e=>setEditDraft(d=>({...d,payoutPct:e.target.value}))}/>
-                  </div>
-                )}
-                <div style={{marginTop:10}}>
-                  <label style={lbl}>Trade grade</label>
-                  <div style={{display:'flex',gap:8}}>
-                    {['A+','A','B','C','UNGRADED'].map(g=><button key={g} type="button" style={{...btn(editDraft.grade===g?'pri':'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,grade:g}))}>{g}</button>)}
-                  </div>
-                </div>
-                <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Editing these recalculates P&L, but does not retroactively change your session's win/loss/target counters — those are informational guidance, not re-derived after the fact.</div>
-              </div>
-              <div>
-                <label style={lbl}>Screenshots {editDraft.screenshots?.length>0&&<span style={{color:'var(--text-muted)',fontWeight:400}}>({editDraft.screenshots.length})</span>}</label>
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(92px,1fr))',gap:10,marginBottom:8}}>
-                  {editDraft.screenshots?.map((src,i)=>(
-                    <div key={i} className="gm-gallery-tile" style={{position:'relative',aspectRatio:'1',borderRadius:10,overflow:'hidden',border:'1px solid var(--border)',background:'var(--surface-0)',cursor:'zoom-in'}} onClick={()=>openTradeImage(i)}>
-                      <img src={src.url} alt={`Screenshot ${i+1}`} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
-                      <div className="gm-gallery-overlay" style={{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,0.55) 100%)',opacity:0,transition:'opacity 0.15s'}}/>
-                      <button
-                        aria-label={`Remove screenshot ${i+1}`}
-                        onClick={e=>{e.stopPropagation();const next=editDraft.screenshots.filter((_,j)=>j!==i);setEditDraft(d=>({...d,screenshots:next}));setSelectedTrade(s=>s?{...s,screenshots:next.map(x=>x.b64)}:s);}}
-                        style={{position:'absolute',top:5,right:5,background:'rgba(2,6,23,0.65)',border:'none',color:'#fff',borderRadius:6,width:22,height:22,cursor:'pointer',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}
-                      ><i className="ti ti-trash" aria-hidden="true"/></button>
-                    </div>
-                  ))}
-                  <label style={{aspectRatio:'1',border:'1px dashed var(--border)',borderRadius:10,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:4}}>
-                    <i className="ti ti-photo-plus" style={{fontSize:20}} aria-hidden="true"/>
-                    <span style={{fontSize:11}}>Add</span>
-                    <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addTradeImage(f);}}/>
-                  </label>
-                </div>
-                {(!editDraft.screenshots||editDraft.screenshots.length===0)&&<div style={{padding:'12px 14px',border:'1px dashed var(--border)',borderRadius:8,color:'var(--text-muted)',fontSize:13}}>No screenshots attached to this entry.</div>}
-              </div>
-              <div style={card}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                  <div style={{fontSize:14,fontWeight:500}}>Notes</div>
-                  <button type="button" style={{...btn(),padding:'3px 9px',fontSize:11,gap:4}} onClick={polishTradeNotes} disabled={polishingTrade||!editDraft.notes?.trim()} title="Fix grammar and use precise trading terms">
-                    <Sparkles size={12}/>{polishingTrade?'Polishing…':'AI polish'}
-                  </button>
-                </div>
-                <textarea ref={tradeNotesRef} aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
-                {tradeSuggestion!=null&&(
-                  <div style={{marginTop:8,padding:10,borderRadius:8,border:'1px solid var(--border)',background:'var(--surface-1)'}}>
-                    <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>AI suggestion</div>
-                    <div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{tradeSuggestion}</div>
-                    <div style={{display:'flex',gap:8,marginTop:8}}>
-                      <button type="button" style={btn('pri')} onClick={acceptTradePolish}>Accept</button>
-                      <button type="button" style={btn()} onClick={()=>setTradeSuggestion(null)}>Discard</button>
-                    </div>
-                  </div>
-                )}
-                <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V anywhere on this page to add screenshots quickly.</div>
-              </div>
-              {editErr&&<Alert type="dan" title="Error" body={editErr}/>}
-              <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-                <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
-                <button style={btn()} onClick={()=>setEditingTrade(false)} disabled={savingEdit}>Cancel</button>
-                <button style={btn('dan')} onClick={()=>setConfirmingDelete(true)}>Delete</button>
-                {savedFlash&&<span style={{fontSize:12,color:'var(--text-success)',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Saved</span>}
-              </div>
-            </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {confirmingDelete&&(
-        <ConfirmDialog
-          title="Delete this trade entry?"
-          body="This permanently removes the entry, its notes, and its screenshots. This cannot be undone."
-          confirmLabel="Delete entry"
-          onCancel={()=>setConfirmingDelete(false)}
-          onConfirm={()=>{deleteTrade(selectedTrade);setConfirmingDelete(false);setSelectedTrade(null);}}
-        />
-      )}
+      <TradeDetailModal trade={selectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
 
       {preview&&(
         <div
@@ -4035,14 +3891,331 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   );
 }
 
+// Trade Detail/Edit modal, extracted so both Journal (row clicks) and Quick
+// Log (row clicks) can open the exact same in-place modal — Quick Log used
+// to deep-link into Journal's own page for this, which meant leaving Quick
+// Log entirely just to paste a screenshot. `trade` is the selected trade or
+// null; renders nothing when null, same as the old `{selectedTrade&&(...)}`
+// guard did inline.
+function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategies,settings}){
+  const activeStrategies=(strategies||[]).filter(s=>!s.archived);
+  const[pairOptions,setPairOptions]=useState(PAIRS);
+  // Opening a trade always lands on the read-only Detail view first —
+  // Edit is a deliberate secondary action, never the default.
+  const[editingTrade,setEditingTrade]=useState(false);
+  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategyId:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
+  const[preview,setPreview]=useState(null); // {items:[url,...], index}
+  const[savingEdit,setSavingEdit]=useState(false);
+  const[editErr,setEditErr]=useState(null);
+  const[savedFlash,setSavedFlash]=useState(false);
+  const[confirmingDelete,setConfirmingDelete]=useState(false);
+  const[polishingTrade,setPolishingTrade]=useState(false);
+  const[tradeSuggestion,setTradeSuggestion]=useState(null);
+  const tradeNotesRef=useRef(null);
+
+  function addPairOption(value){
+    const trimmed=(value||'').trim();
+    if(!trimmed)return;
+    setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+  }
+
+  async function saveTradeEdits(){
+    if(!trade||savingEdit)return;
+    setSavingEdit(true);setEditErr(null);
+    try{
+      const screenshots=editDraft.screenshots.map(x=>x.b64||x).filter(Boolean);
+      const pair=(editDraft.pair||'').trim()||trade.pair;
+      addPairOption(pair);
+      const stake=parseFloat(editDraft.stake);
+      const validStake=Number.isFinite(stake)&&stake>0?stake:trade.stake;
+      const payoutPct=editDraft.outcome==='WIN'?parseFloat(editDraft.payoutPct)||undefined:undefined;
+      const pnl=calcPnl(validStake,editDraft.outcome,payoutPct);
+      const updated={...trade,notes:editDraft.notes,screenshots,pair,strategyId:editDraft.strategyId,
+        direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
+        payoutPct:payoutPct||null};
+      await saveTrades(prev=>prev.map(t=>t.id===trade.id?updated:t));
+      // `trade` is owned by the caller (Journal/QuickLog's selectedTrade),
+      // not this component — without handing the fresh object back up, the
+      // read-only Detail view below would keep showing the pre-edit values
+      // until the next full re-render happened to pass a new `trade` prop.
+      onSaved?.(updated);
+      setEditingTrade(false); // back to the read-only Detail view, not the list
+      setSavedFlash(true);
+      setTimeout(()=>setSavedFlash(false),1800);
+    }catch(e){
+      setEditErr(e.message||'Could not save edits. Try again.');
+    }finally{
+      setSavingEdit(false);
+    }
+  }
+
+  async function addTradeImage(file){
+    if(!file||!trade)return;
+    const b=await toB64(file);
+    const url=typeof URL.createObjectURL==='function'?URL.createObjectURL(file):`data:${file.type||'image/png'};base64,${b}`;
+    const next=[...(editDraft.screenshots||trade.screenshots||[]),{url,b64:b,mime:file.type||'image/png'}];
+    setEditDraft(d=>({...d,screenshots:next}));
+  }
+
+  function openTradeImage(i){
+    setPreview({items:editDraft.screenshots.map(s=>s.url),index:i});
+  }
+  // Detail view reads straight off `trade` (read-only), not editDraft (which
+  // only exists for the Edit view) — same zoom modal, different source.
+  function openSelectedTradeImage(i){
+    const items=(trade.screenshots||[]).map(src=>{
+      const raw=typeof src==='string'?src:(src?.b64||src?.b);
+      return toDataUrl(raw,src?.mime);
+    });
+    setPreview({items,index:i});
+  }
+
+  // addTradeImage closes over editDraft/trade directly (not via a functional
+  // state updater), so it must always be called through a ref that's
+  // refreshed every render — otherwise a paste effect that only re-attaches
+  // when trade's identity changes could fire a stale closure and drop
+  // screenshots added earlier in the same edit session.
+  const addTradeImageRef=useRef(addTradeImage);
+  addTradeImageRef.current=addTradeImage;
+
+  // Global (document-level), matching the Analyzer's paste handling — an
+  // onPaste prop on just the notes textarea only fires while that exact
+  // element has focus, which is easy to miss. Keyed on presence (not the
+  // object itself) so it attaches once per trade opened, not on every edit.
+  const hasTrade=!!trade;
+  useEffect(()=>{
+    if(!hasTrade)return;
+    function onPaste(e){
+      const item=Array.from(e.clipboardData?.items||[]).find(it=>it.type.startsWith('image/'));
+      if(!item)return;
+      e.preventDefault();
+      const file=item.getAsFile();
+      if(file)addTradeImageRef.current(file);
+    }
+    document.addEventListener('paste',onPaste);
+    return()=>document.removeEventListener('paste',onPaste);
+  },[hasTrade]);
+
+  // Keyed on trade id (not the whole object) — addTradeImage updates
+  // editDraft only now (trade itself is owned by the caller), and re-keying
+  // on every such mutation would blow away in-progress notes edits mid-typing.
+  useEffect(()=>{
+    if(trade){
+      setEditDraft({notes:trade.notes||'',pair:trade.pair||'',strategyId:trade.strategyId||'zone-sd',
+        dir:trade.direction||'BUY',outcome:trade.outcome||'PENDING',grade:trade.zoneGrade||'UNGRADED',
+        stake:String(trade.stake??''),payoutPct:trade.payoutPct?String(trade.payoutPct):'',
+        screenshots:(trade.screenshots||[]).map((src,i)=>{
+        const isStr=typeof src==='string';
+        const raw=isStr?src:(src?.b64||src?.b);
+        return{id:i,url:toDataUrl(raw,src?.mime),b64:raw,mime:src?.mime||'image/png'};
+      })});
+      setEditErr(null);
+      setPreview(null);
+      setConfirmingDelete(false);
+      setTradeSuggestion(null);
+      setEditingTrade(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[trade?.id]);
+
+  async function polishTradeNotes(){
+    if(polishingTrade||!editDraft.notes?.trim())return;
+    setPolishingTrade(true);setEditErr(null);
+    try{
+      setTradeSuggestion(await polishJournalNote(editDraft.notes,settings));
+    }catch(e){
+      setEditErr(e.message||'Could not polish notes. Try again.');
+    }finally{
+      setPolishingTrade(false);
+    }
+  }
+  function acceptTradePolish(){
+    if(tradeSuggestion==null)return;
+    if(!applyTextWithUndo(tradeNotesRef,tradeSuggestion))setEditDraft(d=>({...d,notes:tradeSuggestion}));
+    setTradeSuggestion(null);
+  }
+
+  if(!trade)return null;
+  return(
+    <>
+      <div role="dialog" aria-modal="true" aria-label={editingTrade?'Edit trade':'Trade detail'} style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1000}} onClick={onClose}>
+        <div style={{...card,width:'100%',maxWidth:820,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+            <div>
+              <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>{editingTrade?'Edit trade':'Trade detail'}</div>
+              <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span>{trade.pair} · {trade.direction}</span>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              {!editingTrade&&<button style={btn('pri')} onClick={()=>setEditingTrade(true)}><i className="ti ti-pencil" aria-hidden="true" style={{marginRight:5}}/>Edit</button>}
+              <button style={btn()} onClick={()=>editingTrade?setEditingTrade(false):onClose()}>{editingTrade?'Back':'Close'}</button>
+            </div>
+          </div>
+
+          {!editingTrade?(
+            <TradeDetailView trade={trade} onZoom={openSelectedTradeImage} strategies={strategies}/>
+          ):(
+          <div style={{display:'grid',gap:12}}>
+            <div style={card}>
+              <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Pair &amp; strategy</div>
+              <label style={lbl}>Pair</label>
+              <input style={inp} value={editDraft.pair} onChange={e=>setEditDraft(d=>({...d,pair:e.target.value}))} onBlur={()=>addPairOption(editDraft.pair)} placeholder="Type any pair, e.g. EUR/USD OTC" list="edit-pair-options"/>
+              <datalist id="edit-pair-options">
+                {pairOptions.map(p=><option key={p} value={p}/>)}
+              </datalist>
+              <div style={{marginTop:10}}>
+                <label style={lbl}>Strategy</label>
+                <select aria-label="Strategy" style={inp} value={editDraft.strategyId||''} onChange={e=>setEditDraft(d=>({...d,strategyId:e.target.value}))}>
+                  <option value="">Select a strategy…</option>
+                  {[...activeStrategies,
+                    // Keep the trade's current strategy selectable inline even if it's
+                    // since been archived — an archived strategy is only hidden from
+                    // NEW entries, not erased from a trade that already references it.
+                    ...(editDraft.strategyId&&!activeStrategies.some(s=>s.id===editDraft.strategyId)
+                      ?(strategies||[]).filter(s=>s.id===editDraft.strategyId):[])
+                  ].map(s=><option key={s.id} value={s.id}>{s.name}{s.archived?' (archived)':''}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={card}>
+              <div style={{fontSize:14,fontWeight:500,marginBottom:8}}>Direction, outcome &amp; grade</div>
+              <div className="grid-2">
+                <div>
+                  <label style={lbl}>Direction</label>
+                  <div style={{display:'flex',gap:8}}>
+                    {['BUY','SELL'].map(d=><button key={d} type="button" style={{...btn(editDraft.dir===d?(d==='BUY'?'suc':'dan'):'def'),flex:1}} onClick={()=>setEditDraft(x=>({...x,dir:d}))}>{d}</button>)}
+                  </div>
+                </div>
+                <div>
+                  <label style={lbl}>Stake ($)</label>
+                  <input style={inp} type="number" min="0" step="0.01" value={editDraft.stake} onChange={e=>setEditDraft(d=>({...d,stake:e.target.value}))}/>
+                </div>
+              </div>
+              <div style={{marginTop:10}}>
+                <label style={lbl}>Outcome</label>
+                <div style={{display:'flex',gap:8}}>
+                  {['PENDING','WIN','LOSS'].map(o=><button key={o} type="button" style={{...btn(editDraft.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':'pri'):'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,outcome:o}))}>{o}</button>)}
+                </div>
+              </div>
+              {editDraft.outcome==='WIN'&&(
+                <div style={{marginTop:10}}>
+                  <label style={lbl}>Payout % <span style={{fontWeight:400,color:'var(--text-muted)'}}>(default {Math.round(PAYOUT*100)}% if left blank)</span></label>
+                  <input style={inp} type="number" min="1" max="100" step="1" placeholder={String(Math.round(PAYOUT*100))} value={editDraft.payoutPct} onChange={e=>setEditDraft(d=>({...d,payoutPct:e.target.value}))}/>
+                </div>
+              )}
+              <div style={{marginTop:10}}>
+                <label style={lbl}>Trade grade</label>
+                <div style={{display:'flex',gap:8}}>
+                  {['A+','A','B','C','UNGRADED'].map(g=><button key={g} type="button" style={{...btn(editDraft.grade===g?'pri':'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,grade:g}))}>{g}</button>)}
+                </div>
+              </div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:8}}>Editing these recalculates P&L, but does not retroactively change your session's win/loss/target counters — those are informational guidance, not re-derived after the fact.</div>
+            </div>
+            <div>
+              <label style={lbl}>Screenshots {editDraft.screenshots?.length>0&&<span style={{color:'var(--text-muted)',fontWeight:400}}>({editDraft.screenshots.length})</span>}</label>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(92px,1fr))',gap:10,marginBottom:8}}>
+                {editDraft.screenshots?.map((src,i)=>(
+                  <div key={i} className="gm-gallery-tile" style={{position:'relative',aspectRatio:'1',borderRadius:10,overflow:'hidden',border:'1px solid var(--border)',background:'var(--surface-0)',cursor:'zoom-in'}} onClick={()=>openTradeImage(i)}>
+                    <img src={src.url} alt={`Screenshot ${i+1}`} style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}/>
+                    <div className="gm-gallery-overlay" style={{position:'absolute',inset:0,background:'linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,0.55) 100%)',opacity:0,transition:'opacity 0.15s'}}/>
+                    <button
+                      aria-label={`Remove screenshot ${i+1}`}
+                      onClick={e=>{e.stopPropagation();const next=editDraft.screenshots.filter((_,j)=>j!==i);setEditDraft(d=>({...d,screenshots:next}));}}
+                      style={{position:'absolute',top:5,right:5,background:'rgba(2,6,23,0.65)',border:'none',color:'#fff',borderRadius:6,width:22,height:22,cursor:'pointer',fontSize:13,display:'flex',alignItems:'center',justifyContent:'center',padding:0}}
+                    ><i className="ti ti-trash" aria-hidden="true"/></button>
+                  </div>
+                ))}
+                <label style={{aspectRatio:'1',border:'1px dashed var(--border)',borderRadius:10,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',color:'var(--text-muted)',gap:4}}>
+                  <i className="ti ti-photo-plus" style={{fontSize:20}} aria-hidden="true"/>
+                  <span style={{fontSize:11}}>Add</span>
+                  <input type="file" accept="image/*" style={{display:'none'}} onChange={e=>{const f=e.target.files[0];if(f)addTradeImage(f);}}/>
+                </label>
+              </div>
+              {(!editDraft.screenshots||editDraft.screenshots.length===0)&&<div style={{padding:'12px 14px',border:'1px dashed var(--border)',borderRadius:8,color:'var(--text-muted)',fontSize:13}}>No screenshots attached to this entry.</div>}
+            </div>
+            <div style={card}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                <div style={{fontSize:14,fontWeight:500}}>Notes</div>
+                <button type="button" style={{...btn(),padding:'3px 9px',fontSize:11,gap:4}} onClick={polishTradeNotes} disabled={polishingTrade||!editDraft.notes?.trim()} title="Fix grammar and use precise trading terms">
+                  <Sparkles size={12}/>{polishingTrade?'Polishing…':'AI polish'}
+                </button>
+              </div>
+              <textarea ref={tradeNotesRef} aria-label="Journal notes" value={editDraft.notes} onChange={e=>setEditDraft(d=>({...d,notes:e.target.value}))} style={{...inp,minHeight:96,resize:'vertical'}} placeholder="Add notes and paste screenshots here"/>
+              {tradeSuggestion!=null&&(
+                <div style={{marginTop:8,padding:10,borderRadius:8,border:'1px solid var(--border)',background:'var(--surface-1)'}}>
+                  <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>AI suggestion</div>
+                  <div style={{fontSize:13,whiteSpace:'pre-wrap'}}>{tradeSuggestion}</div>
+                  <div style={{display:'flex',gap:8,marginTop:8}}>
+                    <button type="button" style={btn('pri')} onClick={acceptTradePolish}>Accept</button>
+                    <button type="button" style={btn()} onClick={()=>setTradeSuggestion(null)}>Discard</button>
+                  </div>
+                </div>
+              )}
+              <div style={{fontSize:12,color:'var(--text-muted)',marginTop:6}}>Tip: press Ctrl+V or Cmd+V anywhere on this page to add screenshots quickly.</div>
+            </div>
+            {editErr&&<Alert type="dan" title="Error" body={editErr}/>}
+            <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+              <button style={{...btn('pri'),flex:1}} onClick={saveTradeEdits} disabled={savingEdit}>{savingEdit?'Saving…':'Save edits'}</button>
+              <button style={btn()} onClick={()=>setEditingTrade(false)} disabled={savingEdit}>Cancel</button>
+              <button style={btn('dan')} onClick={()=>setConfirmingDelete(true)}>Delete</button>
+              {savedFlash&&<span style={{fontSize:12,color:'var(--text-success)',display:'flex',alignItems:'center',gap:4}}><i className="ti ti-check" aria-hidden="true"/>Saved</span>}
+            </div>
+          </div>
+          )}
+        </div>
+      </div>
+
+      {confirmingDelete&&(
+        <ConfirmDialog
+          title="Delete this trade entry?"
+          body="This permanently removes the entry, its notes, and its screenshots. This cannot be undone."
+          confirmLabel="Delete entry"
+          onCancel={()=>setConfirmingDelete(false)}
+          onConfirm={()=>{deleteTrade(trade);setConfirmingDelete(false);onClose();}}
+        />
+      )}
+
+      {preview&&(
+        <div
+          role="dialog" aria-label="Image preview"
+          style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.92)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1100}}
+          onClick={()=>setPreview(null)}
+          tabIndex={-1}
+          ref={el=>el?.focus()}
+          onKeyDown={e=>{
+            const n=preview.items.length;
+            if(e.key==='Escape')setPreview(null);
+            if(e.key==='ArrowRight')setPreview(p=>({...p,index:(p.index+1)%n}));
+            if(e.key==='ArrowLeft')setPreview(p=>({...p,index:(p.index-1+n)%n}));
+          }}
+        >
+          <div style={{position:'relative',maxWidth:'92vw',maxHeight:'92vh',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={e=>e.stopPropagation()}>
+            <button type="button" style={{...btn('dan'),position:'absolute',top:8,right:8}} onClick={()=>setPreview(null)}>Close</button>
+            {preview.items.length>1&&(
+              <div style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',fontSize:12,color:'#fff',background:'rgba(2,6,23,0.65)',borderRadius:999,padding:'3px 10px'}}>{preview.index+1} / {preview.items.length}</div>
+            )}
+            {preview.items.length>1&&(<>
+              <button type="button" aria-label="Previous screenshot" style={{...btn(),position:'absolute',left:8,top:'50%',transform:'translateY(-50%)'}} onClick={()=>setPreview(p=>({...p,index:(p.index-1+p.items.length)%p.items.length}))}><i className="ti ti-chevron-left" aria-hidden="true"/></button>
+              <button type="button" aria-label="Next screenshot" style={{...btn(),position:'absolute',right:8,top:'50%',transform:'translateY(-50%)'}} onClick={()=>setPreview(p=>({...p,index:(p.index+1)%p.items.length}))}><i className="ti ti-chevron-right" aria-hidden="true"/></button>
+            </>)}
+            <img src={preview.items[preview.index]} alt={`Screenshot ${preview.index+1} of ${preview.items.length}`} style={{maxWidth:'100%',maxHeight:'92vh',objectFit:'contain',borderRadius:16,border:'1px solid var(--border)',boxShadow:'0 20px 60px rgba(0,0,0,0.45)'}}/>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ── Quick Log ────────────────────────────────────────────────────────────────
 // Rapid-entry table for an active Anti-Martingale session — same trades-table
 // schema as Journal's manual entry (source:'QUICKLOG' instead of 'MANUAL'),
 // just a faster per-row commit instead of opening the full form each time.
-// Row clicks deep-link into Journal's own Detail/Edit modal (onOpenTrade)
-// rather than duplicating that ~800-line modal here.
-function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOpenTrade}){
+// Row clicks open the shared TradeDetailModal in place, so pasting a
+// screenshot right after logging never requires leaving Quick Log.
+function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,strategies,music,userId}){
   const now=useNowTick(1000);
+  const[selectedTrade,setSelectedTrade]=useState(null);
   // The most recent session for this mode today, active or not — NOT
   // getActive()'s strict isActive filter. getActive() would go straight to
   // null the instant this session ends (profit target/loss target/max
@@ -4053,8 +4226,13 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
   const sessionForMode=(ss?.sessions||[]).filter(s=>s.accountMode===mode).sort((a,b)=>b.startTime-a.startTime)[0]||null;
   const style=getMoneyMgmtStyleForMode(settings,mode);
   const isAm=isEscalatingStyle(style); // name kept for minimal diff — now covers both escalating styles
-  const styleLabel=style==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale';
   const bal=balForMode(settings,trades,wds,mode);
+  // Same Start/Pause/Resume/End controls Dashboard uses, so a session never
+  // requires leaving Quick Log — active here is getActive's strict
+  // isActive-only session (not sessionForMode above, which also covers an
+  // already-ended one for display purposes).
+  const activeSession=getActive(ss,mode);
+  const{startSession,pauseSession,resumeSession,endSession}=useSessionControls({userId,ss,saveSS,mode,settings,bal,music,active:activeSession});
   // A session that just ended can still take exactly ONE more commit — the
   // trade the user was plausibly mid-entry on when it closed — then locks
   // for good via lateTradeLogged, so this can never become an open door for
@@ -4080,6 +4258,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
   const[draftStakeOverride,setDraftStakeOverride]=useState('');
   const[draftPayoutOverride,setDraftPayoutOverride]=useState(lastPayoutPct());
   const[saving,setSaving]=useState(false);
+  const[correcting,setCorrecting]=useState(null); // trade id currently being corrected
   const draftStake=parseFloat(draftStakeOverride)||liveStake;
   const draftPayoutPct=parseFloat(draftPayoutOverride)||undefined;
 
@@ -4087,6 +4266,56 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
     const trimmed=(value||'').trim();
     if(!trimmed)return;
     setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+  }
+
+  // Fixes a mis-tapped outcome without leaving Quick Log. Updates the trade
+  // itself, then replays every trade in this session in order to rebuild
+  // wins/losses/P&L/escalation stake from scratch — same algorithm the
+  // App-level reconciliation effect uses for any trade edit, run directly
+  // here because that effect skips sessions that have already ended, which
+  // is the common case for Anti-Martingale/Profit Lock (they end themselves).
+  // Only a still-ACTIVE session gets its end condition re-checked afterward
+  // (exactly what commitRow already does after any new trade) — an already-
+  // ended session's isActive/endReason is left alone, so a correction can
+  // never resurrect a closed session and create a second "active" session
+  // for this mode alongside whatever's running now.
+  async function correctOutcome(trade,newOutcome){
+    if(!sessionForMode||newOutcome===trade.outcome||correcting)return;
+    setCorrecting(trade.id);
+    try{
+      const payoutPct=newOutcome==='WIN'?(trade.payoutPct||undefined):undefined;
+      const correctedTrade={...trade,outcome:newOutcome,pnl:calcPnl(trade.stake,newOutcome,payoutPct)};
+      await saveTrades(prev=>prev.map(t=>t.id===trade.id?correctedTrade:t));
+
+      const sess=sessionForMode;
+      const sessionTradesCorrected=trades
+        .map(t=>t.id===trade.id?correctedTrade:t)
+        .filter(t=>getTradeMode(t)===mode&&t.sessionNum===sess.num&&t.date===tod())
+        .sort((a,b)=>a.timestamp-b.timestamp);
+      const isPL=style==='PROFIT_LOCK';
+      const baseStake=amBaseStake(sess.startBalance??0,settings);
+      let state={...sess,trades:0,wins:0,losses:0,sPnl:0,...(isPL?{plStreak:0,plNextStake:baseStake}:{amStreak:0,amNextStake:baseStake})};
+      for(const t of sessionTradesCorrected){
+        const isW=t.outcome==='WIN';
+        const sp=state.sPnl+(t.pnl||0);
+        const balAfter=(sess.startBalance??0)+sp;
+        state={...state,trades:state.trades+1,wins:state.wins+(isW?1:0),losses:state.losses+(isW?0:1),sPnl:sp,
+          ...advanceEscalatingStake(style,state,t.outcome,t.pnl||0,balAfter,settings,mode)};
+      }
+      let rebuilt=state;
+      if(sess.isActive){
+        const endReason=checkEscalatingSessionEnd(rebuilt,mode,settings);
+        if(endReason)rebuilt={...rebuilt,isActive:false,endTime:Date.now(),endReason};
+      }
+      const nextSessions=ss.sessions.map(s=>s.id===sess.id?rebuilt:s);
+      await saveSS({...ss,sessions:nextSessions,perMode:perModeFromSessions(nextSessions)});
+    }finally{setCorrecting(null);}
+  }
+  // Direction never feeds session stats (wins/losses/P&L/streak all key off
+  // outcome, not BUY/SELL) — just the trade record itself, no replay needed.
+  async function correctDirection(trade,newDirection){
+    if(newDirection===trade.direction)return;
+    await saveTrades(prev=>prev.map(t=>t.id===trade.id?{...t,direction:newDirection}:t));
   }
 
   async function commitRow(outcome){
@@ -4128,14 +4357,38 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
     }finally{setSaving(false);}
   }
 
+  // endReason is only set for the three natural AM/PL endings — a manual
+  // "End session" click (below) sets lockCode/lockReason instead, which the
+  // old endReason-only ternary chain silently mis-labeled as "max trades
+  // reached." Checked first so a manual stop always reads correctly.
+  const endedText=sessionForMode?.lockCode==='MANUAL'?'ended manually'
+    :sessionForMode?.endReason?.endsWith('PROFIT_TARGET')?'profit target reached'
+    :sessionForMode?.endReason?.endsWith('LOSS_TARGET')?'loss target reached'
+    :sessionForMode?.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached'
+    :'max trades reached for this session';
+
   return(
     <div>
-      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Quick log — {mode==='REAL'?'Real':'Demo'}</div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:10,marginBottom:16}}>
+        <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Quick log — {mode==='REAL'?'Real':'Demo'}</div>
+        {isAm&&(
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            {activeSession?(<>
+              {activeSession.pausedAt
+                ?<button style={btn()} onClick={resumeSession}>Resume</button>
+                :<button style={btn()} onClick={pauseSession}>Pause</button>}
+              <button style={btn('dan')} onClick={()=>endSession('MANUAL','Ended manually')}>End session</button>
+            </>):(
+              <button style={{...btn('suc'),fontSize:13}} onClick={startSession}><Timer size={14}/>Start session ({getEffectiveSessionDuration(settings,mode)}m)</button>
+            )}
+          </div>
+        )}
+      </div>
 
       {!isAm&&<Alert type="inf" title="Anti-Martingale / Profit Lock only" body="Quick Log is built for the escalating-stake styles' fast pace. Switch this mode's Money Management Style in Settings, or use the Journal for Fixed Risk %."/>}
-      {isAm&&!sessionForMode&&<Alert type="inf" title="No active session" body={`Start a ${styleLabel} session from the Dashboard to begin logging here.`}/>}
-      {isAm&&sessionForMode&&!sessionForMode.isActive&&canLog&&<Alert type="warn" title="Session ended" body={`Ended — ${sessionForMode.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':sessionForMode.endReason?.endsWith('LOSS_TARGET')?'loss target reached':sessionForMode.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. If you had a trade mid-entry when it ended, you can still log it below — this locks after that one entry.`}/>}
-      {isAm&&sessionForMode&&!sessionForMode.isActive&&!canLog&&<Alert type="suc" title="Session ended" body={`Ended — ${sessionForMode.endReason?.endsWith('PROFIT_TARGET')?'profit target reached':sessionForMode.endReason?.endsWith('LOSS_TARGET')?'loss target reached':sessionForMode.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached':'max trades reached for this session'}. Start a new session to keep logging; this table is read-only until then.`}/>}
+      {isAm&&!sessionForMode&&<Alert type="inf" title="No active session" body="Start a session above to begin logging here."/>}
+      {isAm&&sessionForMode&&!sessionForMode.isActive&&canLog&&<Alert type="warn" title="Session ended" body={`Ended — ${endedText}. If you had a trade mid-entry when it ended, you can still log it below — this locks after that one entry.`}/>}
+      {isAm&&sessionForMode&&!sessionForMode.isActive&&!canLog&&<Alert type="suc" title="Session ended" body={`Ended — ${endedText}. Start a new session above to keep logging; this table is read-only until then.`}/>}
 
       {isAm&&sessionForMode&&(()=>{
         // Targets are % of session START balance (matches
@@ -4197,12 +4450,12 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
           </thead>
           <tbody>
             {rows.map(({t,balanceAfter})=>(
-              <tr key={t.id} style={{cursor:'pointer',borderTop:'1px solid var(--border)'}} onClick={()=>onOpenTrade(t.id)}>
+              <tr key={t.id} style={{cursor:'pointer',borderTop:'1px solid var(--border)'}} onClick={()=>setSelectedTrade(t)}>
                 <td style={{padding:'6px'}}>{t.pair}</td>
-                <td style={{padding:'6px'}}><DirToggle value={t.direction}/></td>
+                <td style={{padding:'6px'}}><DirToggle value={t.direction} onChange={d=>correctDirection(t,d)} compact/></td>
                 <td style={{padding:'6px'}}>{f$(t.stake)}</td>
                 <td style={{padding:'6px',color:'var(--text-muted)'}}>{t.outcome==='WIN'?`${t.payoutPct||Math.round(PAYOUT*100)}%`:'—'}</td>
-                <td style={{padding:'6px',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)',fontWeight:600}}>{t.outcome}</td>
+                <td style={{padding:'6px'}}><OutcomeToggle value={t.outcome} onChange={o=>correctOutcome(t,o)} disabled={correcting===t.id}/></td>
                 <td style={{padding:'6px'}}>{f$(balanceAfter)}</td>
               </tr>
             ))}
@@ -4236,14 +4489,14 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
       <div className="ql-mobile" style={{marginTop:12}}>
         {rows.map(({t,balanceAfter})=>(
           <div key={t.id} style={{...card,cursor:'pointer'}} role="button" tabIndex={0}
-            onClick={()=>onOpenTrade(t.id)}
-            onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();onOpenTrade(t.id);}}}>
+            onClick={()=>setSelectedTrade(t)}
+            onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelectedTrade(t);}}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
               <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:500}}>{t.pair}</span>
-                <DirToggle value={t.direction}/>
+                <DirToggle value={t.direction} onChange={d=>correctDirection(t,d)} compact/>
               </div>
-              <span style={{fontSize:13,fontWeight:600,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':'var(--text-danger)'}}>{t.outcome}</span>
+              <OutcomeToggle value={t.outcome} onChange={o=>correctOutcome(t,o)} disabled={correcting===t.id}/>
             </div>
             <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--text-muted)'}}>
               <span>Stake {f$(t.stake)}</span>
@@ -4277,6 +4530,7 @@ function QuickLog({settings,trades,saveTrades,ss,saveSS,wds,mode,strategies,onOp
           </div>
         )}
       </div>
+      <TradeDetailModal trade={selectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
     </div>
   );
 }
@@ -4839,12 +5093,110 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
 // ── Ask ───────────────────────────────────────────────────────────────────────
 // Chat UI over the classify -> compute -> compose pipeline defined above. The
 // component's only jobs: render messages, resolve Demo/Real ambiguity via a
-// button reply (not a guess), and log each finished Q&A to Supabase — it does
-// not accumulate any user "profile", each question is answered from scratch.
+// button reply (not a guess), and log each finished Q&A to Supabase. Recent
+// messages in the CURRENT chat feed conversation history into advisory/
+// knowledge/opinion prompts (see resolveAndAnswer) — "New chat" is what
+// actually resets that context, not just a cosmetic clear.
+const ASK_CHAT_ID_KEY='gm_ask_chat_id';
+// No explicit "New chat" click has ever happened yet — 'legacy' keeps
+// continuity with whatever history already exists (all pre-feature rows have
+// no chatId, which reads back as 'legacy' too, so nothing looks different
+// until the user actually starts a new one).
+function getAskChatId(){try{return localStorage.getItem(ASK_CHAT_ID_KEY)||'legacy';}catch{return'legacy';}}
+
+// Minimal, dependency-free markdown for the AI's replies — headings,
+// blockquotes, bold/italic/inline-code, bullet/numbered lists, horizontal
+// rules, paragraph breaks. No links, tables, or fenced code blocks: coach
+// replies don't produce those, and this app hand-rolls its own rendering
+// elsewhere too (see TrendChart) rather than reaching for a library for a
+// narrow need. Builds React elements directly, never
+// dangerouslySetInnerHTML, so there's no HTML-injection surface even though
+// this text comes from a network response.
+function renderInline(line,keyPrefix){
+  const nodes=[];
+  const re=/(\*\*\*[^*]+\*\*\*|___[^_]+___|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*]+\*|_[^_]+_)/g;
+  let last=0,m,i=0;
+  while((m=re.exec(line))){
+    if(m.index>last)nodes.push(line.slice(last,m.index));
+    const tok=m[0];
+    if(tok.startsWith('***')||tok.startsWith('___'))nodes.push(<strong key={`${keyPrefix}-${i++}`}><em>{tok.slice(3,-3)}</em></strong>);
+    else if(tok.startsWith('**')||tok.startsWith('__'))nodes.push(<strong key={`${keyPrefix}-${i++}`}>{tok.slice(2,-2)}</strong>);
+    else if(tok.startsWith('`'))nodes.push(<code key={`${keyPrefix}-${i++}`} style={{background:'var(--surface-0)',padding:'1px 4px',borderRadius:3,fontFamily:'var(--font-mono)',fontSize:12}}>{tok.slice(1,-1)}</code>);
+    else nodes.push(<em key={`${keyPrefix}-${i++}`}>{tok.slice(1,-1)}</em>);
+    last=re.lastIndex;
+  }
+  if(last<line.length)nodes.push(line.slice(last));
+  return nodes;
+}
+// Classifies one line by its markdown block type. Grouping happens next, by
+// walking classified lines and merging consecutive same-type runs into a
+// single block — the previous version instead split on blank lines FIRST
+// and required the whole resulting chunk to be uniformly all-bullets (or
+// all-numbered), so a heading immediately followed by a list with no blank
+// line between them — extremely common in real LLM output — fell through
+// to being dumped as one plain paragraph with literal "#"/"-" characters.
+// Per-line classification + contiguous-run grouping is how real markdown
+// parsers work and doesn't have that failure mode.
+function classifyMdLine(raw){
+  const trimmed=raw.trim();
+  if(trimmed==='')return{type:'blank'};
+  let m;
+  if((m=/^(#{1,6})\s+(.*)$/.exec(trimmed)))return{type:'heading',level:m[1].length,text:m[2]};
+  if(/^>\s?/.test(trimmed))return{type:'quote',text:trimmed.replace(/^>\s?/,'')};
+  if(/^[-*]\s+/.test(trimmed))return{type:'bullet',text:trimmed.replace(/^[-*]\s+/,'')};
+  if(/^\d+\.\s+/.test(trimmed))return{type:'numbered',text:trimmed.replace(/^\d+\.\s+/,'')};
+  if(/^(---|\*\*\*|___)$/.test(trimmed))return{type:'hr'};
+  return{type:'text',text:trimmed};
+}
+const MD_HEADING_SIZE={1:17,2:16,3:15,4:14,5:14,6:14};
+function MarkdownLite({text}){
+  const blocks=[];
+  let cur=null;
+  for(const raw of(text||'').split('\n')){
+    const ln=classifyMdLine(raw);
+    if(ln.type==='blank'){cur=null;continue;}
+    if(cur&&cur.type===ln.type&&(ln.type!=='heading'||cur.level===ln.level)){
+      cur.items.push(ln.text);
+    }else{
+      cur={type:ln.type,level:ln.level,items:ln.type==='hr'?[]:[ln.text]};
+      blocks.push(cur);
+    }
+  }
+  return blocks.map((b,bi)=>{
+    const topMargin=bi===0?0:'10px 0 0';
+    if(b.type==='heading')return(
+      <div key={bi} style={{fontSize:MD_HEADING_SIZE[b.level]||14,fontWeight:700,margin:bi===0?'0 0 2px':'12px 0 2px',color:'var(--text-primary)'}}>
+        {renderInline(b.items[0],`${bi}-h`)}
+      </div>
+    );
+    if(b.type==='hr')return<hr key={bi} style={{border:'none',borderTop:'1px solid var(--border)',margin:'10px 0'}}/>;
+    if(b.type==='quote')return(
+      <blockquote key={bi} style={{margin:topMargin,padding:'2px 12px',borderLeft:'3px solid var(--border-accent)',color:'var(--text-secondary)'}}>
+        {b.items.map((t,li)=>(<Fragment key={li}>{li>0&&<br/>}{renderInline(t,`${bi}-${li}`)}</Fragment>))}
+      </blockquote>
+    );
+    if(b.type==='bullet')return(
+      <ul key={bi} style={{margin:topMargin,paddingLeft:20}}>
+        {b.items.map((t,li)=><li key={li} style={{marginBottom:3}}>{renderInline(t,`${bi}-${li}`)}</li>)}
+      </ul>
+    );
+    if(b.type==='numbered')return(
+      <ol key={bi} style={{margin:topMargin,paddingLeft:20}}>
+        {b.items.map((t,li)=><li key={li} style={{marginBottom:3}}>{renderInline(t,`${bi}-${li}`)}</li>)}
+      </ol>
+    );
+    return(
+      <p key={bi} style={{margin:topMargin}}>
+        {b.items.map((t,li)=>(<Fragment key={li}>{li>0&&<br/>}{renderInline(t,`${bi}-${li}`)}</Fragment>))}
+      </p>
+    );
+  });
+}
 function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   const[messages,setMessages]=useState([]);
   const[input,setInput]=useState('');
   const[busy,setBusy]=useState(false);
+  const[chatId,setChatId]=useState(getAskChatId);
   const listRef=useRef(null);
 
   useEffect(()=>{
@@ -4852,12 +5204,18 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     supabase.from('queries').select('*').eq('user_id',userId).order('timestamp',{ascending:true})
       .then(({data})=>{
         if(!data)return;
-        setMessages(data.flatMap(r=>{
-          const q=fromQueryRow(r);
-          return[{id:q.id+'-q',role:'user',text:q.question},{id:q.id+'-a',role:'assistant',text:q.answer}];
-        }));
+        const rows=data.map(fromQueryRow).filter(q=>(q.chatId||'legacy')===chatId);
+        setMessages(rows.flatMap(q=>[{id:q.id+'-q',role:'user',text:q.question},{id:q.id+'-a',role:'assistant',text:q.answer}]));
       });
-  },[userId]);
+  },[userId,chatId]);
+
+  function startNewChat(){
+    const id=uid();
+    try{localStorage.setItem(ASK_CHAT_ID_KEY,id);}catch{}
+    setChatId(id);
+    setMessages([]);
+    setInput('');
+  }
 
   useEffect(()=>{listRef.current?.scrollTo({top:listRef.current.scrollHeight});},[messages,busy]);
 
@@ -4877,7 +5235,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     appendPlain(text); // show the real answer first — history logging is best-effort and must never block or corrupt it
     if(!userId)return;
     try{
-      const row={id:uid(),timestamp:Date.now(),question,answer:text,mode:resolvedMode};
+      const row={id:uid(),timestamp:Date.now(),question,answer:text,mode:resolvedMode,chatId};
       const{error}=await supabase.from('queries').insert(toQueryRow(userId,row));
       if(error)console.error('Failed to log query history:',error);
     }catch(err){
@@ -4886,35 +5244,62 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   }
 
   async function resolveAndAnswer(spec,question,resolvedMode){
+    // Last few exchanges (any intent) so a follow-up reads as a
+    // continuation, not a cold restart, wherever conversation history is
+    // used below. `messages` here is still the pre-this-question state
+    // (React hasn't committed the just-appended user question yet), which
+    // is exactly the "history before now" a CONVERSATION_HISTORY block should be.
+    const recentHistory=messages.filter(m=>m.text).slice(-6).map(m=>({role:m.role,text:m.text}));
     if(spec.intent==='OUT_OF_SCOPE'){
-      await persistAndShow(question,"That's outside what I can look up in your own trade data.",resolvedMode);
+      await persistAndShow(question,"That one's outside what I can help with here — I'm scoped to your trading journal and trading knowledge generally, not general topics.",resolvedMode);
+      return;
+    }
+    if(spec.intent==='GENERAL_KNOWLEDGE'){
+      // No deterministic fallback exists here (unlike the data paths below) —
+      // there's no FACTS to fall back to for pure trading education, so a
+      // failed call propagates to handleAsk/handleClarify's own catch, same
+      // as a failed classifyAskQuery call already does. Length is trusted to
+      // the prompt (soft), not clamped in code.
+      const text=await composeGeneralKnowledge(question,settings,recentHistory);
+      await persistAndShow(question,text,resolvedMode);
       return;
     }
     if(spec.intent==='ADVICE_OR_OPINION'){
+      // A real generated response now, not a fixed refusal string — the
+      // no-prediction/no-guarantee boundary lives in ADVICE_OPINION_PROMPT
+      // (soft), same trust level as GENERAL_KNOWLEDGE. No deterministic
+      // fallback for the same reason as GENERAL_KNOWLEDGE above.
       const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode,strategies):null;
-      const text=`I can show you the data on this, but I can't tell you what to do with it.`+(facts?` ${factsToText(facts)}`:'');
+      const text=await composeAdviceOpinion(question,facts,settings,recentHistory);
       await persistAndShow(question,text,resolvedMode);
       return;
     }
     if(spec.intent==='TRADING_ADVISORY'){
       const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,settings,strategies,resolvedMode);
       const advisoryContext=buildAdvisoryContext(profile,question,spec.advisoryType||'PERFORMANCE_REVIEW');
+      const historyBlock=recentHistory.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
       let text;
-      try{text=await aiChat(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}\n\nQuestion: ${question}`,settings,{maxTokens:600,temperature:0.3});}
-      catch{text=buildAdvisoryFallback(profile,spec.advisoryType||'PERFORMANCE_REVIEW');}
-      // Code-enforced safety boundaries — never trust the prompt alone.
-      if(text.length>2000)text=text.slice(0,1997)+'...';
+      try{text=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1200,temperature:0.3,reasoningEffort:'high'});}
+      catch(err){
+        // Both the requested effort AND the 'none' retry inside
+        // aiChatResilient failed — this is the only remaining fallback, and
+        // it must never fail silently again like it did before.
+        console.error('Advisory compose failed even after reasoningEffort retry, using deterministic fallback:',err);
+        text=buildAdvisoryFallback(profile,spec.advisoryType||'PERFORMANCE_REVIEW');
+      }
       await persistAndShow(question,text,resolvedMode);
       return;
     }
     const facts=computeAskFacts(spec,trades,resolvedMode,strategies);
+    facts.impliesAdvice=spec.impliesAdvice;
     let text;
-    try{text=await composeAskAnswer(question,facts,settings);}
-    catch{text=factsToText(facts);} // composer call failed — still show the real, computed numbers
-    // Enforced in code, not trusted to the compose prompt — same reasoning
-    // as the ADVICE_OR_OPINION gate above: a boundary a model might forget
-    // to restate on any given call shouldn't be the only thing enforcing it.
-    if(spec.impliesAdvice)text=`${text} What to do with that is your call.`;
+    try{text=await composeAskAnswer(question,facts,settings);} // rule 11 handles the impliesAdvice close — soft, model-phrased
+    catch{
+      text=factsToText(facts); // composer call failed — still show the real, computed numbers
+      // No LLM call happened on this path, so there's no prompt to trust for
+      // the impliesAdvice close — this is the one place it stays hardcoded.
+      if(spec.impliesAdvice)text=`${text} What to do with that is your call.`;
+    }
     await persistAndShow(question,text,resolvedMode);
   }
 
@@ -4941,11 +5326,11 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     }finally{setBusy(false);}
   }
 
-  async function handleAsk(e){
-    e.preventDefault();
-    const q=input.trim();
+  // Shared by the form submit and the empty-state suggestion chips — chips
+  // ask directly (no side effects to gate, just a read-only question) rather
+  // than only pre-filling the input, for a snappier one-tap on-ramp.
+  async function ask(q){
     if(!q||busy)return;
-    setInput('');
     appendUser(q);
     setBusy(true);
     try{
@@ -4959,6 +5344,13 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
       appendError(err);
     }finally{setBusy(false);}
   }
+  async function handleAsk(e){
+    e.preventDefault();
+    const q=input.trim();
+    if(!q||busy)return;
+    setInput('');
+    await ask(q);
+  }
   async function handleClarify(question,spec,chosenMode){
     setBusy(true);
     try{await resolveAndAnswer(spec,question,chosenMode);}
@@ -4966,41 +5358,89 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     finally{setBusy(false);}
   }
 
+  const suggestions=["What's my win rate on Grade A zones?","Review my performance this month","Am I disciplined enough?","Explain what a supply zone is"];
+  // Coach's small circular avatar — reuses the Sparkles motif already tied
+  // to this feature ("Surface something interesting"), so the icon reads as
+  // the same assistant rather than an unrelated new symbol.
+  const CoachAvatar=()=>(
+    <div style={{width:28,height:28,borderRadius:'50%',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--fill-accent)',boxShadow:'0 2px 8px -2px rgba(98,112,243,0.5)'}}>
+      <Sparkles size={13} color="#fff"/>
+    </div>
+  );
+
   return(
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10,marginBottom:4}}>
-        <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Ask</div>
-        <button style={btn()} onClick={handleSurface} disabled={busy}><Sparkles size={14}/>Surface something interesting</button>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Ask</div>
+          <span style={{fontSize:10,fontWeight:700,letterSpacing:'0.04em',padding:'2px 8px',borderRadius:999,background:'var(--bg-accent)',color:'var(--text-accent)',border:'1px solid var(--border-accent)'}}>AI COACH</span>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          {messages.length>0&&<button style={btn()} onClick={startNewChat} disabled={busy}>New chat</button>}
+          <button style={btn()} onClick={handleSurface} disabled={busy}><Sparkles size={14}/>Surface something interesting</button>
+        </div>
       </div>
-      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>Ask questions about your trades, grades, notes, strategies, and money management. It can report your data, review your performance, or advise on risk and discipline — all based on your own journal.</div>
+      <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:16}}>Ask questions about your trades, grades, notes, strategies, and money management. It can report your data, review your performance, advise on risk and discipline, or explain trading concepts generally — all grounded in your own journal, never a market call.</div>
 
-      <div style={{...card,padding:0,display:'flex',flexDirection:'column',height:480}}>
-        <div ref={listRef} style={{flex:1,overflowY:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
+      <div style={{...card,padding:0,display:'flex',flexDirection:'column',height:'min(72vh,680px)',minHeight:420,overflow:'hidden'}}>
+        <div style={{height:3,background:'var(--fill-accent)',flexShrink:0}}/>
+        <div ref={listRef} style={{flex:1,overflowY:'auto',padding:'20px 18px',display:'flex',flexDirection:'column',gap:16}}>
           {messages.length===0&&!busy&&(
-            <div style={{fontSize:12,color:'var(--text-muted)',textAlign:'center',marginTop:20}}>
-              Try: "What's my win rate on Grade A zones?" or "Review my performance this month" or "Am I disciplined enough?"
+            <div style={{margin:'auto',textAlign:'center',maxWidth:420,padding:'0 12px'}}>
+              <div style={{width:52,height:52,borderRadius:'50%',margin:'0 auto 14px',display:'flex',alignItems:'center',justifyContent:'center',background:'var(--fill-accent)',boxShadow:'0 8px 24px -8px rgba(98,112,243,0.5)'}}>
+                <Sparkles size={22} color="#fff"/>
+              </div>
+              <div style={{fontSize:15,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Your trading coach</div>
+              <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:18,lineHeight:1.5}}>Grounded in your own logged trades — ask for a review, a risk check, or just explain a concept.</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:8,justifyContent:'center'}}>
+                {suggestions.map(s=>(
+                  <button key={s} type="button" onClick={()=>ask(s)} disabled={busy}
+                    style={{fontSize:12,padding:'8px 14px',borderRadius:999,border:'1px solid var(--border)',background:'var(--surface-2)',color:'var(--text-secondary)',cursor:'pointer',transition:'border-color 0.15s ease, color 0.15s ease'}}>
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
           {messages.map(m=>(
-            <div key={m.id} style={{alignSelf:m.role==='user'?'flex-end':'flex-start',maxWidth:'80%'}}>
+            <div key={m.id} className="msg-in" style={{display:'flex',gap:8,alignSelf:m.role==='user'?'flex-end':'flex-start',maxWidth:'min(85%,640px)',flexDirection:m.role==='user'?'row-reverse':'row'}}>
+              {m.role==='assistant'&&<CoachAvatar/>}
               {m.clarify?(
-                <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px'}}>
-                  <div style={{fontSize:13,color:'var(--text-primary)',marginBottom:8}}>Are you asking about your Demo or Real account?</div>
+                <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'12px 14px',boxShadow:'var(--shadow-card)'}}>
+                  <div style={{fontSize:13,color:'var(--text-primary)',marginBottom:10}}>Are you asking about your Demo or Real account?</div>
                   <div style={{display:'flex',gap:8}}>
                     <button style={btn()} onClick={()=>handleClarify(m.clarify.question,m.clarify.spec,'DEMO')} disabled={busy}>Demo</button>
                     <button style={btn('dan')} onClick={()=>handleClarify(m.clarify.question,m.clarify.spec,'REAL')} disabled={busy}>Real</button>
                   </div>
                 </div>
               ):(
-                <div style={{background:m.role==='user'?'var(--fill-accent)':'var(--surface-2)',color:m.role==='user'?'#fff':'var(--text-primary)',border:m.role==='user'?'none':'1px solid var(--border)',borderRadius:'var(--radius)',padding:'8px 12px',fontSize:13,whiteSpace:'pre-wrap'}}>{m.text}</div>
+                <div style={{
+                  background:m.role==='user'?'var(--fill-accent)':'var(--surface-2)',
+                  color:m.role==='user'?'#fff':'var(--text-primary)',
+                  border:m.role==='user'?'none':'1px solid var(--border)',
+                  borderRadius:m.role==='user'?'16px 16px 4px 16px':'16px 16px 16px 4px',
+                  padding:'11px 15px',fontSize:14,boxShadow:m.role==='user'?'0 4px 14px -4px rgba(98,112,243,0.45)':'var(--shadow-card)',
+                  ...(m.role==='user'?{whiteSpace:'pre-wrap'}:{lineHeight:1.6}),
+                }}>
+                  {m.role==='user'?m.text:<MarkdownLite text={m.text}/>}
+                </div>
               )}
             </div>
           ))}
-          {busy&&<div style={{alignSelf:'flex-start',fontSize:12,color:'var(--text-muted)'}}>Looking up your data…</div>}
+          {busy&&(
+            <div className="msg-in" style={{display:'flex',gap:8,alignSelf:'flex-start'}}>
+              <CoachAvatar/>
+              <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'16px 16px 16px 4px',padding:'14px 16px',display:'flex',gap:4,alignItems:'center',boxShadow:'var(--shadow-card)'}}>
+                <span className="typing-dot"/>
+                <span className="typing-dot" style={{animationDelay:'0.15s'}}/>
+                <span className="typing-dot" style={{animationDelay:'0.3s'}}/>
+              </div>
+            </div>
+          )}
         </div>
-        <form onSubmit={handleAsk} style={{display:'flex',gap:8,padding:12,borderTop:'1px solid var(--border)'}}>
-          <input style={{...inp,flex:1}} placeholder="Ask about your trades, grades, strategies, or request a review…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
-          <button type="submit" style={{...btn('pri'),padding:'9px 14px'}} disabled={busy||!input.trim()} aria-label="Send"><Send size={15}/></button>
+        <form onSubmit={handleAsk} style={{display:'flex',gap:8,padding:14,borderTop:'1px solid var(--border)',flexShrink:0}}>
+          <input style={{...inp,flex:1,borderRadius:999,padding:'12px 18px',background:'var(--surface-0)'}} placeholder="Ask about your trades, grades, strategies, or request a review…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
+          <button type="submit" style={{...btn('pri'),borderRadius:'50%',width:42,height:42,padding:0,flexShrink:0}} disabled={busy||!input.trim()} aria-label="Send"><Send size={16}/></button>
         </form>
       </div>
     </div>
@@ -5962,8 +6402,6 @@ export default function App(){
   const[strategies,setStrategies]=useState([]);
   const[ss,setSS]=useState(null);
   const[view,setView]=useState(()=>sessionStorage.getItem('gm_view')||'dashboard');
-  // Quick Log row click → Journal's own Detail/Edit modal, by trade id.
-  const[jumpToTradeId,setJumpToTradeId]=useState(null);
   const[page,setPage]=useState(()=>sessionStorage.getItem('gm_page')||'landing');
   const[pa,setPA]=useState(null);
   const[theme,setTheme]=useState(()=>localStorage.getItem('gm_theme')||'dark');
@@ -6238,12 +6676,20 @@ export default function App(){
   // above: that countdown is purely informational under either style, never
   // a locking/ending trigger — only their own profit/loss/max-trades/60min
   // check (checkEscalatingSessionEnd) ends those, non-blockingly, below.
+  //
+  // Also backstops pause-auto-resume (style-agnostic — Dashboard's own tick
+  // was previously the ONLY place this ran, so pausing a session from Quick
+  // Log and never revisiting Dashboard meant it would stay paused forever).
   useEffect(()=>{
     if(!todaySS)return;
     const id=setInterval(()=>{
       const now=Date.now();
       let changed=false;
       const nextSessions=todaySS.sessions.map(s=>{
+        if(s.isActive&&s.pausedAt&&now-s.pausedAt>=PAUSE_AUTO_RESUME_MS){
+          changed=true;
+          return{...s,pausedMsTotal:(s.pausedMsTotal||0)+(now-s.pausedAt),pausedAt:null};
+        }
         const style=getMoneyMgmtStyleForMode(settings,s.accountMode);
         if(s.isActive&&!s.isLocked&&isEscalatingStyle(style)){
           const endReason=checkEscalatingSessionEnd(s,s.accountMode,settings,now);
@@ -6493,8 +6939,8 @@ export default function App(){
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
             {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music} userId={authUser?.id}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA} trades={trades}/>}
-            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies} openTradeId={jumpToTradeId} onConsumedJump={()=>setJumpToTradeId(null)}/>}
-            {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} onOpenTrade={id=>{setJumpToTradeId(id);setView('journal');}}/>}
+            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies}/>}
+            {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} music={music} userId={authUser?.id}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
             {view==='plan'&&<Plan settings={settings}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
