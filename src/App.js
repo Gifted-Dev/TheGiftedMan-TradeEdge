@@ -3253,6 +3253,17 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const gradeFiltered=gradeFilt==='ALL'?stratFiltered:gradeFilt==='UNGRADED'?stratFiltered.filter(t=>!['A+','A','B','C'].includes(t.zoneGrade)):stratFiltered.filter(t=>t.zoneGrade===gradeFilt);
   const sorted=[...gradeFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
+  // Live summary for whatever's currently filtered — derived straight from
+  // `sorted`, so it always matches the list below with zero extra state and
+  // updates for free on any filter change (outcome, strategy, grade, tab).
+  const filteredCompleted=sorted.filter(t=>t.outcome!=='PENDING');
+  const filteredPendingCount=sorted.length-filteredCompleted.length;
+  const filteredWins=filteredCompleted.filter(t=>t.outcome==='WIN').length;
+  const filteredLosses=filteredCompleted.length-filteredWins;
+  const filteredWr=filteredCompleted.length?filteredWins/filteredCompleted.length:0;
+  const filteredCI=wilsonInterval(filteredWins,filteredCompleted.length);
+  const filteredPnl=filteredCompleted.reduce((a,t)=>a+t.pnl,0);
+
   async function saveTradeEdits(){
     if(!selectedTrade||savingEdit)return;
     setSavingEdit(true);setEditErr(null);
@@ -3441,6 +3452,25 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         {[{id:'ALL',label:'All Grades'},{id:'A+',label:'A+'},{id:'A',label:'A'},{id:'B',label:'B'},{id:'C',label:'C'},{id:'UNGRADED',label:'Ungraded'}].map(f=>(
           <button key={f.id} style={{...btn(gradeFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setGradeFilt(f.id)}>{f.label}</button>
         ))}
+      </div>
+
+      <div style={{...card,marginBottom:12}}>
+        {filteredCompleted.length===0?(
+          <div style={{fontSize:12,color:'var(--text-muted)'}}>
+            {filteredPendingCount>0?`No completed trades in this filter (${filteredPendingCount} pending).`:'No trades match this filter.'}
+          </div>
+        ):(<>
+          <div style={{display:'flex',flexWrap:'wrap',gap:16,alignItems:'baseline'}}>
+            <div>
+              <span style={{fontSize:16,fontWeight:700,color:filteredWr>=0.5?'var(--text-success)':'var(--text-primary)'}}>{(filteredWr*100).toFixed(1)}%</span>
+              <span style={{fontSize:11,color:'var(--text-muted)',marginLeft:6}}>(95% CI: {Math.round(filteredCI.lower*100)}%-{Math.round(filteredCI.upper*100)}%, n={filteredCompleted.length})</span>
+            </div>
+            <div style={{fontSize:12,color:'var(--text-secondary)'}}>{filteredWins}W / {filteredLosses}L</div>
+            <div style={{fontSize:12,fontWeight:600,color:filteredPnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(filteredPnl>=0?'+':'')+f$(filteredPnl)}</div>
+            <div style={{fontSize:11,color:'var(--text-muted)'}}>{filteredCompleted.length} completed{filteredPendingCount>0?`, ${filteredPendingCount} pending`:''}</div>
+          </div>
+          {filteredCompleted.length<20&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:6}}>Small sample — this range will narrow as you log more trades.</div>}
+        </>)}
       </div>
       {manual&&offPlanOverride&&(
         <div style={{fontSize:12,color:'var(--text-warning)',marginBottom:8}}>Logging as off-plan — this will not reopen or unlock the session.</div>
