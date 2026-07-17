@@ -2814,6 +2814,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
+  const[gradeFilt,setGradeFilt]=useState('ALL');
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
   const[mf,smf]=useState(()=>{
@@ -3245,7 +3246,12 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // "Zone + Win" narrows both dimensions at once, same as either alone.
   const outcomeFiltered=filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt);
   const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>(t.strategyId||'zone-sd')===stratFilt);
-  const sorted=[...stratFiltered].sort((a,b)=>b.timestamp-a.timestamp);
+  // Ungraded catches everything that isn't a real A+/A/B/C grade — Quick Log
+  // trades (zoneGrade:''), never-graded manual entries, and an AI-graded
+  // INVALID verdict alike, so the filter's 5 options are exhaustive with no
+  // gap a trade could silently fall through.
+  const gradeFiltered=gradeFilt==='ALL'?stratFiltered:gradeFilt==='UNGRADED'?stratFiltered.filter(t=>!['A+','A','B','C'].includes(t.zoneGrade)):stratFiltered.filter(t=>t.zoneGrade===gradeFilt);
+  const sorted=[...gradeFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
   async function saveTradeEdits(){
     if(!selectedTrade||savingEdit)return;
@@ -3428,6 +3434,12 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Strategy:</span>
         {[{id:'ALL',label:'All'},...activeStrategies.map(s=>({id:s.id,label:s.name}))].map(f=>(
           <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setStratFilt(f.id)}>{f.label}</button>
+        ))}
+      </div>
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>Grade:</span>
+        {[{id:'ALL',label:'All Grades'},{id:'A+',label:'A+'},{id:'A',label:'A'},{id:'B',label:'B'},{id:'C',label:'C'},{id:'UNGRADED',label:'Ungraded'}].map(f=>(
+          <button key={f.id} style={{...btn(gradeFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setGradeFilt(f.id)}>{f.label}</button>
         ))}
       </div>
       {manual&&offPlanOverride&&(
