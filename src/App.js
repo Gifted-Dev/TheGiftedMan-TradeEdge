@@ -83,12 +83,12 @@ const DEF_MS = [
   {mul:10,pct:35},{mul:20,pct:40},{mul:50,pct:50},
 ];
 
-const PROMPT = `You are an expert chart analyst for binary options trading, covering TWO distinct systems: TheGiftedMan S&D Precision Entry System (supply/demand zones) and TheGiftedMan Price Action Playbook (7 support/resistance and candle-structure setups). Analyze the chart image and determine which system actually applies BEFORE evaluating anything else.
+const PROMPT = `You are an expert chart analyst for binary options trading, covering TWO distinct systems: TheGiftedMan S&D Precision Entry System (supply/demand zones) and TheGiftedMan Price Action Playbook (8 setups: 7 support/resistance and candle-structure setups, plus Market Cycle Confirmation — a stricter confirmation layer, not a standalone setup). Analyze the chart image and determine which system actually applies BEFORE evaluating anything else.
 
 STEP 0 — ZONE CATEGORY CLASSIFICATION (do this first, before any gate or checklist evaluation):
 Determine whether the chart shows:
 (a) SUPPLY_DEMAND — a base-and-departure structure: a tight multi-candle consolidation ("base") that price rallied or dropped INTO, then departed AWAY from with a strong impulsive candle, and has now returned to. This is what the 10-gate system below evaluates.
-(b) SUPPORT_RESISTANCE — a single tested/broken horizontal level, OR a candlestick pattern (engulfing candle, double top/bottom, inside bar, 3-candle pause-and-continue, or a failed breakout) with no multi-candle consolidation "base" launching a move. This is what the 6-strategy playbook below evaluates.
+(b) SUPPORT_RESISTANCE — a single tested/broken horizontal level, OR a candlestick pattern (engulfing candle, double top/bottom, inside bar, 3-candle pause-and-continue, or a failed breakout) with no multi-candle consolidation "base" launching a move. This is what the 7-strategy playbook below evaluates.
 If genuinely ambiguous, prefer SUPPLY_DEMAND only when a clear base-and-departure structure is visible; otherwise use SUPPORT_RESISTANCE and identify the specific matching strategy. Set zoneCategory to whichever you determine, and follow ONLY that path's instructions below.
 
 ═══════════════════════════════════════════════════════════════════
@@ -148,44 +148,51 @@ SELF-CHECK — before returning your final answer, review your own gate results.
 PATH B — SUPPORT_RESISTANCE (follow this section only if zoneCategory=SUPPORT_RESISTANCE)
 ═══════════════════════════════════════════════════════════════════
 
-First identify which ONE of these 6 setups the chart matches (they are mutually exclusive — pick the single best match). Each one lists its own 5-item checklist, built directly from its entry rules and its own disqualifying conditions. Exactly as with the S&D gates above: this is a strict filter, not a grader on a curve — when in doubt on any item, FAIL it, and every justification must cite what you actually observe in the image.
+First identify which ONE of these 7 setups the chart matches (they are mutually exclusive — pick the single best match). Each one lists its own 5-item checklist, built directly from its entry rules and its own disqualifying conditions, plus its own expiry (these setups resolve at different speeds, so expiry is set per setup, not one blanket value). Exactly as with the S&D gates above: this is a strict filter, not a grader on a curve — when in doubt on any item, FAIL it, and every justification must cite what you actually observe in the image.
 
-1. BREAK & RETEST (level flip — old resistance becomes support, or vice versa; entry on the retest):
+1A. BREAK & RETEST — IMMEDIATE (level flip, retest within 1-2 candles of the break; expiry 1 min):
    1. [HARD] The level has been touched/bounced off at least twice before this break (a proven level, not touched only once).
    2. [HARD] A strong, decisive candle breaks and closes beyond the level (not small or indecisive).
-   3. Price pulls back and genuinely touches the level from the breakout side (a real retest, not skipping past it).
+   3. Price returns to genuinely touch the level within 1-2 candles of the breakout (3 or more candles is the Delayed variant instead, not this one).
    4. A clear rejection candle forms at the retest — long wick or small body closing back in the breakout direction (not choppy, overlapping candles with no clear rejection).
    5. Price does not slice straight through the retest with no pause or wick rejection.
 
-2. ENGULFING CANDLE REVERSAL (a candle whose body fully covers the prior candle's body, signaling a forceful shift in control):
+1B. BREAK & RETEST — DELAYED (level flip, retest 4+ candles after the break; expiry 2 min):
+   1. [HARD] The level has been touched/bounced off at least twice before this break (a proven level, not touched only once).
+   2. [HARD] A strong, decisive candle breaks and closes beyond the level (not small or indecisive).
+   3. Price moves away for 4 or more candles before returning to retest the level (1-2 candles is the Immediate variant instead, not this one).
+   4. A clear rejection candle forms at the retest — long lower wick or small body closing back in the breakout direction.
+   5. The retest is not choppy/overlapping candles with no clear rejection.
+
+2. ENGULFING CANDLE REVERSAL (a candle whose body fully covers the prior candle's body, signaling a forceful shift in control; expiry 1 min):
    1. [HARD] A short directional move to a new high/low exists immediately before this candle (not forming mid-range with no move to reverse).
    2. [HARD] The reversal candle's body completely engulfs the prior candle's body (a partial cover does not count).
    3. The engulfed candle is a real directional candle, not a tiny doji/nothing-candle.
    4. The engulfing candle closes convincingly in the new direction, a strong close.
    5. Entry would be taken at the engulfing candle's own close, not earlier.
 
-3. DOUBLE TOP / DOUBLE BOTTOM (price fails at the same level twice; the second failed attempt signals the level is defended):
+3. DOUBLE TOP / DOUBLE BOTTOM (price fails at the same level twice; the second failed attempt signals the level is defended; expiry 2 min):
    1. [HARD] The second test fails to close beyond the first high/low (a close beyond it is continuation, not a reversal signal — this disqualifies the setup).
    2. [HARD] A clear rejection candle forms at the second touch confirming the level held.
    3. The two touches are meaningfully separated in time, not just 1-2 candles apart (a genuine retest, not noise).
    4. The first touch was itself a real reaction — a bounce or pullback, not a random candle.
    5. Entry would be taken at the rejection candle's close on the second touch.
 
-4. 3-CANDLE MOMENTUM CONTINUATION (a brief pause inside a strong directional run, entered as the trend resumes — with-trend only):
+4. 3-CANDLE MOMENTUM CONTINUATION (a brief pause inside a strong directional run, entered as the trend resumes — with-trend only; expiry 1 min):
    1. [HARD] 3 or more consecutive same-direction candles exist immediately before — a genuine directional run, not choppy or overlapping.
    2. [HARD] The breakout candle actually closes beyond the pause candle's high/low in the trend direction.
    3. At most one or two small pause candles form — not a large opposite-direction candle (that would signal a reversal, not a pause).
    4. The pause candle has a small body and minimal progress against the trend.
    5. Entry would be taken at the breakout candle's own close.
 
-5. INSIDE BAR BREAKOUT (a candle fully contained within the prior candle's range, signaling contraction before expansion):
+5. INSIDE BAR BREAKOUT (a candle fully contained within the prior candle's range, signaling contraction before expansion; expiry 2 min):
    1. [HARD] The inside bar candle forms entirely within the range of the prior "mother" candle.
    2. [HARD] The breakout candle actually closes beyond the inside bar's high/low (closing back inside the range is a failed break, not a signal).
    3. The mother candle itself has real size/range — not tiny (a squeeze inside noise carries no information).
    4. There is not a long stack of multiple inside bars with no breakout yet (still consolidating, not yet a signal).
    5. Entry would be taken at the breakout candle's own close.
 
-6. FAKEOUT REVERSAL (price pokes through a level to trap breakout traders, then reverses hard the other way):
+6. FAKEOUT REVERSAL (price pokes through a level to trap breakout traders, then reverses hard the other way; expiry 1 min):
    1. [HARD] A genuine prior level existed that price actually broke through (not a random poke with nothing established before).
    2. [HARD] The breakout candle through the level was weak — small body, long wicks, or choppy (a large, strong break is likely real, not a fakeout).
    3. The break showed no real follow-through or continuation before reversing.
@@ -197,19 +204,21 @@ GRADING (Path B) — score = count of PASS out of that strategy's 5 items:
 
 When uncertain whether any checklist item meets its strict threshold, default to FAIL, not PASS — these exist specifically to reject borderline setups, same discipline as the S&D gates.
 
+BONUS — MARKET CYCLE CONFIRMATION: not one of the 7 mutually-exclusive matches above, and never set as matchedStrategy — it's a stricter confirmation LAYER that can additionally be present on top of 1B (Break & Retest — Delayed), 3 (Double Top/Bottom), or a Path A supply/demand zone. Look for this fuller structure: a Motive Wave (a run of strong candles driving into the zone/level), then a Counter Wave (a pin bar or engulfing candle at the zone — not itself an entry signal), then a Last Effort candle that fails to break the Counter Wave's high/low, then a New Motive candle confirming the reversal a second time. If you see this on top of whichever setup matched, call it out in keyStrengths as extra confirmation — it never changes zoneCategory, matchedStrategy, gateResults, or the grade itself.
+
 ═══════════════════════════════════════════════════════════════════
 BOTH PATHS
 ═══════════════════════════════════════════════════════════════════
 
 Also read the trading pair from the chart header if visible. If the pair is not clearly legible, set detectedPair to "UNKNOWN" — never guess.
 
-Respond ONLY with JSON (no markdown, no backticks), matching ONE of the two shapes below depending on zoneCategory. Both shapes share the same field names (zoneType, direction, gateResults, hardFilterFailed, hardFilterFailures, score, grade, verdict, recommendation, confidence, keyStrengths, keyWeaknesses, executionAdvice, summary) so the app can render either one identically — gateResults holds exactly 10 entries for SUPPLY_DEMAND (as specified in Path A) or exactly 5 entries for SUPPORT_RESISTANCE (as specified in Path B, numbered 1-5, for whichever single strategy matched). zoneType and matchedStrategy both carry the matched strategy's name for SUPPORT_RESISTANCE (e.g. "Break & Retest") so existing S&D-oriented display fields still read correctly; matchedStrategy is null for SUPPLY_DEMAND. departureDirection is only meaningful for SUPPLY_DEMAND (must be "UP" or "DOWN", agreeing with zoneType/direction per step 4/5 of Path A) — set it to null for SUPPORT_RESISTANCE, which has no base/departure concept.
+Respond ONLY with JSON (no markdown, no backticks), matching ONE of the two shapes below depending on zoneCategory. Both shapes share the same field names (zoneType, direction, gateResults, hardFilterFailed, hardFilterFailures, score, grade, verdict, recommendation, confidence, keyStrengths, keyWeaknesses, executionAdvice, summary) so the app can render either one identically — gateResults holds exactly 10 entries for SUPPLY_DEMAND (as specified in Path A) or exactly 5 entries for SUPPORT_RESISTANCE (as specified in Path B, numbered 1-5, for whichever single one of the 7 setups matched). zoneType and matchedStrategy both carry the matched strategy's name for SUPPORT_RESISTANCE (e.g. "Break & Retest — Immediate") so existing S&D-oriented display fields still read correctly; matchedStrategy is null for SUPPLY_DEMAND. departureDirection is only meaningful for SUPPLY_DEMAND (must be "UP" or "DOWN", agreeing with zoneType/direction per step 4/5 of Path A) — set it to null for SUPPORT_RESISTANCE, which has no base/departure concept.
 
 Example — SUPPLY_DEMAND:
 {"zoneCategory":"SUPPLY_DEMAND","matchedStrategy":null,"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","departureDirection":"DOWN","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}
 
 Example — SUPPORT_RESISTANCE:
-{"zoneCategory":"SUPPORT_RESISTANCE","matchedStrategy":"Break & Retest","detectedPair":"EUR/USD OTC","zoneType":"Break & Retest","direction":"BUY","departureDirection":null,"gateResults":[{"gate":1,"label":"Proven level (2+ prior touches)","isHardFilter":true,"pass":true,"justification":"Level was tested twice before this break, both bounces visible"},{"gate":2,"label":"Strong decisive breakout candle","isHardFilter":true,"pass":true,"justification":"Large-bodied bullish candle closes well above the level"},{"gate":3,"label":"Genuine retest of the level","isHardFilter":false,"pass":true,"justification":"Price pulls back and touches the level from above"},{"gate":4,"label":"Clear rejection candle at retest","isHardFilter":false,"pass":true,"justification":"Long lower wick closing back upward at the level"},{"gate":5,"label":"No slice-through at retest","isHardFilter":false,"pass":true,"justification":"Price paused and rejected rather than cutting straight through"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":5,"grade":"A+","verdict":"VALID","recommendation":"TRADE","confidence":78,"keyStrengths":["Proven level with 2 prior touches","Decisive breakout","Clean rejection at retest"],"keyWeaknesses":[],"executionAdvice":"Enter CALL at the rejection candle's close; this playbook was validated at a 1-minute chart with 2-minute expiry — if trading a different expiry, treat the same level-flip logic as a reasoned extrapolation, not a separately validated setup.","summary":"5 of 5 Break & Retest checklist items passed — Grade A+."}`;
+{"zoneCategory":"SUPPORT_RESISTANCE","matchedStrategy":"Break & Retest — Immediate","detectedPair":"EUR/USD OTC","zoneType":"Break & Retest — Immediate","direction":"BUY","departureDirection":null,"gateResults":[{"gate":1,"label":"Proven level (2+ prior touches)","isHardFilter":true,"pass":true,"justification":"Level was tested twice before this break, both bounces visible"},{"gate":2,"label":"Strong decisive breakout candle","isHardFilter":true,"pass":true,"justification":"Large-bodied bullish candle closes well above the level"},{"gate":3,"label":"Retest within 1-2 candles of the break","isHardFilter":false,"pass":true,"justification":"Price returns to touch the level just 1 candle after the breakout"},{"gate":4,"label":"Clear rejection candle at retest","isHardFilter":false,"pass":true,"justification":"Long lower wick closing back upward at the level"},{"gate":5,"label":"No slice-through at retest","isHardFilter":false,"pass":true,"justification":"Price paused and rejected rather than cutting straight through"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":5,"grade":"A+","verdict":"VALID","recommendation":"TRADE","confidence":78,"keyStrengths":["Proven level with 2 prior touches","Decisive breakout","Clean rejection at retest"],"keyWeaknesses":[],"executionAdvice":"Enter CALL at the rejection candle's close, using this setup's own 1-minute expiry (the Immediate variant); if trading a different expiry, treat the same level-flip logic as a reasoned extrapolation, not a separately validated setup.","summary":"5 of 5 Break & Retest — Immediate checklist items passed — Grade A+."}`;
 
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 
@@ -364,14 +373,18 @@ async function maybeMigrateLocal(userId){
 // Zone Analyzer's auto-log path can tag 'zone-sd' directly, no name lookup.
 // The 6 price-action entries are the app's core curriculum (TheGiftedMan
 // Price Action Playbook) — every user gets them from day one, same as
-// Zone (S&D)/Trend-Pattern, not an opt-in import. Strategy #6 from the
-// playbook itself, "S&D Zone Retest," isn't a 7th entry here — it maps
-// directly onto the existing Zone (S&D) analyzer path (see PROMPT's Path A/B
-// split), so adding a separate entry for it would just duplicate 'zone-sd'.
+// Zone (S&D)/Trend-Pattern, not an opt-in import. The playbook actually
+// documents 8 setups, but two of them aren't separate entries here: "S&D
+// Zone Retest" maps directly onto the existing Zone (S&D) analyzer path (see
+// PROMPT's Path A/B split), and "Market Cycle Confirmation" is a stricter
+// confirmation LAYER applied on top of another setup, not a selectable
+// strategy of its own — so adding entries for either would misrepresent
+// what a user actually traded. Break & Retest's two timing variants
+// (Immediate/Delayed) stay one entry too, described below.
 const BUILTIN_STRATEGIES=[
   {id:'zone-sd',name:'Zone (S&D)'},
   {id:'trend-pattern',name:'Trend/Pattern'},
-  {id:'break-retest',name:'Break & Retest',description:'Level flip entry: an old resistance/support level breaks, price retests it, a rejection candle confirms the flip. Best in trending markets; avoid ranging conditions or a weak/indecisive breakout candle.'},
+  {id:'break-retest',name:'Break & Retest',description:"Level flip entry: an old resistance/support level breaks, price retests it, a rejection candle confirms the flip. Two timing variants — Immediate (retest within 1-2 candles, 1-min expiry) and Delayed (retest 4+ candles later, 2-min expiry). Best in trending markets; avoid ranging conditions or a weak/indecisive breakout candle."},
   {id:'engulfing-reversal',name:'Engulfing Reversal',description:"A candle whose body fully engulfs the prior candle's body after a short directional move, signaling a forceful shift in control. Best in ranging markets or at trend exhaustion; avoid strong mid-trend."},
   {id:'double-top-bottom',name:'Double Top / Bottom',description:'Price fails at the same level twice; the second failed attempt confirms the level is defended. Best in ranging markets or at trend exhaustion; avoid strong mid-trend.'},
   {id:'three-candle-continuation',name:'3-Candle Continuation',description:'A brief pause inside a strong directional run, entered as the trend resumes on a break of the pause candle. With-trend only — best in strong trending markets; avoid ranging.'},
@@ -1327,9 +1340,17 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,
 // answer — and log loudly either way, since silently swallowing this into a
 // deterministic fallback (the previous behavior) makes a broken AI call
 // indistinguishable from the AI just being terse.
+// A 429 TPM rate limit (Groq's actual error text: "Rate limit reached for
+// model..."). Distinguished from other failures because retrying it is
+// pointless (same prompt size, same limit window — an immediate retry
+// fails identically) and because callers may want to tell the user WHY an
+// answer came back thin, instead of presenting a deterministic fallback as
+// if it were a full synthesized one.
+function isRateLimitError(err){return /rate limit/i.test(err?.message||'');}
 async function aiChatResilient(prompt,settings,opts){
   try{return await aiChat(prompt,settings,opts);}
   catch(err){
+    if(isRateLimitError(err))throw err;
     if(opts.reasoningEffort&&opts.reasoningEffort!=='none'){
       console.error(`aiChat failed at reasoningEffort='${opts.reasoningEffort}', retrying at 'none':`,err);
       return aiChat(prompt,settings,{...opts,reasoningEffort:'none'});
@@ -1356,8 +1377,8 @@ const ASK_CLASSIFY_PROMPT=`You are a query classifier for a trading journal app.
 }
 
 Rules:
-- intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading", "what strategy should I stay consistent with?", "which strategy would you say is working best for me?", "which strategy should I focus on?", "what's my most reliable setup?"). This includes ANY question phrased as asking for the assistant's own read/opinion/recommendation grounded in the trader's data — "what would you say...", "which X would you recommend...", "what's your take on..." — not just literal "should I" phrasing.
-- intent=GENERAL_KNOWLEDGE for trading education/concept questions that do NOT ask about the trader's own data and do NOT ask for a market prediction or a live trade opinion — pure "what is/explain/how does X work" questions ("what is a supply zone?", "explain RSI", "what does OTC mean?", "what's the difference between Demand and Supply zones?", "how does binary options payout work?", "what is Anti-Martingale money management?", "what's a good risk percent for beginners in general?"). This ALSO covers recommending a strategy/setup from the app's own known playbook when the question has NO personal-data angle — "what strategies would you teach a complete beginner?", "which setup works best in a ranging market?", "what's the most reliable price-action strategy?", "what would you start with as a beginner?". Recommending a named, rule-based, documented strategy is knowledge, not opinion — it's fundamentally different from predicting where a market is headed. These all get a real, helpful, conversational answer — never refused just because they're not about the user's own trades, and never misrouted to ADVICE_OR_OPINION just because the word "best" or "recommend" appears.
+- intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading", "what strategy should I stay consistent with?", "which strategy would you say is working best for me?", "which strategy should I focus on?", "what's my most reliable setup?", "fixed risk or profit lock, which will help me the most?", "which money management style is best for me?", "should I switch from Fixed Risk to Profit Lock?", "which MM style should I use given my results?"). This includes ANY question phrased as asking for the assistant's own read/opinion/recommendation grounded in the trader's data — "what would you say...", "which X would you recommend...", "what's your take on...", "which will help me the most", "which is best for me" — not just literal "should I" phrasing. This applies to strategy AND money-management comparisons alike: the moment a comparison question is personalized ("for me", "help me", "should I", "my results"), it needs the trader's own data (advisoryType=MONEY_MGMT_GUIDANCE for MM comparisons, STRATEGY_GUIDANCE for strategy comparisons) even if the same question also contains a general "which is objectively better" framing — personalization wins.
+- intent=GENERAL_KNOWLEDGE for trading education/concept questions that do NOT ask about the trader's own data and do NOT ask for a market prediction or a live trade opinion — pure "what is/explain/how does X work" questions ("what is a supply zone?", "explain RSI", "what does OTC mean?", "what's the difference between Demand and Supply zones?", "how does binary options payout work?", "what is Anti-Martingale money management?", "what's the mechanical difference between Fixed Risk and Profit Lock?" (asked with no personalization at all), "what's a good risk percent for beginners in general?"). This ALSO covers recommending a strategy/setup from the app's own known playbook when the question has NO personal-data angle — "what strategies would you teach a complete beginner?", "which setup works best in a ranging market?", "what's the most reliable price-action strategy?", "what would you start with as a beginner?". Recommending a named, rule-based, documented strategy is knowledge, not opinion — it's fundamentally different from predicting where a market is headed. These all get a real, helpful, conversational answer — never refused just because they're not about the user's own trades, and never misrouted to ADVICE_OR_OPINION just because the word "best" or "recommend" appears.
 - intent=ADVICE_OR_OPINION ONLY when the question asks for a live market direction call, a prediction, or a go/no-go opinion on a SPECIFIC trade happening right now — "will EUR/USD go up?", "is this pair about to reverse?", "should I trade gold today?", "is now a good time to enter?". Do NOT use this for "which strategy/setup should I use" questions — those are GENERAL_KNOWLEDGE (no personal data) or TRADING_ADVISORY/STRATEGY_GUIDANCE (grounded in the trader's own data) instead, never ADVICE_OR_OPINION.
 - impliesAdvice=true whenever the question attaches a should/stop/change hook to an otherwise answerable data question ("should I stop trading Wednesdays?" -> intent=DATA_QUERY, metric=DAY_OF_WEEK, impliesAdvice=true). The data half still gets answered; only the "should" half is declined.
 - intent=DATA_QUERY for anything answerable by counting/aggregating/cross-referencing the user's own logged trades, including broad questions ("how am I doing this month") — leave metric as the closest single primary metric (e.g. WIN_RATE); the app checks other dimensions automatically.
@@ -1367,6 +1388,8 @@ Rules:
 - If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to, if any (e.g. PAIR_BREAKDOWN for "should I trade gold today?"), so the app can offer that data alongside declining the prediction — leave it null if nothing fits.
 - "range" defaults to "ALL" if the question doesn't specify a time period.
 - CONTINUATION REQUESTS: if the question is a short, bare continuation phrase ("continue", "keep going", "go on", "finish that", "more", and similar) with no real content of its own, do NOT classify it as OUT_OF_SCOPE just because it's contentless in isolation. Look at CONVERSATION_HISTORY (if provided) — find the real question that produced the assistant's most recent answer, and classify THIS message exactly the way you would have classified THAT original question (same intent/metric/mode/range/advisoryType). If there's no CONVERSATION_HISTORY, or nothing in it looks like a cut-off answer to continue, treat it as OUT_OF_SCOPE as usual — this rule only fires for genuine continuations of a real prior exchange.
+- FOLLOW-UP / CLARIFYING REMARKS: this also covers messages beyond bare continuation phrases — a short reaction to, clarification of, or correction to the assistant's LAST answer, rather than a new self-contained request. Signs of this: it references "that"/"it"/a specific claim or number the assistant just made, or adds context without restating the original question (e.g. "my drawdown is that much cos I was on Anti-Martingale before", "that's because I switched pairs recently", "I already tried that and it didn't work"). Classify these the SAME way as the exchange they're continuing (same intent/metric/mode/advisoryType as whatever produced the assistant's last answer) — do NOT treat a passing mention of a metric name (like "drawdown") as a request to look that metric up from scratch in isolation; it's context for the ongoing thread, and the compose step (which receives CONVERSATION_HISTORY) will use it to react intelligently to the prior answer. Only break from the prior classification if the message clearly pivots to an unrelated, fully self-contained new question.
+- If CONVERSATION_HISTORY shows the account mode was already established earlier in this same conversation (e.g. the assistant's last answer explicitly said "Your demo trading data..." or "Your real account..."), reuse that same mode for a follow-up that doesn't restate it, instead of AMBIGUOUS — don't make the trader re-answer Demo/Real mid-conversation for something already resolved.
 
 CONVERSATION_HISTORY may follow below the question if this is a continuing chat.
 
@@ -1406,16 +1429,30 @@ FACTS:
 // across three different prompts, and Groq's free-tier TPM rate limit is a
 // real, hit-in-practice constraint (not just a cost nicety). Same facts as
 // the original document, no prose padding.
-const PRICE_ACTION_PLAYBOOK=`TheGiftedMan Price Action Playbook — 7 setups, 1-min chart, 2-min expiry, no indicators:
-1. Break & Retest — level (2+ prior touches) breaks, retest, rejection candle confirms flip. Best: trending. Avoid: ranging.
-2. Engulfing Reversal — candle fully engulfs prior body after a short directional move. Best: ranging/exhaustion. Avoid: strong mid-trend.
-3. Double Top/Bottom — price fails same level twice, 2nd failure confirms defense. Best: ranging/exhaustion. Avoid: strong mid-trend.
-4. 3-Candle Continuation — brief pause in a strong run, enter on trend resuming. With-trend only. Best: strong trending. Avoid: ranging.
-5. Inside Bar Breakout — candle fully inside prior candle's range, enter on break of that range. Best: with-trend either direction. Avoid: counter-trend breaks.
-6. S&D Zone Retest — price returns to a fresh zone that launched a strong move, enters on rejection. Best: trending, zone matches trend. Avoid: ranging/zone against trend. (Same setup the Zone Analyzer's 10-gate system grades authoritatively — defer to that grading over this summary.)
-7. Fakeout Reversal — weak breakout, no follow-through, strong reversal back through the level. Best: ranging/level boundaries. Avoid: strong trending (breaks usually real).
+const PRICE_ACTION_PLAYBOOK=`TheGiftedMan Price Action Playbook — 8 setups, 1-min chart, no indicators, expiry set per setup (always entered at the confirmation candle's close):
+1A. Break & Retest (Immediate) — level (2+ prior touches) breaks, retest within 1-2 candles, rejection candle confirms flip. Expiry: 1 min. Best: trending. Avoid: ranging, or a retest that takes 3+ candles (use 1B instead).
+1B. Break & Retest (Delayed) — same level-flip logic, but price drifts away 4+ candles before the retest. Expiry: 2 min. Best: trending. Avoid: ranging, or a retest within 1-2 candles (use 1A instead).
+2. Engulfing Reversal — candle fully engulfs prior body after a short directional move. Expiry: 1 min. Best: ranging/exhaustion. Avoid: strong mid-trend.
+3. Double Top/Bottom — price fails same level twice, 2nd failure confirms defense. Expiry: 2 min. Best: ranging/exhaustion. Avoid: strong mid-trend.
+4. 3-Candle Continuation — brief pause in a strong run, enter on trend resuming. Expiry: 1 min. With-trend only. Best: strong trending. Avoid: ranging.
+5. Inside Bar Breakout — candle fully inside prior candle's range, enter on break of that range. Expiry: 2 min. Best: with-trend either direction. Avoid: counter-trend breaks.
+6. S&D Zone Retest — price returns to a fresh zone that launched a strong move, enters on rejection. Expiry: 2 min. Best: trending, zone matches trend. Avoid: ranging/zone against trend. (Same setup the Zone Analyzer's 10-gate system grades authoritatively — defer to that grading over this summary.)
+7. Fakeout Reversal — weak breakout, no follow-through, strong reversal back through the level. Expiry: 1 min. Best: ranging/level boundaries. Avoid: strong trending (breaks usually real).
+8. Market Cycle Confirmation — not a standalone setup: a stricter confirmation LAYER on top of 1B, 3, or 6 (zone/level reversal setups). Needs a Motive Wave into the zone/level, a Counter Wave (pin bar/engulfing — do not enter here), a Last Effort that fails to break the Counter Wave's high/low, then a New Motive candle confirming a second time. Enter at the New Motive candle's close, using the base strategy's own expiry.
 
-Core rules: 1-min candles, 2-min expiry at confirmation candle's close, mirrored buy/sell, no trade within 15min of high-impact news, max 3-5 trades/session, stop after 2 consecutive losses. Identify market condition (trend/range/exhaustion) before picking a strategy — the top cause of failure is using the wrong strategy for the condition. Testing: one strategy at a time, 20-30 trades minimum, track off-plan separately from losses, compare against breakeven (~52.6% at 90% payout) not 50%. No setup is a guaranteed win.`;
+Core: 1-min candles, mirrored buy/sell, no trade <15min from high-impact news, max 3-5 trades/session, stop after 2 consecutive losses. Identify market condition (trend/range/exhaustion) first — wrong-strategy-for-condition is the top failure cause. Testing: one strategy at a time, 20-30 trades min, track off-plan separately, compare against breakeven (~52.6% at 90% payout) not 50%. No setup is a guaranteed win.`;
+
+// App-specific money-management definitions — without this, the model falls
+// back to its generic industry knowledge of these terms (e.g. "profit
+// locking" as manually closing a trade early) instead of what they actually
+// mean IN THIS APP, which is exactly the confusion this block exists to
+// prevent. Kept as terse as PRICE_ACTION_PLAYBOOK for the same TPM-budget
+// reason — reuses the same wording already shipped in Settings/Landing
+// copy rather than inventing new prose.
+const MM_STYLES_KNOWLEDGE=`TheGiftedMan money management styles — the ONLY three in this app (its "Profit Lock" is a specific stake-escalation engine, NOT the generic industry idea of manually closing a trade early for a smaller guaranteed profit):
+- Fixed Risk % — same stake every trade (a % of balance or a fixed dollar amount), never escalates. Session ends via Trade Management's own rules (session duration, max trades, consecutive-loss stop).
+- Anti-Martingale — a win escalates the stake by a configured multiplier, up to a max-escalations cap and a % of balance ceiling; any loss resets to base. Session ends on its own profit target, loss target, or max trades.
+- Profit Lock — a win stakes ONLY the profit just banked (never original capital), up to a max-escalations cap and ceiling; any loss resets to base. A win that leaves the session's cumulative P&L still <=0 does NOT escalate — stays at base until the session is genuinely in profit. Session ends on its own profit target, loss target, or max trades.`;
 
 // General trading education — deliberately separate from ASK_COMPOSE_PROMPT
 // (which is only ever allowed to cite FACTS) since this path has no user
@@ -1431,11 +1468,15 @@ const GENERAL_KNOWLEDGE_PROMPT=`You are a knowledgeable, conversational trading 
 4. It's fine to be opinionated about well-established trading principles (e.g. "most traders find X excessive") as long as you're not predicting a market or guaranteeing a result.
 5. Normal conversational length and tone — this isn't capped to a rigid sentence count like the data-reporting path. Be concise but natural, and feel free to ask a clarifying question if the request is genuinely ambiguous.
 6. You have access to PLAYBOOK below — the app's own curated strategy set. When asked to explain a setup, recommend a strategy, or discuss "what's profitable," ground your answer in PLAYBOOK rather than generic textbook trading knowledge.
-7. PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically. If asked about a different expiry or timeframe, you may reason about how the same underlying logic (level tests, candle structure) would likely extend there — but say explicitly, every time this comes up, that this specific expiry/timeframe was never actually validated in the document, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
-8. If CONVERSATION_HISTORY is present and its last entry is your own previous answer that reads as cut off mid-thought (ends abruptly, mid-sentence, or is marked as cut off), and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from exactly where that answer left off — do not restart, re-summarize, or repeat what was already said.
+7. PLAYBOOK is calibrated to a 1-minute chart, with expiry set per setup (1 or 2 minutes, exactly as PLAYBOOK states for each one). If asked about a different expiry or timeframe than the one PLAYBOOK gives for that setup, you may reason about how the same underlying logic (level tests, candle structure) would likely extend there — but say explicitly, every time this comes up, that this specific expiry/timeframe was never actually validated in the document, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
+8. You also have access to MM_STYLES below — this app's actual money-management mechanics. When the question is about "which money management style is better," "Fixed Risk vs Profit Lock," or similar, ground your answer in MM_STYLES, not generic industry meanings of these same term names (this app's "Profit Lock" is NOT the generic "close a trade early to lock in profit" concept — see MM_STYLES for what it actually means here).
+9. If CONVERSATION_HISTORY is present and its last entry is your own previous answer that reads as cut off mid-thought (ends abruptly, mid-sentence, or is marked as cut off), and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from exactly where that answer left off — do not restart, re-summarize, or repeat what was already said.
 
 PLAYBOOK:
 ${PRICE_ACTION_PLAYBOOK}
+
+MM_STYLES:
+${MM_STYLES_KNOWLEDGE}
 
 Question: `;
 
@@ -1454,9 +1495,13 @@ const ADVICE_OPINION_PROMPT=`You are a trading assistant inside a binary options
 5. Normal conversational length, not a rigid sentence count.
 6. If CONVERSATION_HISTORY is present and its last entry is your own previous answer that reads as cut off mid-thought, and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from where that answer left off — do not restart or repeat what was already said.
 7. You have access to PLAYBOOK below — the app's own curated strategy set. If the question drifts toward "which strategy should I use" territory alongside its market-timing angle, ground the strategy part in PLAYBOOK rather than generic trading knowledge — recommending a named, documented strategy is fine even here; it's only the live market-direction/timing call you decline.
+8. You also have access to MM_STYLES below — this app's actual money-management mechanics. If the question drifts toward "which money management style should I use," ground it in MM_STYLES, not generic industry meanings of these term names (this app's "Profit Lock" is NOT the generic "close a trade early" concept).
 
 PLAYBOOK:
 ${PRICE_ACTION_PLAYBOOK}
+
+MM_STYLES:
+${MM_STYLES_KNOWLEDGE}
 
 Question: `;
 
@@ -1844,10 +1889,23 @@ CORE_SUMMARY:
 // unconditionally (see the "rate limit reached" error this was built to fix).
 const PLAYBOOK_ADVISORY_TYPES=new Set(['STRATEGY_GUIDANCE','PERFORMANCE_REVIEW']);
 const ADVISORY_PLAYBOOK_ADDENDUM=`
-When recommending a strategy, combine PLAYBOOK's fixed rules with the trader's OWN real performance from strategyBreakdown — a recommendation grounded in only one of the two is weaker than one that cites both ("your Break & Retest win rate is X%, and it fits the trending condition you're asking about"). PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically — if asked about a different expiry, you may reason about how the same underlying logic would likely extend there, but say explicitly, every time this comes up, that this specific expiry was never actually validated, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
+When recommending a strategy, combine PLAYBOOK's fixed rules with the trader's OWN real performance from strategyBreakdown — a recommendation grounded in only one of the two is weaker than one that cites both ("your Break & Retest win rate is X%, and it fits the trending condition you're asking about"). PLAYBOOK is calibrated to a 1-minute chart, with expiry set per setup (1 or 2 minutes, exactly as PLAYBOOK states for each one) — if asked about a different expiry than the one PLAYBOOK gives for that setup, you may reason about how the same underlying logic would likely extend there, but say explicitly, every time this comes up, that this specific expiry was never actually validated, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
 
 PLAYBOOK:
 ${PRICE_ACTION_PLAYBOOK}
+`;
+// Same conditional-inclusion pattern as PLAYBOOK above, for the same reason:
+// only RISK_REVIEW and MONEY_MGMT_GUIDANCE ever discuss which MM style to
+// use, so the other 4 advisory types don't pay for it. Without this, a
+// "which MM style is better" advisory answer had nothing but CORE_SUMMARY's
+// bare style name to go on and fell back to the model's generic industry
+// notion of "profit locking" instead of this app's actual escalation engine.
+const MM_ADVISORY_TYPES=new Set(['RISK_REVIEW','MONEY_MGMT_GUIDANCE']);
+const ADVISORY_MM_ADDENDUM=`
+When discussing which money-management style fits the trader, ground it in MM_STYLES below — this app's actual mechanics — combined with their own configuration/session data, never in generic industry meanings of these same term names.
+
+MM_STYLES:
+${MM_STYLES_KNOWLEDGE}
 `;
 function buildAdvisoryFallback(profile,advisoryType){
   const p=profile.performance.allTime;
@@ -5356,6 +5414,13 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   const[busy,setBusy]=useState(false);
   const[chatId,setChatId]=useState(getAskChatId);
   const listRef=useRef(null);
+  // Terminal-style history recall (Up/Down through previously sent
+  // questions). historyIdx is null while live-typing; 0 is the most
+  // recently sent question, 1 the one before that, etc. draftRef stashes
+  // whatever was being typed before the first Up press, so Down past the
+  // newest history entry restores it instead of leaving the input blank.
+  const[historyIdx,setHistoryIdx]=useState(null);
+  const draftRef=useRef('');
 
   useEffect(()=>{
     if(!userId)return;
@@ -5373,6 +5438,29 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     setChatId(id);
     setMessages([]);
     setInput('');
+    setHistoryIdx(null);
+  }
+
+  function handleInputKeyDown(e){
+    if(e.key!=='ArrowUp'&&e.key!=='ArrowDown')return;
+    const hist=messages.filter(m=>m.role==='user').map(m=>m.text);
+    if(!hist.length)return;
+    e.preventDefault();
+    if(e.key==='ArrowUp'){
+      if(historyIdx===null)draftRef.current=input;
+      const nextIdx=historyIdx===null?0:Math.min(historyIdx+1,hist.length-1);
+      setHistoryIdx(nextIdx);
+      setInput(hist[hist.length-1-nextIdx]);
+    }else if(historyIdx!==null){
+      if(historyIdx===0){
+        setHistoryIdx(null);
+        setInput(draftRef.current);
+      }else{
+        const nextIdx=historyIdx-1;
+        setHistoryIdx(nextIdx);
+        setInput(hist[hist.length-1-nextIdx]);
+      }
+    }
   }
 
   useEffect(()=>{listRef.current?.scrollTo({top:listRef.current.scrollHeight});},[messages,busy]);
@@ -5458,15 +5546,27 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
         allTime:profile.performance.allTime,activeStyle:profile.configuration.activeStyle,
         moneyMgmtStyle:profile.configuration.moneyMgmtStyle};
       const playbookBlock=PLAYBOOK_ADVISORY_TYPES.has(advisoryType)?ADVISORY_PLAYBOOK_ADDENDUM:'';
+      const mmBlock=MM_ADVISORY_TYPES.has(advisoryType)?ADVISORY_MM_ADDENDUM:'';
       const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
+      // 'high' reasoning effort burns real hidden reasoning tokens against
+      // the same TPM budget on top of prompt size — only worth paying for
+      // the two types that actually need to weigh a strategy recommendation
+      // (see PLAYBOOK_ADVISORY_TYPES above); the other 4 are citing/framing
+      // already-computed facts, which 'low' handles fine.
+      const advisoryEffort=PLAYBOOK_ADVISORY_TYPES.has(advisoryType)?'high':'low';
       let text,truncated=false;
-      try{({text,truncated}=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(coreSummary)}${playbookBlock}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1500,temperature:0.3,reasoningEffort:'high'}));}
+      try{({text,truncated}=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(coreSummary)}${playbookBlock}${mmBlock}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1500,temperature:0.3,reasoningEffort:advisoryEffort}));}
       catch(err){
         // Both the requested effort AND the 'none' retry inside
         // aiChatResilient failed — this is the only remaining fallback, and
-        // it must never fail silently again like it did before.
+        // it must never fail silently again like it did before. A rate
+        // limit specifically means the model never got to actually reason
+        // about the question at all — presenting the bare facts recap below
+        // as if it were a full answer reads as "not intelligent" (it isn't
+        // one), so say why up front instead of pretending it's complete.
         console.error('Advisory compose failed even after reasoningEffort retry, using deterministic fallback:',err);
-        text=buildAdvisoryFallback(profile,advisoryType);
+        const prefix=isRateLimitError(err)?"The AI coach hit a temporary rate limit and couldn't fully reason through this one — try asking again in a few seconds. Here's what your data shows directly:\n\n":'';
+        text=prefix+buildAdvisoryFallback(profile,advisoryType);
       }
       await persistAndShow(question,text,resolvedMode,truncated);
       return;
@@ -5533,6 +5633,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     const q=input.trim();
     if(!q||busy)return;
     setInput('');
+    setHistoryIdx(null);
     await ask(q);
   }
   async function handleClarify(question,spec,chosenMode){
@@ -5623,7 +5724,8 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
           )}
         </div>
         <form onSubmit={handleAsk} style={{display:'flex',gap:8,padding:14,borderTop:'1px solid var(--border)',flexShrink:0}}>
-          <input style={{...inp,flex:1,borderRadius:999,padding:'12px 18px',background:'var(--surface-0)'}} placeholder="Ask about your trades, grades, strategies, or request a review…" value={input} onChange={e=>setInput(e.target.value)} disabled={busy}/>
+          <input style={{...inp,flex:1,borderRadius:999,padding:'12px 18px',background:'var(--surface-0)'}} placeholder="Ask about your trades, grades, strategies, or request a review…" value={input}
+            onChange={e=>{setHistoryIdx(null);setInput(e.target.value);}} onKeyDown={handleInputKeyDown} disabled={busy}/>
           <button type="submit" style={{...btn('pri'),borderRadius:'50%',width:42,height:42,padding:0,flexShrink:0}} disabled={busy||!input.trim()} aria-label="Send"><Send size={16}/></button>
         </form>
       </div>
@@ -6243,10 +6345,10 @@ function Loading(){
 // ── Landing Page ──────────────────────────────────────────────────────────────
 function Landing({onLogin}){
   const features=[
-    {icon:ScanSearch,title:'AI Setup Validator',desc:'Upload a chart screenshot and AI grades it against the matching rule-based checklist — supply/demand zones against 10 strict structural gates, or one of 7 price-action strategies against its own — before you enter a trade.'},
+    {icon:ScanSearch,title:'AI Setup Validator',desc:'Upload a chart screenshot and AI grades it against the matching rule-based checklist — supply/demand zones against 10 strict structural gates, or one of 8 price-action strategies against its own — before you enter a trade.'},
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, trade grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by trade grade, strategy, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
-    {icon:Target,title:'A Full Strategy Curriculum',desc:'7 rule-based price-action strategies plus Zone (S&D) and Trend/Pattern, built in from day one — or define your own. Tag every trade and break down win rate and P&L by strategy in Analytics.'},
+    {icon:Target,title:'A Full Strategy Curriculum',desc:'8 rule-based price-action strategies plus Zone (S&D) and Trend/Pattern, built in from day one — or define your own. Tag every trade and break down win rate and P&L by strategy in Analytics.'},
     {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade), Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss), or Profit Lock (stakes only the profit just banked, never original capital) — each ends its own session on a profit target, loss target, or max trades, independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
     {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale and Profit Lock’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
@@ -6343,7 +6445,7 @@ function Landing({onLogin}){
             <div className="ld-analyzer-text">
               <div className="ld-section-tag">AI-Powered</div>
               <h2 className="ld-section-title" style={{textAlign:'left'}}>Rule-Based Grading, Not Vibes</h2>
-              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>A supply/demand zone is evaluated against 10 strict binary gates — 4 of them hard filters that instantly invalidate it if any one fails. Any of the other 6 price-action strategies gets its own 5-item checklist built the same way. No curves, no partial credit — a setup either meets the standard or it doesn't. Shown below: the 10-gate zone system.</p>
+              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>A supply/demand zone is evaluated against 10 strict binary gates — 4 of them hard filters that instantly invalidate it if any one fails. Any of the other 7 price-action strategies gets its own 5-item checklist built the same way. No curves, no partial credit — a setup either meets the standard or it doesn't. Shown below: the 10-gate zone system.</p>
               <div className="ld-analyzer-grades">
                 <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A+</span><span>10/10 gates — highest conviction</span></div>
                 <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A</span><span>9/10 gates — strong setup</span></div>
@@ -6393,7 +6495,7 @@ function Landing({onLogin}){
         <div className="ld-section-inner">
           <div className="ld-stats-row">
             {[
-              {val:'7',label:'Price Action Strategies'},
+              {val:'8',label:'Price Action Strategies'},
               {val:'10',label:'Zone Validation Gates'},
               {val:'3',label:'Trade Styles'},
               {val:'6',label:'Withdrawal Milestones'},
