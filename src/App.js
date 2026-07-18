@@ -1026,10 +1026,16 @@ function getPlMaxTradesForMode(settings, mode) {
   const v = parseInt(mode === 'REAL' ? settings?.plMaxTradesReal : settings?.plMaxTradesDemo, 10);
   return Number.isFinite(v) && v >= 3 && v <= 20 ? v : 8;
 }
-function advanceProfitLock(state, outcome, pnl, balance, settings, mode) {
+function advanceProfitLock(state, outcome, pnl, balance, settings, mode, sessionPnlAfter) {
   const base = amBaseStake(balance, settings);
   if (outcome !== 'WIN') {
     return { streak: 0, nextStake: base }; // any loss resets to base — never below it
+  }
+  // A win only escalates once the SESSION's cumulative P&L (including this
+  // trade) is genuinely positive — a win that merely offsets a prior loss
+  // has banked nothing real yet, so the next stake must stay at base.
+  if (sessionPnlAfter <= 0) {
+    return { streak: 0, nextStake: base };
   }
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   // Same pre-increment cap-check pattern as advanceAntiMartingale: the
@@ -1054,6 +1060,9 @@ function plStakeReasoning(session, balance, settings, mode) {
   const stake = liveProfitLockNextStake(session, balance, settings, mode);
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   if (streak === 0) {
+    if ((session?.wins || 0) > 0 && (session?.sPnl || 0) <= 0) {
+      return `Win recorded, but session is still at breakeven or below — next stake stays at base ($${base.toFixed(2)}) until the session is genuinely in profit.`;
+    }
     return `Base stake — a win banks its profit as the next stake; your $${base.toFixed(2)} base is never re-risked once a streak starts.`;
   }
   if (streak >= maxEscalations) {
@@ -1105,7 +1114,7 @@ function checkEscalatingSessionEnd(session, mode, settings, now = Date.now()) {
 function advanceEscalatingStake(style, session, outcome, pnl, balance, settings, mode) {
   if (style === 'PROFIT_LOCK') {
     const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings) };
-    const r = advanceProfitLock(state, outcome, pnl, balance, settings, mode);
+    const r = advanceProfitLock(state, outcome, pnl, balance, settings, mode, (session.sPnl || 0) + pnl);
     return { plStreak: r.streak, plNextStake: r.nextStake };
   }
   const state = { streak: session.amStreak || 0, nextStake: session.amNextStake ?? amBaseStake(balance, settings) };
@@ -6807,7 +6816,7 @@ export default function App(){
         if(isEscalatingStyle(amStyle)){
           runningBal+=t.pnl||0;
           const r=isPL
-            ?advanceProfitLock({streak,nextStake},t.outcome,t.pnl||0,runningBal,settings,sess.accountMode)
+            ?advanceProfitLock({streak,nextStake},t.outcome,t.pnl||0,runningBal,settings,sess.accountMode,sp)
             :advanceAntiMartingale({streak,nextStake},t.outcome,runningBal,settings,sess.accountMode);
           streak=r.streak;nextStake=r.nextStake;
         }
