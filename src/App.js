@@ -244,10 +244,16 @@ function toSettingsRow(userId,s){
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
-  return{riskPercent:r.risk_percent,tradeStyle:r.trade_style,
+  const s={riskPercent:r.risk_percent,tradeStyle:r.trade_style,
     sessionsPerDay:r.sessions_per_day,brokerMin:r.broker_min,milestones:r.milestones,
     apiKey:r.api_keys?.apiKey||'',groqApiKey:r.api_keys?.groqApiKey||'',setupComplete:r.setup_complete,
     createdAt:new Date(r.created_at).getTime(),...(r.extra||{})};
+  // 'gemini' was this app's original internal id for the OpenRouter provider
+  // option (a leftover name — it was never an actual Gemini model). Normalize
+  // any already-saved value so accounts that picked it before the rename
+  // don't silently land on the wrong provider tab in Settings.
+  if(s.aiProvider==='gemini')s.aiProvider='openrouter';
+  return s;
 }
 function toTradeRow(userId,t){
   return{id:t.id,user_id:userId,timestamp:new Date(t.timestamp).toISOString(),pair:t.pair,direction:t.direction,
@@ -1283,7 +1289,7 @@ const NOTE_POLISH_PROMPT=`You are a trading journal editor. Rewrite the trader's
 async function polishJournalNote(text,settings){
   const trimmed=(text||'').trim();
   if(!trimmed)return trimmed;
-  const provider=settings?.aiProvider||'gemini';
+  const provider=settings?.aiProvider||'openrouter';
   const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
   if(!key)throw new Error(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
   const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
@@ -1304,11 +1310,19 @@ async function polishJournalNote(text,settings){
 // every err.message to be fit for display.
 function userError(msg){const e=new Error(msg);e.userFacing=true;return e;}
 
+// A 429 TPM rate limit (Groq's actual error text: "Rate limit reached for
+// model..."). Distinguished from other failures because retrying it against
+// the SAME provider is pointless (same prompt size, same limit window — an
+// immediate retry fails identically) — it needs either a different token
+// budget entirely (see the cross-provider fallback in aiChat below) or an
+// honest "try again shortly" instead of presenting a deterministic fallback
+// as if it were a full synthesized one.
+function isRateLimitError(err){return /rate limit/i.test(err?.message||'');}
 // Shared text-completion call — same provider/key/url/model switch as
 // polishJournalNote, factored out since Ask needs it twice (classify, then
 // compose) instead of once.
 async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,reasoningEffort='none'}={}){
-  const provider=settings?.aiProvider||'gemini';
+  const provider=settings?.aiProvider||'openrouter';
   const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
   if(!key)throw userError(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
   const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
@@ -1320,17 +1334,31 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,
   // rather than just reporting or reformatting it.
   const body={model,messages:[{role:'user',content:prompt}],temperature,max_tokens:maxTokens,reasoning_effort:reasoningEffort};
   if(json)body.response_format={type:'json_object'};
-  const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify(body)});
-  if(!res.ok){const e=await res.json().catch(()=>({}));throw userError(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
-  const d=await res.json();
-  const txt=d.choices?.[0]?.message?.content;
-  if(!txt)throw userError('No response from AI. Try again.');
-  // finish_reason:'length' means the API stopped mid-generation because
-  // max_tokens was hit, not because the model was actually done — callers
-  // that show this to the user need to know, or a cut-off reply looks
-  // finished and a "continue" follow-up has nothing to anchor to (see
-  // CONVERSATION_HISTORY handling in the Ask classify/compose prompts).
-  return{text:txt.trim(),truncated:d.choices?.[0]?.finish_reason==='length'};
+  try{
+    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify(body)});
+    if(!res.ok){const e=await res.json().catch(()=>({}));throw userError(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
+    const d=await res.json();
+    const txt=d.choices?.[0]?.message?.content;
+    if(!txt)throw userError('No response from AI. Try again.');
+    // finish_reason:'length' means the API stopped mid-generation because
+    // max_tokens was hit, not because the model was actually done — callers
+    // that show this to the user need to know, or a cut-off reply looks
+    // finished and a "continue" follow-up has nothing to anchor to (see
+    // CONVERSATION_HISTORY handling in the Ask classify/compose prompts).
+    return{text:txt.trim(),truncated:d.choices?.[0]?.finish_reason==='length'};
+  }catch(err){
+    // Groq's free-tier TPM ceiling is a hard platform limit, not something
+    // worth waiting out — OpenRouter draws from a completely separate token
+    // budget, so a free OpenRouter key sidesteps it entirely instead of
+    // surfacing the rate limit or falling back to a canned recap. Gated on
+    // provider==='groq' so the recursive call (forced to OpenRouter) can
+    // never re-trigger this branch — no separate guard flag needed.
+    if(provider==='groq'&&isRateLimitError(err)&&settings?.apiKey){
+      console.error('Groq rate-limited, falling back to OpenRouter (free model):',err);
+      return aiChat(prompt,{...settings,aiProvider:'openrouter'},{json,maxTokens,temperature,reasoningEffort});
+    }
+    throw err;
+  }
 }
 // 'none' is the only reasoning_effort value every call site has actually
 // exercised successfully — 'low'/'high' are unverified against whatever
@@ -1340,13 +1368,6 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,
 // answer — and log loudly either way, since silently swallowing this into a
 // deterministic fallback (the previous behavior) makes a broken AI call
 // indistinguishable from the AI just being terse.
-// A 429 TPM rate limit (Groq's actual error text: "Rate limit reached for
-// model..."). Distinguished from other failures because retrying it is
-// pointless (same prompt size, same limit window — an immediate retry
-// fails identically) and because callers may want to tell the user WHY an
-// answer came back thin, instead of presenting a deterministic fallback as
-// if it were a full synthesized one.
-function isRateLimitError(err){return /rate limit/i.test(err?.message||'');}
 async function aiChatResilient(prompt,settings,opts){
   try{return await aiChat(prompt,settings,opts);}
   catch(err){
@@ -1453,6 +1474,78 @@ const MM_STYLES_KNOWLEDGE=`TheGiftedMan money management styles — the ONLY thr
 - Fixed Risk % — same stake every trade (a % of balance or a fixed dollar amount), never escalates. Session ends via Trade Management's own rules (session duration, max trades, consecutive-loss stop).
 - Anti-Martingale — a win escalates the stake by a configured multiplier, up to a max-escalations cap and a % of balance ceiling; any loss resets to base. Session ends on its own profit target, loss target, or max trades.
 - Profit Lock — a win stakes ONLY the profit just banked (never original capital), up to a max-escalations cap and ceiling; any loss resets to base. A win that leaves the session's cumulative P&L still <=0 does NOT escalate — stays at base until the session is genuinely in profit. Session ends on its own profit target, loss target, or max trades.`;
+
+// Quiz mode — deliberately separate from the coach's normal classify→facts→
+// compose pipeline: it needs a DEFINITE correct answer (not open-ended
+// judgment) so the app can grade it in code, never by trusting the model to
+// self-report right/wrong. There's no image generation in this app, so a
+// "chart" here is a prose description of candle structure — grounded in
+// PLAYBOOK's own rules, same as everything else this coach teaches from.
+// The target strategy and the Market Cycle Confirmation overlay are picked
+// client-side (see QUIZ_STRATEGY_POOL/pickQuizStrategy below) for real
+// variety across questions, rather than trusting the model to self-vary.
+const QUIZ_STRATEGY_POOL=['Break & Retest — Immediate','Break & Retest — Delayed','Engulfing Reversal','Double Top/Bottom','3-Candle Continuation','Inside Bar Breakout','S&D Zone Retest','Fakeout Reversal'];
+const QUIZ_MCC_ELIGIBLE=new Set(['Break & Retest — Delayed','Double Top/Bottom','S&D Zone Retest']);
+const QUIZ_OPTIONS=['BUY, 1 min expiry','BUY, 2 min expiry','SELL, 1 min expiry','SELL, 2 min expiry','No trade — setup invalid'];
+function pickQuizStrategy(){
+  const strategy=QUIZ_STRATEGY_POOL[Math.floor(Math.random()*QUIZ_STRATEGY_POOL.length)];
+  const includeMcc=QUIZ_MCC_ELIGIBLE.has(strategy)&&Math.random()<0.3;
+  return{strategy,includeMcc};
+}
+function buildQuizPrompt(strategy,includeMcc){
+  const mccNote=includeMcc?` This scenario should also include a full Market Cycle Confirmation structure (a Motive Wave into the zone/level, a Counter Wave — pin bar/engulfing, a Last Effort candle failing to break the Counter Wave's high/low, then a New Motive candle) woven naturally into the prose — it strengthens the case for entry, and your explanation should call it out by name.`:'';
+  return`You are building ONE multiple-choice training question for a binary options trader, testing "${strategy}" from TheGiftedMan Price Action Playbook below.
+
+Write a realistic 1-minute-chart scenario in prose (3-5 sentences, describing candle structure and price action only — no chart image, this is text-only) that matches "${strategy}"'s actual entry rules from PLAYBOOK. About half the time, deliberately make the scenario a NEAR-MISS that violates one of this setup's own "avoid" conditions (state the violation naturally in the prose, don't label it as a trick) — the correct answer for those is "No trade — setup invalid".${mccNote}
+
+The 5 answer options, in this fixed order, are: ${JSON.stringify(QUIZ_OPTIONS)}. Pick correctIndex using "${strategy}"'s own expiry from PLAYBOOK (1 or 2 min) for whichever direction is correct if the scenario is valid, or index 4 if it's invalid.
+
+Respond ONLY with JSON, no markdown: {"scenario":"...","correctIndex":0-4,"explanation":"2-3 sentences citing the specific rule(s) from PLAYBOOK that made this valid or invalid"}
+
+PLAYBOOK:
+${PRICE_ACTION_PLAYBOOK}
+`;
+}
+function shuffle(arr){
+  const a=[...arr];
+  for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}
+  return a;
+}
+// The setup name is deliberately withheld from the trader until AFTER they
+// answer this — recognizing WHICH setup a scenario shows is half the real
+// skill (the other half is the direction/expiry decision, see QUIZ_OPTIONS
+// above); telling them upfront which strategy is being tested reduces the
+// whole quiz to just the decision half. 3 distractors + the real answer,
+// shuffled — even an intentionally-invalid near-miss scenario is still
+// testing recognition of the setup it's ATTEMPTING, so the real strategy is
+// always one of the 4 options regardless of whether the trade itself is valid.
+function buildPatternOptions(correctStrategy){
+  const distractors=shuffle(QUIZ_STRATEGY_POOL.filter(s=>s!==correctStrategy)).slice(0,3);
+  const options=shuffle([correctStrategy,...distractors]);
+  return{patternOptions:options,patternCorrectIndex:options.indexOf(correctStrategy)};
+}
+async function generateQuizQuestion(settings){
+  const{strategy,includeMcc}=pickQuizStrategy();
+  const{text}=await aiChatResilient(buildQuizPrompt(strategy,includeMcc),settings,{json:true,maxTokens:500,temperature:0.8,reasoningEffort:'low'});
+  let parsed;
+  try{parsed=JSON.parse(text.replace(/```json|```/g,'').trim());}
+  catch{throw userError('Could not build a quiz question. Try again.');}
+  if(!parsed.scenario||!Number.isInteger(parsed.correctIndex))throw userError('Could not build a quiz question. Try again.');
+  const{patternOptions,patternCorrectIndex}=buildPatternOptions(strategy);
+  return{strategy,scenario:parsed.scenario,correctIndex:parsed.correctIndex,explanation:parsed.explanation||'',options:QUIZ_OPTIONS,patternOptions,patternCorrectIndex};
+}
+// Rewrites an already-generated scenario for clarity only — the correct
+// answer was already fixed at generation time (correctIndex/explanation),
+// so this must never be allowed to change what actually happened in the
+// scenario, only how plainly it's described. A plain-text response (not
+// JSON) since there's nothing structured to parse out of a rewrite.
+const QUIZ_POLISH_PROMPT=`Rewrite this trading quiz scenario to be clearer and easier to visualize — plain, concrete, candle-by-candle language, in the order things happen. Do NOT add, remove, or change any candle, direction, size, or outcome described — every fact that determines the correct answer must stay exactly as it was, only the wording may improve. Keep it roughly the same length (3-6 sentences). Respond with ONLY the rewritten scenario text — no JSON, no quotes, no preamble.
+
+Original scenario: `;
+async function polishQuizScenario(originalScenario,settings){
+  const{text}=await aiChatResilient(`${QUIZ_POLISH_PROMPT}${originalScenario}`,settings,{maxTokens:300,temperature:0.3,reasoningEffort:'low'});
+  return text.trim();
+}
 
 // General trading education — deliberately separate from ASK_COMPOSE_PROMPT
 // (which is only ever allowed to cite FACTS) since this path has no user
@@ -2259,7 +2352,7 @@ function Setup({onDone}){
   const[step,setStep]=useState(1);
   const[loading,setLoading]=useState(false);
   const[error,setError]=useState('');
-  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'gemini',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS,alertVolume:ALERT_VOLUME_DEFAULT});
+  const[f,sf]=useState({apiKey:'',groqApiKey:'',aiProvider:'openrouter',startingBalanceDemo:'',startingBalanceReal:'',riskPercent:5,tradeStyle:1,tradeStyleDemo:1,tradeStyleReal:1,sessionsPerDay:2,brokerMin:10,milestones:DEF_MS,alertVolume:ALERT_VOLUME_DEFAULT});
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
 
   async function finish(){
@@ -3154,7 +3247,7 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
     setMime(file.type||'image/png');
   }
 
-  const provider=settings.aiProvider||'gemini';
+  const provider=settings.aiProvider||'openrouter';
   const activeKey=provider==='groq'?settings.groqApiKey:settings.apiKey;
 
   async function analyze(){
@@ -5421,6 +5514,13 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   // newest history entry restores it instead of leaving the input blank.
   const[historyIdx,setHistoryIdx]=useState(null);
   const draftRef=useRef('');
+  // Quiz mode — deliberately ephemeral (score/questions live only in this
+  // component's state, never written to Supabase): quiz turns are rendered
+  // as messages with a `quiz` field but never passed through
+  // persistAndShow, so they scroll naturally in the same feed as real
+  // chat without touching query history or needing a new table.
+  const[quizActive,setQuizActive]=useState(false);
+  const[quizScore,setQuizScore]=useState({correct:0,total:0});
 
   useEffect(()=>{
     if(!userId)return;
@@ -5439,6 +5539,8 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     setMessages([]);
     setInput('');
     setHistoryIdx(null);
+    setQuizActive(false);
+    setQuizScore({correct:0,total:0});
   }
 
   function handleInputKeyDown(e){
@@ -5607,6 +5709,63 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     }finally{setBusy(false);}
   }
 
+  // Quiz mode — a scenario+options message is pushed straight onto
+  // `messages` (never through persistAndShow/Supabase, see the quizActive
+  // state comment above). Grading happens entirely in this component: the
+  // AI only supplies the scenario and the correct index up front, so
+  // answerQuiz is a pure local comparison, not another AI call.
+  async function startQuiz(){
+    if(busy)return;
+    setQuizActive(true);
+    setQuizScore({correct:0,total:0});
+    await nextQuizQuestion();
+  }
+  async function nextQuizQuestion(){
+    setBusy(true);
+    try{
+      const q=await generateQuizQuestion(settings);
+      setMessages(m=>[...m,{id:uid(),role:'assistant',quiz:{...q,patternAnswered:false,patternChosenIndex:null,answered:false,chosenIndex:null}}]);
+    }catch(err){appendError(err);}
+    finally{setBusy(false);}
+  }
+  // Phase 1: which setup does this resemble? Answerable the instant the
+  // scenario is shown — this is the recognition half of the skill.
+  function answerQuizPattern(msgId,chosenIndex){
+    setMessages(m=>m.map(msg=>{
+      if(msg.id!==msgId||!msg.quiz||msg.quiz.patternAnswered)return msg;
+      const correct=chosenIndex===msg.quiz.patternCorrectIndex;
+      setQuizScore(s=>({correct:s.correct+(correct?1:0),total:s.total+1}));
+      return{...msg,quiz:{...msg.quiz,patternAnswered:true,patternChosenIndex:chosenIndex}};
+    }));
+  }
+  // Phase 2: given the (now-revealed) setup, what's the trading decision?
+  // Gated on patternAnswered so the decision options can't be reached before
+  // the recognition question is answered.
+  function answerQuiz(msgId,chosenIndex){
+    setMessages(m=>m.map(msg=>{
+      if(msg.id!==msgId||!msg.quiz||!msg.quiz.patternAnswered||msg.quiz.answered)return msg;
+      const correct=chosenIndex===msg.quiz.correctIndex;
+      setQuizScore(s=>({correct:s.correct+(correct?1:0),total:s.total+1}));
+      return{...msg,quiz:{...msg.quiz,answered:true,chosenIndex}};
+    }));
+  }
+  function endQuiz(){setQuizActive(false);}
+  // Rewrites the scenario in place without touching correctIndex/explanation
+  // or resetting either phase's answer — a clarity pass, not a new question.
+  // Only meaningful before the setup is identified (once patternAnswered,
+  // the strategy name is already on screen, so wording matters less) — but
+  // guard here too in case of a stray double-click race.
+  async function polishQuiz(msgId){
+    const msg=messages.find(m=>m.id===msgId);
+    if(!msg?.quiz||msg.quiz.patternAnswered||busy)return;
+    setBusy(true);
+    try{
+      const scenario=await polishQuizScenario(msg.quiz.scenario,settings);
+      setMessages(m=>m.map(x=>x.id===msgId?{...x,quiz:{...x.quiz,scenario}}:x));
+    }catch(err){appendError(err);}
+    finally{setBusy(false);}
+  }
+
   // Shared by the form submit and the empty-state suggestion chips — chips
   // ask directly (no side effects to gate, just a read-only question) rather
   // than only pre-filling the input, for a snappier one-tap on-ramp.
@@ -5660,8 +5819,14 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
           <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>Ask</div>
           <span style={{fontSize:10,fontWeight:700,letterSpacing:'0.04em',padding:'2px 8px',borderRadius:999,background:'var(--bg-accent)',color:'var(--text-accent)',border:'1px solid var(--border-accent)'}}>AI COACH</span>
         </div>
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+          {quizActive&&<span style={{fontSize:12,color:'var(--text-secondary)'}}>Quiz score: {quizScore.correct}/{quizScore.total}</span>}
           {messages.length>0&&<button style={btn()} onClick={startNewChat} disabled={busy}>New chat</button>}
+          {quizActive?(
+            <button style={btn()} onClick={endQuiz} disabled={busy}>End quiz</button>
+          ):(
+            <button style={btn()} onClick={startQuiz} disabled={busy}><Zap size={14}/>Quiz me</button>
+          )}
           <button style={btn()} onClick={handleSurface} disabled={busy}><Sparkles size={14}/>Surface something interesting</button>
         </div>
       </div>
@@ -5690,7 +5855,67 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
           {messages.map(m=>(
             <div key={m.id} className="msg-in" style={{display:'flex',gap:8,alignSelf:m.role==='user'?'flex-end':'flex-start',maxWidth:'min(85%,640px)',flexDirection:m.role==='user'?'row-reverse':'row'}}>
               {m.role==='assistant'&&<CoachAvatar/>}
-              {m.clarify?(
+              {m.quiz?(
+                <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'14px 16px',boxShadow:'var(--shadow-card)',maxWidth:480}}>
+                  <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.04em',color:'var(--text-accent)',marginBottom:8}}>QUIZ{m.quiz.patternAnswered?` — ${m.quiz.strategy}`:''}</div>
+                  <div style={{fontSize:13,color:'var(--text-primary)',marginBottom:6,lineHeight:1.55}}>{m.quiz.scenario}</div>
+                  {!m.quiz.patternAnswered&&(
+                    <button type="button" onClick={()=>polishQuiz(m.id)} disabled={busy}
+                      style={{fontSize:11,color:'var(--text-accent)',background:'none',border:'none',padding:0,marginBottom:12,cursor:busy?'default':'pointer'}}>
+                      Polish / simplify wording
+                    </button>
+                  )}
+
+                  <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginTop:10,marginBottom:6}}>1. Which setup does this resemble?</div>
+                  <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                    {m.quiz.patternOptions.map((opt,i)=>{
+                      const isChosen=m.quiz.patternChosenIndex===i;
+                      const isCorrect=i===m.quiz.patternCorrectIndex;
+                      const s=m.quiz.patternAnswered;
+                      return(
+                        <button key={i} disabled={s||busy} onClick={()=>answerQuizPattern(m.id,i)}
+                          style={{textAlign:'left',padding:'8px 12px',borderRadius:8,fontSize:13,
+                            cursor:s?'default':'pointer',
+                            border:'1px solid '+(s&&isCorrect?'var(--border-success)':s&&isChosen?'var(--border-danger)':'var(--border)'),
+                            background:s&&isCorrect?'var(--bg-success)':s&&isChosen?'var(--bg-danger)':'var(--surface-0)',
+                            color:'var(--text-primary)'}}>
+                          {opt}{s&&isCorrect?' ✓':s&&isChosen&&!isCorrect?' ✗':''}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {m.quiz.patternAnswered&&(
+                    <>
+                      <div style={{fontSize:12,fontWeight:600,color:'var(--text-primary)',marginTop:14,marginBottom:6}}>2. What's your trading decision?</div>
+                      <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                        {m.quiz.options.map((opt,i)=>{
+                          const isChosen=m.quiz.chosenIndex===i;
+                          const isCorrect=i===m.quiz.correctIndex;
+                          const s=m.quiz.answered;
+                          return(
+                            <button key={i} disabled={s||busy} onClick={()=>answerQuiz(m.id,i)}
+                              style={{textAlign:'left',padding:'8px 12px',borderRadius:8,fontSize:13,
+                                cursor:s?'default':'pointer',
+                                border:'1px solid '+(s&&isCorrect?'var(--border-success)':s&&isChosen?'var(--border-danger)':'var(--border)'),
+                                background:s&&isCorrect?'var(--bg-success)':s&&isChosen?'var(--bg-danger)':'var(--surface-0)',
+                                color:'var(--text-primary)'}}>
+                              {opt}{s&&isCorrect?' ✓':s&&isChosen&&!isCorrect?' ✗':''}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  {m.quiz.answered&&(
+                    <>
+                      <div style={{marginTop:10,fontSize:12,color:'var(--text-secondary)',lineHeight:1.5}}>{m.quiz.explanation}</div>
+                      {quizActive&&<button style={{...btn('pri'),marginTop:10}} onClick={nextQuizQuestion} disabled={busy}>Next question</button>}
+                    </>
+                  )}
+                </div>
+              ):m.clarify?(
                 <div style={{background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'12px 14px',boxShadow:'var(--shadow-card)'}}>
                   <div style={{fontSize:13,color:'var(--text-primary)',marginBottom:10}}>Are you asking about your Demo or Real account?</div>
                   <div style={{display:'flex',gap:8}}>
@@ -5969,11 +6194,11 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
           <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:10}}>Not set up yet — only needed if you want to use the Zone Analyzer's AI grading. Everything else in the app works without one.</p>
         )}
         <div style={{display:'flex',gap:8,marginBottom:14,marginTop:f.apiKey||f.groqApiKey?8:0}}>
-          {[{id:'gemini',label:'OpenRouter'},{id:'groq',label:'Groq'}].map(p=>(
-            <button key={p.id} style={{...btn((f.aiProvider||'gemini')===p.id?'pri':'def'),flex:1}} onClick={()=>set('aiProvider',p.id)}>{p.label}</button>
+          {[{id:'openrouter',label:'OpenRouter'},{id:'groq',label:'Groq'}].map(p=>(
+            <button key={p.id} style={{...btn((f.aiProvider||'openrouter')===p.id?'pri':'def'),flex:1}} onClick={()=>set('aiProvider',p.id)}>{p.label}</button>
           ))}
         </div>
-        {(f.aiProvider||'gemini')==='gemini'?(
+        {(f.aiProvider||'openrouter')==='openrouter'?(
           <div>
             <label style={lbl}>OpenRouter API key</label>
             <input style={inp} type="password" placeholder="sk-or-v1-..." value={f.apiKey||''} onChange={e=>set('apiKey',e.target.value)}/>

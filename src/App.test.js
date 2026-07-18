@@ -551,7 +551,7 @@ describe('Analyzer screenshot upload', () => {
 
     render(
       <Analyzer
-        settings={{ aiProvider: 'gemini', riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [] }}
+        settings={{ aiProvider: 'openrouter', riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [] }}
         ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: { dailyLosses: 0, isDailyLocked: false, lastEnd: null }, REAL: { dailyLosses: 0, isDailyLocked: false, lastEnd: null } } }}
         saveAnalyses={jest.fn()}
         analyses={[]}
