@@ -83,7 +83,17 @@ const DEF_MS = [
   {mul:10,pct:35},{mul:20,pct:40},{mul:50,pct:50},
 ];
 
-const PROMPT = `You are an expert supply and demand zone validator for binary options trading (TheGiftedMan S&D Precision Entry System). Analyze the chart image and evaluate the zone drawn or the most prominent zone visible.
+const PROMPT = `You are an expert chart analyst for binary options trading, covering TWO distinct systems: TheGiftedMan S&D Precision Entry System (supply/demand zones) and TheGiftedMan Price Action Playbook (7 support/resistance and candle-structure setups). Analyze the chart image and determine which system actually applies BEFORE evaluating anything else.
+
+STEP 0 — ZONE CATEGORY CLASSIFICATION (do this first, before any gate or checklist evaluation):
+Determine whether the chart shows:
+(a) SUPPLY_DEMAND — a base-and-departure structure: a tight multi-candle consolidation ("base") that price rallied or dropped INTO, then departed AWAY from with a strong impulsive candle, and has now returned to. This is what the 10-gate system below evaluates.
+(b) SUPPORT_RESISTANCE — a single tested/broken horizontal level, OR a candlestick pattern (engulfing candle, double top/bottom, inside bar, 3-candle pause-and-continue, or a failed breakout) with no multi-candle consolidation "base" launching a move. This is what the 6-strategy playbook below evaluates.
+If genuinely ambiguous, prefer SUPPLY_DEMAND only when a clear base-and-departure structure is visible; otherwise use SUPPORT_RESISTANCE and identify the specific matching strategy. Set zoneCategory to whichever you determine, and follow ONLY that path's instructions below.
+
+═══════════════════════════════════════════════════════════════════
+PATH A — SUPPLY_DEMAND (follow this section only if zoneCategory=SUPPLY_DEMAND)
+═══════════════════════════════════════════════════════════════════
 
 ZONE TYPES:
 - Supply (RBD): Rally-Base-Drop → SELL
@@ -134,10 +144,72 @@ CLASSIFICATION LOGIC — apply in this exact order:
 
 SELF-CHECK — before returning your final answer, review your own gate results. If you marked 8 or more gates as PASS, re-examine Gates 1, 2, and 5 specifically, as these are the most commonly over-graded criteria. Confirm your reasoning for each PASS is based on clear visual evidence, not assumption.
 
+═══════════════════════════════════════════════════════════════════
+PATH B — SUPPORT_RESISTANCE (follow this section only if zoneCategory=SUPPORT_RESISTANCE)
+═══════════════════════════════════════════════════════════════════
+
+First identify which ONE of these 6 setups the chart matches (they are mutually exclusive — pick the single best match). Each one lists its own 5-item checklist, built directly from its entry rules and its own disqualifying conditions. Exactly as with the S&D gates above: this is a strict filter, not a grader on a curve — when in doubt on any item, FAIL it, and every justification must cite what you actually observe in the image.
+
+1. BREAK & RETEST (level flip — old resistance becomes support, or vice versa; entry on the retest):
+   1. [HARD] The level has been touched/bounced off at least twice before this break (a proven level, not touched only once).
+   2. [HARD] A strong, decisive candle breaks and closes beyond the level (not small or indecisive).
+   3. Price pulls back and genuinely touches the level from the breakout side (a real retest, not skipping past it).
+   4. A clear rejection candle forms at the retest — long wick or small body closing back in the breakout direction (not choppy, overlapping candles with no clear rejection).
+   5. Price does not slice straight through the retest with no pause or wick rejection.
+
+2. ENGULFING CANDLE REVERSAL (a candle whose body fully covers the prior candle's body, signaling a forceful shift in control):
+   1. [HARD] A short directional move to a new high/low exists immediately before this candle (not forming mid-range with no move to reverse).
+   2. [HARD] The reversal candle's body completely engulfs the prior candle's body (a partial cover does not count).
+   3. The engulfed candle is a real directional candle, not a tiny doji/nothing-candle.
+   4. The engulfing candle closes convincingly in the new direction, a strong close.
+   5. Entry would be taken at the engulfing candle's own close, not earlier.
+
+3. DOUBLE TOP / DOUBLE BOTTOM (price fails at the same level twice; the second failed attempt signals the level is defended):
+   1. [HARD] The second test fails to close beyond the first high/low (a close beyond it is continuation, not a reversal signal — this disqualifies the setup).
+   2. [HARD] A clear rejection candle forms at the second touch confirming the level held.
+   3. The two touches are meaningfully separated in time, not just 1-2 candles apart (a genuine retest, not noise).
+   4. The first touch was itself a real reaction — a bounce or pullback, not a random candle.
+   5. Entry would be taken at the rejection candle's close on the second touch.
+
+4. 3-CANDLE MOMENTUM CONTINUATION (a brief pause inside a strong directional run, entered as the trend resumes — with-trend only):
+   1. [HARD] 3 or more consecutive same-direction candles exist immediately before — a genuine directional run, not choppy or overlapping.
+   2. [HARD] The breakout candle actually closes beyond the pause candle's high/low in the trend direction.
+   3. At most one or two small pause candles form — not a large opposite-direction candle (that would signal a reversal, not a pause).
+   4. The pause candle has a small body and minimal progress against the trend.
+   5. Entry would be taken at the breakout candle's own close.
+
+5. INSIDE BAR BREAKOUT (a candle fully contained within the prior candle's range, signaling contraction before expansion):
+   1. [HARD] The inside bar candle forms entirely within the range of the prior "mother" candle.
+   2. [HARD] The breakout candle actually closes beyond the inside bar's high/low (closing back inside the range is a failed break, not a signal).
+   3. The mother candle itself has real size/range — not tiny (a squeeze inside noise carries no information).
+   4. There is not a long stack of multiple inside bars with no breakout yet (still consolidating, not yet a signal).
+   5. Entry would be taken at the breakout candle's own close.
+
+6. FAKEOUT REVERSAL (price pokes through a level to trap breakout traders, then reverses hard the other way):
+   1. [HARD] A genuine prior level existed that price actually broke through (not a random poke with nothing established before).
+   2. [HARD] The breakout candle through the level was weak — small body, long wicks, or choppy (a large, strong break is likely real, not a fakeout).
+   3. The break showed no real follow-through or continuation before reversing.
+   4. The reversal candle is strong and convincingly crosses back through the level.
+   5. The reversal happens within roughly 3-4 candles of the break (much longer than that reads as a new trend, not a trap).
+
+GRADING (Path B) — score = count of PASS out of that strategy's 5 items:
+   5/5 → "A+"   4/5 → "A"   3/5 → "B"   2/5 → "C"   1/5 or 0/5, OR any [HARD] item failed → "INVALID" (a failed hard-filter item is automatically INVALID regardless of the other four, same rule as Path A's hard filters).
+
+When uncertain whether any checklist item meets its strict threshold, default to FAIL, not PASS — these exist specifically to reject borderline setups, same discipline as the S&D gates.
+
+═══════════════════════════════════════════════════════════════════
+BOTH PATHS
+═══════════════════════════════════════════════════════════════════
+
 Also read the trading pair from the chart header if visible. If the pair is not clearly legible, set detectedPair to "UNKNOWN" — never guess.
 
-Respond ONLY with JSON (no markdown, no backticks). gateResults must contain exactly 10 entries in gate order, each with gate, label, isHardFilter, pass, justification. hardFilterFailed, hardFilterFailures, score, and grade must all be consistent with the gate results and the classification logic above. departureDirection must be "UP" or "DOWN" based on your own visual reading of which way price moved away from the base (step 4 above), and must agree with zoneType/direction:
-{"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","departureDirection":"DOWN","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}`;
+Respond ONLY with JSON (no markdown, no backticks), matching ONE of the two shapes below depending on zoneCategory. Both shapes share the same field names (zoneType, direction, gateResults, hardFilterFailed, hardFilterFailures, score, grade, verdict, recommendation, confidence, keyStrengths, keyWeaknesses, executionAdvice, summary) so the app can render either one identically — gateResults holds exactly 10 entries for SUPPLY_DEMAND (as specified in Path A) or exactly 5 entries for SUPPORT_RESISTANCE (as specified in Path B, numbered 1-5, for whichever single strategy matched). zoneType and matchedStrategy both carry the matched strategy's name for SUPPORT_RESISTANCE (e.g. "Break & Retest") so existing S&D-oriented display fields still read correctly; matchedStrategy is null for SUPPLY_DEMAND. departureDirection is only meaningful for SUPPLY_DEMAND (must be "UP" or "DOWN", agreeing with zoneType/direction per step 4/5 of Path A) — set it to null for SUPPORT_RESISTANCE, which has no base/departure concept.
+
+Example — SUPPLY_DEMAND:
+{"zoneCategory":"SUPPLY_DEMAND","matchedStrategy":null,"detectedPair":"USD/JPY OTC","zoneType":"Supply (RBD)","direction":"SELL","departureDirection":"DOWN","gateResults":[{"gate":1,"label":"Base Structure","isHardFilter":false,"pass":true,"justification":"Tight 2-candle base at the origin"},{"gate":2,"label":"Departure Strength","isHardFilter":true,"pass":true,"justification":"Body ~85% of range, ~2x the preceding 5-candle average, closes at its low"},{"gate":3,"label":"Break of Structure","isHardFilter":true,"pass":true,"justification":"Departure breaks the prior swing low"},{"gate":4,"label":"Freshness","isHardFilter":true,"pass":true,"justification":"No retest of the proximal line since formation"},{"gate":5,"label":"Trend Alignment","isHardFilter":true,"pass":true,"justification":"Lower highs and lower lows visible, clearly trending down"},{"gate":6,"label":"Zone Location","isHardFilter":false,"pass":true,"justification":"Formed right after a liquidity sweep of the prior low"},{"gate":7,"label":"Distance Ratio","isHardFilter":false,"pass":true,"justification":"Travel is ~4x the zone width"},{"gate":8,"label":"Compact Zone","isHardFilter":false,"pass":false,"justification":"Zone width is ~40% of the departure move, wider than allowed"},{"gate":9,"label":"Return Quality","isHardFilter":false,"pass":true,"justification":"Small overlapping candles fading into the zone"},{"gate":10,"label":"No Conflicting Structure","isHardFilter":false,"pass":true,"justification":"No opposing zone in the likely price path"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":9,"grade":"A","verdict":"VALID","recommendation":"TRADE","confidence":81,"keyStrengths":["Fresh zone","Explosive departure","Clean break of structure"],"keyWeaknesses":["Zone wider than the compact-zone threshold"],"executionAdvice":"Watch the live 10-second chart at the proximal line for your own Tier 1 confirmation before entering SELL.","summary":"9 of 10 gates passed, all hard filters cleared — Grade A."}
+
+Example — SUPPORT_RESISTANCE:
+{"zoneCategory":"SUPPORT_RESISTANCE","matchedStrategy":"Break & Retest","detectedPair":"EUR/USD OTC","zoneType":"Break & Retest","direction":"BUY","departureDirection":null,"gateResults":[{"gate":1,"label":"Proven level (2+ prior touches)","isHardFilter":true,"pass":true,"justification":"Level was tested twice before this break, both bounces visible"},{"gate":2,"label":"Strong decisive breakout candle","isHardFilter":true,"pass":true,"justification":"Large-bodied bullish candle closes well above the level"},{"gate":3,"label":"Genuine retest of the level","isHardFilter":false,"pass":true,"justification":"Price pulls back and touches the level from above"},{"gate":4,"label":"Clear rejection candle at retest","isHardFilter":false,"pass":true,"justification":"Long lower wick closing back upward at the level"},{"gate":5,"label":"No slice-through at retest","isHardFilter":false,"pass":true,"justification":"Price paused and rejected rather than cutting straight through"}],"hardFilterFailed":false,"hardFilterFailures":[],"score":5,"grade":"A+","verdict":"VALID","recommendation":"TRADE","confidence":78,"keyStrengths":["Proven level with 2 prior touches","Decisive breakout","Clean rejection at retest"],"keyWeaknesses":[],"executionAdvice":"Enter CALL at the rejection candle's close; this playbook was validated at a 1-minute chart with 2-minute expiry — if trading a different expiry, treat the same level-flip logic as a reasoned extrapolation, not a separately validated setup.","summary":"5 of 5 Break & Retest checklist items passed — Grade A+."}`;
 
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 
@@ -288,18 +360,30 @@ async function maybeMigrateLocal(userId){
     alert('Import complete — your local data is now saved to your account.');
   }catch(e){console.error(e);alert('Import failed: '+e.message+'. Your local data was left untouched.');}
 }
-// The two reserved strategies every user gets on first load — fixed ids so
+// The reserved strategies every user gets on first load — fixed ids so the
 // Zone Analyzer's auto-log path can tag 'zone-sd' directly, no name lookup.
+// The 6 price-action entries are the app's core curriculum (TheGiftedMan
+// Price Action Playbook) — every user gets them from day one, same as
+// Zone (S&D)/Trend-Pattern, not an opt-in import. Strategy #6 from the
+// playbook itself, "S&D Zone Retest," isn't a 7th entry here — it maps
+// directly onto the existing Zone (S&D) analyzer path (see PROMPT's Path A/B
+// split), so adding a separate entry for it would just duplicate 'zone-sd'.
 const BUILTIN_STRATEGIES=[
   {id:'zone-sd',name:'Zone (S&D)'},
   {id:'trend-pattern',name:'Trend/Pattern'},
+  {id:'break-retest',name:'Break & Retest',description:'Level flip entry: an old resistance/support level breaks, price retests it, a rejection candle confirms the flip. Best in trending markets; avoid ranging conditions or a weak/indecisive breakout candle.'},
+  {id:'engulfing-reversal',name:'Engulfing Reversal',description:"A candle whose body fully engulfs the prior candle's body after a short directional move, signaling a forceful shift in control. Best in ranging markets or at trend exhaustion; avoid strong mid-trend."},
+  {id:'double-top-bottom',name:'Double Top / Bottom',description:'Price fails at the same level twice; the second failed attempt confirms the level is defended. Best in ranging markets or at trend exhaustion; avoid strong mid-trend.'},
+  {id:'three-candle-continuation',name:'3-Candle Continuation',description:'A brief pause inside a strong directional run, entered as the trend resumes on a break of the pause candle. With-trend only — best in strong trending markets; avoid ranging.'},
+  {id:'inside-bar-breakout',name:'Inside Bar Breakout',description:"A candle fully contained within the prior candle's range, entered on the break of that range. Works either direction with the trend; avoid counter-trend breaks."},
+  {id:'fakeout-reversal',name:'Fakeout Reversal',description:'A weak breakout through a level with no follow-through, then a strong reversal back through it — a failed-breakout trap. Best in ranging markets/at level boundaries; avoid strong trending moves where breaks are usually real.'},
 ];
 async function ensureBuiltinStrategies(userId){
   const{data,error}=await supabase.from('strategies').select('id').eq('user_id',userId).in('id',BUILTIN_STRATEGIES.map(s=>s.id));
   if(error)return;
   const existing=new Set((data||[]).map(r=>r.id));
   const missing=BUILTIN_STRATEGIES.filter(s=>!existing.has(s.id))
-    .map(s=>({id:s.id,user_id:userId,name:s.name,description:null,is_builtin:true,archived:false}));
+    .map(s=>({id:s.id,user_id:userId,name:s.name,description:s.description||null,is_builtin:true,archived:false}));
   if(missing.length)await supabase.from('strategies').insert(missing);
 }
 const tod=()=>new Date().toLocaleDateString('en-CA');
@@ -1140,7 +1224,13 @@ function useNowTick(intervalMs){
   return now;
 }
 
+// SUPPORT_RESISTANCE results have no base/departure concept (most of the 6
+// playbook strategies aren't about a launch move at all — a double top, an
+// inside bar, a fakeout), so departureDirection is deliberately null for
+// them per the prompt's own instructions. Only require a real direction was
+// given; the SUPPLY_DEMAND path keeps its original strict departure-based check.
 function validateZoneDirection(r){
+  if(r.zoneCategory==='SUPPORT_RESISTANCE')return r.direction==='BUY'||r.direction==='SELL';
   const dd=r.departureDirection;
   if(dd!=='UP'&&dd!=='DOWN')return false;
   if(dd==='DOWN')return r.direction==='SELL'&&/^Supply/.test(r.zoneType||'');
@@ -1213,7 +1303,12 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,
   const d=await res.json();
   const txt=d.choices?.[0]?.message?.content;
   if(!txt)throw userError('No response from AI. Try again.');
-  return txt.trim();
+  // finish_reason:'length' means the API stopped mid-generation because
+  // max_tokens was hit, not because the model was actually done — callers
+  // that show this to the user need to know, or a cut-off reply looks
+  // finished and a "continue" follow-up has nothing to anchor to (see
+  // CONVERSATION_HISTORY handling in the Ask classify/compose prompts).
+  return{text:txt.trim(),truncated:d.choices?.[0]?.finish_reason==='length'};
 }
 // 'none' is the only reasoning_effort value every call site has actually
 // exercised successfully — 'low'/'high' are unverified against whatever
@@ -1253,15 +1348,18 @@ const ASK_CLASSIFY_PROMPT=`You are a query classifier for a trading journal app.
 
 Rules:
 - intent=TRADING_ADVISORY when the question asks for actionable guidance, coaching, or a review based on the trader's own data and patterns ("should I adjust my risk?", "how should I manage my AM style?", "am I disciplined enough?", "what should I focus on?", "review my performance", "give me a performance review", "how are my sessions going?", "should I prepare for my next session?", "what's my biggest weakness?", "how is my money management working?", "grade my trading", "what strategy should I stay consistent with?", "which strategy would you say is working best for me?", "which strategy should I focus on?", "what's my most reliable setup?"). This includes ANY question phrased as asking for the assistant's own read/opinion/recommendation grounded in the trader's data — "what would you say...", "which X would you recommend...", "what's your take on..." — not just literal "should I" phrasing.
-- intent=GENERAL_KNOWLEDGE for trading education/concept questions that do NOT ask about the trader's own data and do NOT ask for a market prediction or a live trade opinion — pure "what is/explain/how does X work" questions ("what is a supply zone?", "explain RSI", "what does OTC mean?", "what's the difference between Demand and Supply zones?", "how does binary options payout work?", "what is Anti-Martingale money management?", "what's a good risk percent for beginners in general?"). These get a real, helpful, conversational answer from general trading knowledge — never refused just because they're not about the user's own trades.
-- intent=ADVICE_OR_OPINION when the question asks for a specific market call, prediction, or live-trade opinion — "will EUR/USD go up?", "what's the best strategy for scalping?" (asking which one to pick, not what they are), "should I trade gold today?". The line vs GENERAL_KNOWLEDGE: explaining a concept is fine, predicting/recommending a specific market action is not.
+- intent=GENERAL_KNOWLEDGE for trading education/concept questions that do NOT ask about the trader's own data and do NOT ask for a market prediction or a live trade opinion — pure "what is/explain/how does X work" questions ("what is a supply zone?", "explain RSI", "what does OTC mean?", "what's the difference between Demand and Supply zones?", "how does binary options payout work?", "what is Anti-Martingale money management?", "what's a good risk percent for beginners in general?"). This ALSO covers recommending a strategy/setup from the app's own known playbook when the question has NO personal-data angle — "what strategies would you teach a complete beginner?", "which setup works best in a ranging market?", "what's the most reliable price-action strategy?", "what would you start with as a beginner?". Recommending a named, rule-based, documented strategy is knowledge, not opinion — it's fundamentally different from predicting where a market is headed. These all get a real, helpful, conversational answer — never refused just because they're not about the user's own trades, and never misrouted to ADVICE_OR_OPINION just because the word "best" or "recommend" appears.
+- intent=ADVICE_OR_OPINION ONLY when the question asks for a live market direction call, a prediction, or a go/no-go opinion on a SPECIFIC trade happening right now — "will EUR/USD go up?", "is this pair about to reverse?", "should I trade gold today?", "is now a good time to enter?". Do NOT use this for "which strategy/setup should I use" questions — those are GENERAL_KNOWLEDGE (no personal data) or TRADING_ADVISORY/STRATEGY_GUIDANCE (grounded in the trader's own data) instead, never ADVICE_OR_OPINION.
 - impliesAdvice=true whenever the question attaches a should/stop/change hook to an otherwise answerable data question ("should I stop trading Wednesdays?" -> intent=DATA_QUERY, metric=DAY_OF_WEEK, impliesAdvice=true). The data half still gets answered; only the "should" half is declined.
 - intent=DATA_QUERY for anything answerable by counting/aggregating/cross-referencing the user's own logged trades, including broad questions ("how am I doing this month") — leave metric as the closest single primary metric (e.g. WIN_RATE); the app checks other dimensions automatically.
 - intent=OUT_OF_SCOPE only for questions that have nothing to do with trading or this journal at all (general life questions, unrelated topics, requests to do something outside a trading journal's scope).
 - mode=AMBIGUOUS whenever Demo/Real isn't specified or clearly implied — do not guess or default.
 - If intent=TRADING_ADVISORY, fill advisoryType with the most relevant domain: RISK_REVIEW for risk%/edge questions, MONEY_MGMT_GUIDANCE for AM/PL/Fixed style questions, DISCIPLINE_CHECK for off-plan/following-rules questions, PERFORMANCE_REVIEW for broad review requests, SESSION_PREP for pre-session questions, STRATEGY_GUIDANCE for questions about which strategy/setup to use, favor, or stay consistent with.
-- If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to (e.g. STRATEGY_BREAKDOWN for the Structured-style example) so the app can offer that breakdown instead of just refusing.
+- If intent=ADVICE_OR_OPINION, still fill "metric" with whatever data dimension the question is closest to, if any (e.g. PAIR_BREAKDOWN for "should I trade gold today?"), so the app can offer that data alongside declining the prediction — leave it null if nothing fits.
 - "range" defaults to "ALL" if the question doesn't specify a time period.
+- CONTINUATION REQUESTS: if the question is a short, bare continuation phrase ("continue", "keep going", "go on", "finish that", "more", and similar) with no real content of its own, do NOT classify it as OUT_OF_SCOPE just because it's contentless in isolation. Look at CONVERSATION_HISTORY (if provided) — find the real question that produced the assistant's most recent answer, and classify THIS message exactly the way you would have classified THAT original question (same intent/metric/mode/range/advisoryType). If there's no CONVERSATION_HISTORY, or nothing in it looks like a cut-off answer to continue, treat it as OUT_OF_SCOPE as usual — this rule only fires for genuine continuations of a real prior exchange.
+
+CONVERSATION_HISTORY may follow below the question if this is a continuing chat.
 
 Question: `;
 
@@ -1289,6 +1387,29 @@ const ASK_COMPOSE_PROMPT=`You are a factual data-reporting assistant for a tradi
 FACTS:
 `;
 
+// TheGiftedMan Price Action Playbook — the app's core teaching curriculum.
+// Baked in as fixed knowledge (same treatment as the Zone Analyzer's own S&D
+// rules, see PROMPT above), not left to the model's general trading
+// "knowledge" — these are specific, curated setups, not folklore. Shared by
+// GENERAL_KNOWLEDGE_PROMPT (explaining a setup) and the advisory pipeline
+// (recommending one, combined with the user's own real per-strategy data).
+const PRICE_ACTION_PLAYBOOK=`TheGiftedMan Price Action Playbook — 7 rule-based setups, 1-minute chart, 2-minute expiry, no indicators, no timeframe switching:
+1. Break & Retest (level flip) — a level tested 2+ times breaks, price retests it, a rejection candle confirms the flip. Best: trending. Avoid: ranging.
+2. Engulfing Candle Reversal — a candle's body fully engulfs the prior candle's body after a short directional move. Best: ranging/trend exhaustion. Avoid: strong mid-trend.
+3. Double Top / Double Bottom — price fails at the same level twice, the second failure confirms it's defended. Best: ranging/trend exhaustion. Avoid: strong mid-trend.
+4. 3-Candle Momentum Continuation — a brief pause inside a strong run, entered as the trend resumes. With-trend only. Best: strong trending. Avoid: ranging.
+5. Inside Bar Breakout — a candle fully inside the prior candle's range, entered on the break of that range. Best: either direction with the trend. Avoid: counter-trend breaks.
+6. Supply & Demand Zone Retest — price returns to a fresh S&D zone that launched a strong move; entry on rejection at the zone. Best: trending, zone type matching the trend. Avoid: ranging, or a zone against the trend. This is the same setup the app's own Zone Analyzer grades with its full 10-gate system — treat that grading as the authoritative version of this one specifically, not this one-line summary.
+7. Fakeout Reversal — a weak breakout with no follow-through, then a strong reversal back through the level. Best: ranging/at level boundaries. Avoid: strong trending (breaks are usually real).
+
+Core rules across all 7: 1-minute candles for setup and confirmation, 2-minute expiry entered at the confirmation candle's close (never mid-candle), every setup works identically mirrored for buy/sell, no trade within 15 minutes of high-impact news, max 3-5 trades per session, stop after 2 consecutive losses.
+
+Market condition first, then pick the strategy — identify uptrend/downtrend/range/exhaustion before reaching for a setup. Using a continuation strategy in a range, or a reversal strategy against a strong trend, is the most common reason a valid-looking setup fails.
+
+Testing protocol: test one strategy at a time, 20-30 trades minimum per strategy before the win rate means anything, track rule violations (off-plan) separately from clean losses, compare against breakeven (not 50%) — at a 90% payout, breakeven is roughly 52.6%.
+
+Honesty: no setup here is a guaranteed win. These are structured, testable frameworks — not profit promises.`;
+
 // General trading education — deliberately separate from ASK_COMPOSE_PROMPT
 // (which is only ever allowed to cite FACTS) since this path has no user
 // data at all and must never pretend otherwise. Conversational and helpful
@@ -1302,6 +1423,12 @@ const GENERAL_KNOWLEDGE_PROMPT=`You are a knowledgeable, conversational trading 
 3. Never predict specific market direction, never recommend a specific live trade, entry, or exit, and never state or imply a guaranteed outcome. If asked for one, say plainly that's outside what you'll do here, and offer the general concept instead if there is one.
 4. It's fine to be opinionated about well-established trading principles (e.g. "most traders find X excessive") as long as you're not predicting a market or guaranteeing a result.
 5. Normal conversational length and tone — this isn't capped to a rigid sentence count like the data-reporting path. Be concise but natural, and feel free to ask a clarifying question if the request is genuinely ambiguous.
+6. You have access to PLAYBOOK below — the app's own curated strategy set. When asked to explain a setup, recommend a strategy, or discuss "what's profitable," ground your answer in PLAYBOOK rather than generic textbook trading knowledge.
+7. PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically. If asked about a different expiry or timeframe, you may reason about how the same underlying logic (level tests, candle structure) would likely extend there — but say explicitly, every time this comes up, that this specific expiry/timeframe was never actually validated in the document, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
+8. If CONVERSATION_HISTORY is present and its last entry is your own previous answer that reads as cut off mid-thought (ends abruptly, mid-sentence, or is marked as cut off), and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from exactly where that answer left off — do not restart, re-summarize, or repeat what was already said.
+
+PLAYBOOK:
+${PRICE_ACTION_PLAYBOOK}
 
 Question: `;
 
@@ -1318,25 +1445,36 @@ const ADVICE_OPINION_PROMPT=`You are a trading assistant inside a binary options
 3. If FACTS (their own data, when relevant to the question) is included below, you may reference it — but it answers "what have I done," never "what will the market do." Don't stretch it into a prediction.
 4. Be direct and natural declining the prediction/guarantee part specifically, in your own words — not a canned refusal line.
 5. Normal conversational length, not a rigid sentence count.
+6. If CONVERSATION_HISTORY is present and its last entry is your own previous answer that reads as cut off mid-thought, and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from where that answer left off — do not restart or repeat what was already said.
+7. You have access to PLAYBOOK below — the app's own curated strategy set. If the question drifts toward "which strategy should I use" territory alongside its market-timing angle, ground the strategy part in PLAYBOOK rather than generic trading knowledge — recommending a named, documented strategy is fine even here; it's only the live market-direction/timing call you decline.
+
+PLAYBOOK:
+${PRICE_ACTION_PLAYBOOK}
 
 Question: `;
 
-async function classifyAskQuery(question,settings){
-  const txt=await aiChat(ASK_CLASSIFY_PROMPT+question,settings,{json:true,maxTokens:200});
-  try{return JSON.parse(txt.replace(/```json|```/g,'').trim());}
+// recentHistory lets the classifier resolve a bare "continue"/"keep going"
+// against whatever real question actually produced the assistant's last
+// (possibly truncated) answer — without it, a continuation request has
+// nothing to anchor to and reads as contentless, which is exactly how it
+// used to get misclassified as OUT_OF_SCOPE.
+async function classifyAskQuery(question,settings,recentHistory){
+  const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
+  const{text}=await aiChat(`${ASK_CLASSIFY_PROMPT}${question}${historyBlock}`,settings,{json:true,maxTokens:200});
+  try{return JSON.parse(text.replace(/```json|```/g,'').trim());}
   catch{throw userError('Could not parse the classifier response. Try again.');}
 }
 async function composeAskAnswer(question,facts,settings){
-  return aiChat(`${ASK_COMPOSE_PROMPT}${JSON.stringify(facts)}\n\nQuestion: ${question}`,settings,{maxTokens:300,temperature:0.2});
+  return(await aiChat(`${ASK_COMPOSE_PROMPT}${JSON.stringify(facts)}\n\nQuestion: ${question}`,settings,{maxTokens:300,temperature:0.2})).text;
 }
 async function composeGeneralKnowledge(question,settings,recentHistory){
   const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}\n`:'';
-  return aiChatResilient(`${GENERAL_KNOWLEDGE_PROMPT}${question}${historyBlock}`,settings,{maxTokens:700,temperature:0.5,reasoningEffort:'low'});
+  return aiChatResilient(`${GENERAL_KNOWLEDGE_PROMPT}${question}${historyBlock}`,settings,{maxTokens:900,temperature:0.5,reasoningEffort:'low'});
 }
 async function composeAdviceOpinion(question,facts,settings,recentHistory){
   const factsBlock=facts?`\n\nFACTS:${JSON.stringify(facts)}\n`:'';
   const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}\n`:'';
-  return aiChatResilient(`${ADVICE_OPINION_PROMPT}${question}${factsBlock}${historyBlock}`,settings,{maxTokens:700,temperature:0.5,reasoningEffort:'low'});
+  return aiChatResilient(`${ADVICE_OPINION_PROMPT}${question}${factsBlock}${historyBlock}`,settings,{maxTokens:900,temperature:0.5,reasoningEffort:'low'});
 }
 
 // ── Pattern detection (deterministic, no LLM) ───────────────────────────────
@@ -1686,8 +1824,13 @@ RULES:
 9. You MAY reference strategy descriptions and per-strategy performance from strategyBreakdown.
 10. Never predict market direction, recommend specific entries/exits, or guarantee outcomes.
 11. Tone: direct and invested, like a coach who's actually looked at the numbers — not a compliance disclaimer. Still no sugar-coating and no empty cheerleading, but when the data genuinely shows real improvement or good discipline, say so plainly instead of staying neutral out of caution.
-12. If CONVERSATION_HISTORY is present, treat this as a continuing conversation — build on what you already told them rather than re-explaining from scratch, and note if new data changes a previous read.
+12. If CONVERSATION_HISTORY is present, treat this as a continuing conversation — build on what you already told them rather than re-explaining from scratch, and note if new data changes a previous read. If its last entry is your own previous answer that reads as cut off mid-thought, and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from where it left off — do not restart or repeat what was already said.
 13. Strategy refinement (not just strategy selection): each strategyBreakdown entry includes gradeBreakdownWithinStrategy (win rate by grade INSIDE that strategy) and offPlanRate. Use these to propose a concrete refinement, not just "strategy A beats strategy B" — e.g. which grade floor to require, whether off-plan entries are what's actually dragging a strategy down, or specific wording to tighten the strategy's own description toward what the data shows actually wins. Quote the strategy's current description when proposing a change to it.
+14. You have access to PLAYBOOK below — the app's own curated strategy set. When recommending a strategy, combine PLAYBOOK's fixed rules with the trader's OWN real performance from strategyBreakdown — a recommendation grounded in only one of the two is weaker than one that cites both ("your Break & Retest win rate is X%, and it fits the trending condition you're asking about").
+15. PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically. If asked about a different expiry, you may reason about how the same underlying logic would likely extend there — but say explicitly, every time this comes up, that this specific expiry was never actually validated, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
+
+PLAYBOOK:
+${PRICE_ACTION_PLAYBOOK}
 
 TRADER_PROFILE:
 `;
@@ -5231,11 +5374,27 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     appendPlain(err?.userFacing?err.message:'Something went wrong — try again.');
   }
 
-  async function persistAndShow(question,text,resolvedMode){
-    appendPlain(text); // show the real answer first — history logging is best-effort and must never block or corrupt it
+  // Last few exchanges (any intent) so a follow-up — including a bare
+  // "continue" — has something to anchor to. `messages` here is still the
+  // pre-this-question state (React hasn't committed the just-appended user
+  // question yet), which is exactly the "history before now" a
+  // CONVERSATION_HISTORY block should be.
+  function getRecentHistory(){
+    return messages.filter(m=>m.text).slice(-6).map(m=>({role:m.role,text:m.text}));
+  }
+
+  // Visible AND self-describing: appending this to the stored text means a
+  // truncated reply looks cut off to the user without extra UI plumbing,
+  // and shows up the same way in CONVERSATION_HISTORY on the next turn, so
+  // the compose prompts' own continuation rule has real signal to act on —
+  // not just guessing from where a sentence happens to stop.
+  const TRUNCATION_MARKER='\n\n*(cut off — reply "continue" to keep reading)*';
+  async function persistAndShow(question,text,resolvedMode,truncated){
+    const shown=truncated?`${text}${TRUNCATION_MARKER}`:text;
+    appendPlain(shown); // show the real answer first — history logging is best-effort and must never block or corrupt it
     if(!userId)return;
     try{
-      const row={id:uid(),timestamp:Date.now(),question,answer:text,mode:resolvedMode,chatId};
+      const row={id:uid(),timestamp:Date.now(),question,answer:shown,mode:resolvedMode,chatId};
       const{error}=await supabase.from('queries').insert(toQueryRow(userId,row));
       if(error)console.error('Failed to log query history:',error);
     }catch(err){
@@ -5243,13 +5402,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     }
   }
 
-  async function resolveAndAnswer(spec,question,resolvedMode){
-    // Last few exchanges (any intent) so a follow-up reads as a
-    // continuation, not a cold restart, wherever conversation history is
-    // used below. `messages` here is still the pre-this-question state
-    // (React hasn't committed the just-appended user question yet), which
-    // is exactly the "history before now" a CONVERSATION_HISTORY block should be.
-    const recentHistory=messages.filter(m=>m.text).slice(-6).map(m=>({role:m.role,text:m.text}));
+  async function resolveAndAnswer(spec,question,resolvedMode,recentHistory){
     if(spec.intent==='OUT_OF_SCOPE'){
       await persistAndShow(question,"That one's outside what I can help with here — I'm scoped to your trading journal and trading knowledge generally, not general topics.",resolvedMode);
       return;
@@ -5258,10 +5411,9 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
       // No deterministic fallback exists here (unlike the data paths below) —
       // there's no FACTS to fall back to for pure trading education, so a
       // failed call propagates to handleAsk/handleClarify's own catch, same
-      // as a failed classifyAskQuery call already does. Length is trusted to
-      // the prompt (soft), not clamped in code.
-      const text=await composeGeneralKnowledge(question,settings,recentHistory);
-      await persistAndShow(question,text,resolvedMode);
+      // as a failed classifyAskQuery call already does.
+      const{text,truncated}=await composeGeneralKnowledge(question,settings,recentHistory);
+      await persistAndShow(question,text,resolvedMode,truncated);
       return;
     }
     if(spec.intent==='ADVICE_OR_OPINION'){
@@ -5270,16 +5422,16 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
       // (soft), same trust level as GENERAL_KNOWLEDGE. No deterministic
       // fallback for the same reason as GENERAL_KNOWLEDGE above.
       const facts=spec.metric?computeAskFacts({...spec,mode:resolvedMode},trades,resolvedMode,strategies):null;
-      const text=await composeAdviceOpinion(question,facts,settings,recentHistory);
-      await persistAndShow(question,text,resolvedMode);
+      const{text,truncated}=await composeAdviceOpinion(question,facts,settings,recentHistory);
+      await persistAndShow(question,text,resolvedMode,truncated);
       return;
     }
     if(spec.intent==='TRADING_ADVISORY'){
       const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,settings,strategies,resolvedMode);
       const advisoryContext=buildAdvisoryContext(profile,question,spec.advisoryType||'PERFORMANCE_REVIEW');
-      const historyBlock=recentHistory.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
-      let text;
-      try{text=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1200,temperature:0.3,reasoningEffort:'high'});}
+      const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
+      let text,truncated=false;
+      try{({text,truncated}=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1500,temperature:0.3,reasoningEffort:'high'}));}
       catch(err){
         // Both the requested effort AND the 'none' retry inside
         // aiChatResilient failed — this is the only remaining fallback, and
@@ -5287,7 +5439,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
         console.error('Advisory compose failed even after reasoningEffort retry, using deterministic fallback:',err);
         text=buildAdvisoryFallback(profile,spec.advisoryType||'PERFORMANCE_REVIEW');
       }
-      await persistAndShow(question,text,resolvedMode);
+      await persistAndShow(question,text,resolvedMode,truncated);
       return;
     }
     const facts=computeAskFacts(spec,trades,resolvedMode,strategies);
@@ -5331,15 +5483,18 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   // than only pre-filling the input, for a snappier one-tap on-ramp.
   async function ask(q){
     if(!q||busy)return;
+    // Captured before appendUser() commits the new message, same "history
+    // before now" contract resolveAndAnswer already relies on.
+    const recentHistory=getRecentHistory();
     appendUser(q);
     setBusy(true);
     try{
-      const spec=await classifyAskQuery(q,settings);
+      const spec=await classifyAskQuery(q,settings,recentHistory);
       if(spec.intent==='DATA_QUERY'&&spec.mode==='AMBIGUOUS'){
         appendClarify(q,spec);
         return;
       }
-      await resolveAndAnswer(spec,q,spec.mode==='AMBIGUOUS'?mode:spec.mode);
+      await resolveAndAnswer(spec,q,spec.mode==='AMBIGUOUS'?mode:spec.mode,recentHistory);
     }catch(err){
       appendError(err);
     }finally{setBusy(false);}
@@ -5353,7 +5508,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
   }
   async function handleClarify(question,spec,chosenMode){
     setBusy(true);
-    try{await resolveAndAnswer(spec,question,chosenMode);}
+    try{await resolveAndAnswer(spec,question,chosenMode,getRecentHistory());}
     catch(err){appendError(err);}
     finally{setBusy(false);}
   }
@@ -6059,10 +6214,10 @@ function Loading(){
 // ── Landing Page ──────────────────────────────────────────────────────────────
 function Landing({onLogin}){
   const features=[
-    {icon:ScanSearch,title:'AI Zone Analyzer',desc:'Upload a chart screenshot and let AI validate your supply/demand zone against 10 strict structural gates, 4 of them hard filters, before you enter a trade.'},
+    {icon:ScanSearch,title:'AI Setup Validator',desc:'Upload a chart screenshot and AI grades it against the matching rule-based checklist — supply/demand zones against 10 strict structural gates, or one of 7 price-action strategies against its own — before you enter a trade.'},
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, trade grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by trade grade, strategy, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
-    {icon:Target,title:'Custom Strategies',desc:'Define your own strategies beyond the built-in Zone (S&D) and Trend/Pattern — tag every trade and break down win rate and P&L by strategy in Analytics.'},
+    {icon:Target,title:'A Full Strategy Curriculum',desc:'7 rule-based price-action strategies plus Zone (S&D) and Trend/Pattern, built in from day one — or define your own. Tag every trade and break down win rate and P&L by strategy in Analytics.'},
     {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade), Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss), or Profit Lock (stakes only the profit just banked, never original capital) — each ends its own session on a profit target, loss target, or max trades, independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
     {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale and Profit Lock’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
@@ -6084,7 +6239,7 @@ function Landing({onLogin}){
   ];
 
   const steps=[
-    {n:'01',icon:ScanSearch,title:'Analyze',desc:'Upload your chart. AI evaluates the zone against 10 strict gates, 4 of them hard filters, and returns a grade.'},
+    {n:'01',icon:ScanSearch,title:'Analyze',desc:'Upload your chart. AI identifies whether it’s a supply/demand zone or a price-action setup, grades it against the matching rule-based checklist, and returns a grade.'},
     {n:'02',icon:CircleCheck,title:'Confirm',desc:'Watch the live 10-second chart yourself and confirm a Tier 1 trigger before entering — this step is on you, not tracked in-app.'},
     {n:'03',icon:BookOpen,title:'Journal',desc:'Log the trade with one click. Screenshots, notes, and analysis data carry over automatically.'},
     {n:'04',icon:BarChart3,title:'Improve',desc:'Review your analytics. See which grades, pairs, and styles produce the best results.'},
@@ -6114,9 +6269,9 @@ function Landing({onLogin}){
         <div className="ld-orb ld-orb-2"/>
         <div className="ld-orb ld-orb-3"/>
         <div className="ld-hero-content">
-          <div className="ld-badge">AI-Powered Trading System</div>
-          <h1 className="ld-hero-title">Master Your Trading<br/>with <span className="ld-gradient-text">Precision</span></h1>
-          <p className="ld-hero-sub">Validate zones with AI, journal every trade, manage risk intelligently, and analyze your performance — all in one workspace built for disciplined traders.</p>
+          <div className="ld-badge">AI-Powered Trading Curriculum</div>
+          <h1 className="ld-hero-title">Learn a Proven Strategy<br/>with <span className="ld-gradient-text">Precision</span></h1>
+          <p className="ld-hero-sub">A 7-strategy price-action system plus supply/demand zones — validate every setup with AI, journal every trade, manage risk intelligently, and track your progress toward consistency, all in one workspace.</p>
           <div className="ld-hero-ctas">
             <button className="ld-btn ld-btn-primary ld-btn-lg" onClick={()=>onLogin()}>Get Started Free</button>
             <a href="#features" className="ld-btn ld-btn-outline ld-btn-lg">See Features</a>
@@ -6158,8 +6313,8 @@ function Landing({onLogin}){
           <div className="ld-analyzer-layout">
             <div className="ld-analyzer-text">
               <div className="ld-section-tag">AI-Powered</div>
-              <h2 className="ld-section-title" style={{textAlign:'left'}}>10-Gate Zone Validation</h2>
-              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>Every setup is evaluated against 10 strict binary gates — 4 of them hard filters that instantly invalidate the zone if any one fails. No curves, no partial credit — a zone either meets the standard or it doesn't. This keeps you out of borderline trades.</p>
+              <h2 className="ld-section-title" style={{textAlign:'left'}}>Rule-Based Grading, Not Vibes</h2>
+              <p className="ld-section-sub" style={{textAlign:'left',maxWidth:480}}>A supply/demand zone is evaluated against 10 strict binary gates — 4 of them hard filters that instantly invalidate it if any one fails. Any of the other 6 price-action strategies gets its own 5-item checklist built the same way. No curves, no partial credit — a setup either meets the standard or it doesn't. Shown below: the 10-gate zone system.</p>
               <div className="ld-analyzer-grades">
                 <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A+</span><span>10/10 gates — highest conviction</span></div>
                 <div className="ld-grade-item"><span className="ld-grade-pill ld-grade-aplus">A</span><span>9/10 gates — strong setup</span></div>
@@ -6209,8 +6364,8 @@ function Landing({onLogin}){
         <div className="ld-section-inner">
           <div className="ld-stats-row">
             {[
-              {val:'24+',label:'OTC Pairs'},
-              {val:'10',label:'Validation Gates'},
+              {val:'7',label:'Price Action Strategies'},
+              {val:'10',label:'Zone Validation Gates'},
               {val:'3',label:'Trade Styles'},
               {val:'6',label:'Withdrawal Milestones'},
               {val:'100%',label:'Free AI'},
