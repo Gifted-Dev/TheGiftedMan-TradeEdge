@@ -1393,22 +1393,20 @@ FACTS:
 // "knowledge" — these are specific, curated setups, not folklore. Shared by
 // GENERAL_KNOWLEDGE_PROMPT (explaining a setup) and the advisory pipeline
 // (recommending one, combined with the user's own real per-strategy data).
-const PRICE_ACTION_PLAYBOOK=`TheGiftedMan Price Action Playbook — 7 rule-based setups, 1-minute chart, 2-minute expiry, no indicators, no timeframe switching:
-1. Break & Retest (level flip) — a level tested 2+ times breaks, price retests it, a rejection candle confirms the flip. Best: trending. Avoid: ranging.
-2. Engulfing Candle Reversal — a candle's body fully engulfs the prior candle's body after a short directional move. Best: ranging/trend exhaustion. Avoid: strong mid-trend.
-3. Double Top / Double Bottom — price fails at the same level twice, the second failure confirms it's defended. Best: ranging/trend exhaustion. Avoid: strong mid-trend.
-4. 3-Candle Momentum Continuation — a brief pause inside a strong run, entered as the trend resumes. With-trend only. Best: strong trending. Avoid: ranging.
-5. Inside Bar Breakout — a candle fully inside the prior candle's range, entered on the break of that range. Best: either direction with the trend. Avoid: counter-trend breaks.
-6. Supply & Demand Zone Retest — price returns to a fresh S&D zone that launched a strong move; entry on rejection at the zone. Best: trending, zone type matching the trend. Avoid: ranging, or a zone against the trend. This is the same setup the app's own Zone Analyzer grades with its full 10-gate system — treat that grading as the authoritative version of this one specifically, not this one-line summary.
-7. Fakeout Reversal — a weak breakout with no follow-through, then a strong reversal back through the level. Best: ranging/at level boundaries. Avoid: strong trending (breaks are usually real).
+// Kept deliberately terse — this gets sent in full on every relevant call,
+// across three different prompts, and Groq's free-tier TPM rate limit is a
+// real, hit-in-practice constraint (not just a cost nicety). Same facts as
+// the original document, no prose padding.
+const PRICE_ACTION_PLAYBOOK=`TheGiftedMan Price Action Playbook — 7 setups, 1-min chart, 2-min expiry, no indicators:
+1. Break & Retest — level (2+ prior touches) breaks, retest, rejection candle confirms flip. Best: trending. Avoid: ranging.
+2. Engulfing Reversal — candle fully engulfs prior body after a short directional move. Best: ranging/exhaustion. Avoid: strong mid-trend.
+3. Double Top/Bottom — price fails same level twice, 2nd failure confirms defense. Best: ranging/exhaustion. Avoid: strong mid-trend.
+4. 3-Candle Continuation — brief pause in a strong run, enter on trend resuming. With-trend only. Best: strong trending. Avoid: ranging.
+5. Inside Bar Breakout — candle fully inside prior candle's range, enter on break of that range. Best: with-trend either direction. Avoid: counter-trend breaks.
+6. S&D Zone Retest — price returns to a fresh zone that launched a strong move, enters on rejection. Best: trending, zone matches trend. Avoid: ranging/zone against trend. (Same setup the Zone Analyzer's 10-gate system grades authoritatively — defer to that grading over this summary.)
+7. Fakeout Reversal — weak breakout, no follow-through, strong reversal back through the level. Best: ranging/level boundaries. Avoid: strong trending (breaks usually real).
 
-Core rules across all 7: 1-minute candles for setup and confirmation, 2-minute expiry entered at the confirmation candle's close (never mid-candle), every setup works identically mirrored for buy/sell, no trade within 15 minutes of high-impact news, max 3-5 trades per session, stop after 2 consecutive losses.
-
-Market condition first, then pick the strategy — identify uptrend/downtrend/range/exhaustion before reaching for a setup. Using a continuation strategy in a range, or a reversal strategy against a strong trend, is the most common reason a valid-looking setup fails.
-
-Testing protocol: test one strategy at a time, 20-30 trades minimum per strategy before the win rate means anything, track rule violations (off-plan) separately from clean losses, compare against breakeven (not 50%) — at a 90% payout, breakeven is roughly 52.6%.
-
-Honesty: no setup here is a guaranteed win. These are structured, testable frameworks — not profit promises.`;
+Core rules: 1-min candles, 2-min expiry at confirmation candle's close, mirrored buy/sell, no trade within 15min of high-impact news, max 3-5 trades/session, stop after 2 consecutive losses. Identify market condition (trend/range/exhaustion) before picking a strategy — the top cause of failure is using the wrong strategy for the condition. Testing: one strategy at a time, 20-30 trades minimum, track off-plan separately from losses, compare against breakeven (~52.6% at 90% payout) not 50%. No setup is a guaranteed win.`;
 
 // General trading education — deliberately separate from ASK_COMPOSE_PROMPT
 // (which is only ever allowed to cite FACTS) since this path has no user
@@ -1810,10 +1808,10 @@ function buildAdvisoryContext(profile,question,advisoryType){
     default:return{type:advisoryType,profile};
   }
 }
-const ADVISORY_COMPOSE_PROMPT=`You are a professional trader acting as this trader's personal coach, with full access to their journal data, money management settings, trade grades, notes, strategies, session history, and discipline metrics. You have been given a complete TRADER_PROFILE and an ADVISORY_CONTEXT containing the specific data relevant to this question, and possibly a CONVERSATION_HISTORY of recent prior exchanges in this same session.
+const ADVISORY_COMPOSE_PROMPT=`You are a professional trader acting as this trader's personal coach, with full access to their journal data, money management settings, trade grades, notes, strategies, session history, and discipline metrics. You have been given a CORE_SUMMARY of their account and an ADVISORY_CONTEXT containing the specific data relevant to this question (grade breakdowns, strategy performance, session history, discipline stats, etc. — whichever apply), and possibly a CONVERSATION_HISTORY of recent prior exchanges in this same session.
 
 RULES:
-1. Base ALL advice on the actual numbers in TRADER_PROFILE and ADVISORY_CONTEXT. Never invent statistics.
+1. Base ALL advice on the actual numbers in CORE_SUMMARY and ADVISORY_CONTEXT. Never invent statistics.
 2. Always reference specific data points (grades, strategy names, session outcomes) to support your reasoning.
 3. Keep advice actionable and specific — "reduce risk from X% to Y%" not "consider adjusting risk".
 4. Give a clear, direct recommendation when the data supports one — say what you'd do, not just what's observable. State it as your read of their data, not an order; the trader can still disagree and always makes the final call, but don't retreat into "just something to consider" when the numbers point somewhere specific.
@@ -1826,13 +1824,21 @@ RULES:
 11. Tone: direct and invested, like a coach who's actually looked at the numbers — not a compliance disclaimer. Still no sugar-coating and no empty cheerleading, but when the data genuinely shows real improvement or good discipline, say so plainly instead of staying neutral out of caution.
 12. If CONVERSATION_HISTORY is present, treat this as a continuing conversation — build on what you already told them rather than re-explaining from scratch, and note if new data changes a previous read. If its last entry is your own previous answer that reads as cut off mid-thought, and the current question is a short continuation request ("continue", "keep going", "go on", "more"), continue directly from where it left off — do not restart or repeat what was already said.
 13. Strategy refinement (not just strategy selection): each strategyBreakdown entry includes gradeBreakdownWithinStrategy (win rate by grade INSIDE that strategy) and offPlanRate. Use these to propose a concrete refinement, not just "strategy A beats strategy B" — e.g. which grade floor to require, whether off-plan entries are what's actually dragging a strategy down, or specific wording to tighten the strategy's own description toward what the data shows actually wins. Quote the strategy's current description when proposing a change to it.
-14. You have access to PLAYBOOK below — the app's own curated strategy set. When recommending a strategy, combine PLAYBOOK's fixed rules with the trader's OWN real performance from strategyBreakdown — a recommendation grounded in only one of the two is weaker than one that cites both ("your Break & Retest win rate is X%, and it fits the trending condition you're asking about").
-15. PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically. If asked about a different expiry, you may reason about how the same underlying logic would likely extend there — but say explicitly, every time this comes up, that this specific expiry was never actually validated, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
+
+CORE_SUMMARY:
+`;
+// Appended only for advisoryTypes that actually touch strategy choice — the
+// other 4 (risk/money-mgmt/discipline/session-prep) never reference a named
+// strategy at all, so paying playbook-sized tokens on every single advisory
+// call regardless of topic was pure waste. Real constraint, not a nicety:
+// Groq's free-tier TPM rate limit gets hit in practice with this included
+// unconditionally (see the "rate limit reached" error this was built to fix).
+const PLAYBOOK_ADVISORY_TYPES=new Set(['STRATEGY_GUIDANCE','PERFORMANCE_REVIEW']);
+const ADVISORY_PLAYBOOK_ADDENDUM=`
+When recommending a strategy, combine PLAYBOOK's fixed rules with the trader's OWN real performance from strategyBreakdown — a recommendation grounded in only one of the two is weaker than one that cites both ("your Break & Retest win rate is X%, and it fits the trending condition you're asking about"). PLAYBOOK is calibrated to a 1-minute chart / 2-minute expiry specifically — if asked about a different expiry, you may reason about how the same underlying logic would likely extend there, but say explicitly, every time this comes up, that this specific expiry was never actually validated, so it's your reasoned extrapolation, not a tested claim. Don't drop that caveat after the first mention in a conversation.
 
 PLAYBOOK:
 ${PRICE_ACTION_PLAYBOOK}
-
-TRADER_PROFILE:
 `;
 function buildAdvisoryFallback(profile,advisoryType){
   const p=profile.performance.allTime;
@@ -5427,17 +5433,31 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
       return;
     }
     if(spec.intent==='TRADING_ADVISORY'){
+      const advisoryType=spec.advisoryType||'PERFORMANCE_REVIEW';
       const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,settings,strategies,resolvedMode);
-      const advisoryContext=buildAdvisoryContext(profile,question,spec.advisoryType||'PERFORMANCE_REVIEW');
+      const advisoryContext=buildAdvisoryContext(profile,question,advisoryType);
+      // buildAdvisoryContext already slices `profile` down to exactly what
+      // this advisoryType needs — sending the ENTIRE nested profile too
+      // (full recentTrades, every strategy's gradeBreakdownWithinStrategy,
+      // full session/zone history) on top of that was pure redundancy, and
+      // real money against a real TPM budget: see the "rate limit reached"
+      // error this was built to fix. A small always-useful summary plus the
+      // already-focused context keeps the model grounded without re-sending
+      // data advisoryContext already covers for whichever type is active.
+      const coreSummary={mode:profile.account.mode,tradeCount:profile.account.tradeCount,
+        currentBalance:profile.account.currentBalance,edge:profile.account.edge,
+        allTime:profile.performance.allTime,activeStyle:profile.configuration.activeStyle,
+        moneyMgmtStyle:profile.configuration.moneyMgmtStyle};
+      const playbookBlock=PLAYBOOK_ADVISORY_TYPES.has(advisoryType)?ADVISORY_PLAYBOOK_ADDENDUM:'';
       const historyBlock=recentHistory?.length?`\n\nCONVERSATION_HISTORY:${JSON.stringify(recentHistory)}`:'';
       let text,truncated=false;
-      try{({text,truncated}=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(profile)}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1500,temperature:0.3,reasoningEffort:'high'}));}
+      try{({text,truncated}=await aiChatResilient(`${ADVISORY_COMPOSE_PROMPT}${JSON.stringify(coreSummary)}${playbookBlock}\n\nADVISORY_CONTEXT:${JSON.stringify(advisoryContext)}${historyBlock}\n\nQuestion: ${question}`,settings,{maxTokens:1500,temperature:0.3,reasoningEffort:'high'}));}
       catch(err){
         // Both the requested effort AND the 'none' retry inside
         // aiChatResilient failed — this is the only remaining fallback, and
         // it must never fail silently again like it did before.
         console.error('Advisory compose failed even after reasoningEffort retry, using deterministic fallback:',err);
-        text=buildAdvisoryFallback(profile,spec.advisoryType||'PERFORMANCE_REVIEW');
+        text=buildAdvisoryFallback(profile,advisoryType);
       }
       await persistAndShow(question,text,resolvedMode,truncated);
       return;
