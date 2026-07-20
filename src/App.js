@@ -4723,7 +4723,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
           <>
             <div className="grid-3">
               <Metric label="Balance" value={f$(bal)}/>
-              <Metric label="Session P&L" value={(sessionForMode.sPnl>=0?'+':'')+f$(sessionForMode.sPnl)} color={sessionForMode.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+              <Metric label="Session P&L" value={(sessionForMode.sPnl>=0?'+':'')+f$(sessionForMode.sPnl)} sub={`${sessionForMode.sPnl>=0?'+':''}${fp(startBal?(sessionForMode.sPnl/startBal)*100:0)}`} color={sessionForMode.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
               <Metric label="Trades this session" value={`${sessionForMode.wins}W / ${sessionForMode.losses}L`}/>
             </div>
             <div className="grid-3">
