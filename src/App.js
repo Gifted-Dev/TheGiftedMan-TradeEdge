@@ -5241,6 +5241,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
   const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)?.v||0;acc.push({t:t.timestamp,v:prev+t.pnl});return acc;},[]);
   const gradeBars=grades.map(x=>({label:x.g,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
   const pairBars=pairs.map(x=>({label:x.p.length>8?x.p.slice(0,8)+'…':x.p,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'})).slice(0,5);
+  const strategyBars=strategyBreakdown.map(x=>({label:x.name.length>8?x.name.slice(0,8)+'…':x.name,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
   const doneAll=tradesInRange(trades,'ALL',range).filter(t=>t.outcome!=='PENDING');
   const modeStats=ACCOUNT_MODES.map(mode=>{
     const modeTrades=doneAll.filter(t=>getTradeMode(t)===mode);
@@ -5360,6 +5361,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
         <div style={card}>
           <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Performance by strategy</div>
           <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:6}}>Every strategy you've logged trades under — equal standing, no default preference</div>
+          <BarChart items={strategyBars} color="var(--fill-accent)"/>
           {strategyBreakdown.map(x=>(
             <div key={x.id} style={{marginTop:10,paddingTop:8,borderTop:'0.5px solid var(--border)'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
