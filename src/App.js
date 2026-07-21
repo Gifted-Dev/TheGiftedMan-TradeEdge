@@ -241,6 +241,7 @@ function toSettingsRow(userId,s){
       plProfitTargetPctDemo:s.plProfitTargetPctDemo,plProfitTargetPctReal:s.plProfitTargetPctReal,
       plLossTargetPctDemo:s.plLossTargetPctDemo,plLossTargetPctReal:s.plLossTargetPctReal,
       plMaxTradesDemo:s.plMaxTradesDemo,plMaxTradesReal:s.plMaxTradesReal,
+      plBreakevenRecoveryDemo:s.plBreakevenRecoveryDemo,plBreakevenRecoveryReal:s.plBreakevenRecoveryReal,
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
@@ -273,7 +274,7 @@ function toSessionRow(userId,date,s){
     is_locked:s.isLocked,lock_reason:s.lockReason,
     extra:{lockCode:s.lockCode,durationMin:s.durationMin,pausedAt:s.pausedAt,pausedMsTotal:s.pausedMsTotal,strictAtStart:s.strictAtStart||false,
       startBalance:s.startBalance,amStreak:s.amStreak||0,amNextStake:s.amNextStake??null,
-      plStreak:s.plStreak||0,plNextStake:s.plNextStake??null,endReason:s.endReason||null,lateTradeLogged:s.lateTradeLogged||false}};
+      plStreak:s.plStreak||0,plNextStake:s.plNextStake??null,plStreakFirstProfit:s.plStreakFirstProfit??null,plRecoveryPhase:s.plRecoveryPhase||false,endReason:s.endReason||null,lateTradeLogged:s.lateTradeLogged||false}};
 }
 function fromSessionRow(r){
   return{id:r.id,num:r.num,accountMode:r.account_mode,startTime:new Date(r.start_time).getTime(),
@@ -1045,27 +1046,104 @@ function getPlMaxTradesForMode(settings, mode) {
   const v = parseInt(mode === 'REAL' ? settings?.plMaxTradesReal : settings?.plMaxTradesDemo, 10);
   return Number.isFinite(v) && v >= 3 && v <= 20 ? v : 8;
 }
+// Off by default — the originally-designed "any loss always resets to base"
+// behavior stays the default experience; this only changes what happens
+// specifically to the trade immediately after a max-escalation loss.
+function getPlBreakevenRecoveryForMode(settings, mode) {
+  return !!(mode === 'REAL' ? settings?.plBreakevenRecoveryReal : settings?.plBreakevenRecoveryDemo);
+}
+// state.streak is a number (0..maxEscalations) or one of two sentinels:
+// 'RECOVERY' — the max-escalation breakeven-recovery trade (staked at
+//   state.firstProfit, the streak's original first-win profit).
+// 'BRIDGE' — the loss-recovery bridge trade (staked at state.nextStake,
+//   the session's own cumulative P&L at the moment it first crossed back
+//   to ≥$1 after a deficit).
+// firstProfit is captured the moment a streak is born (a win when the
+// incoming streak was 0) and travels with the streak until any full reset
+// to base, at which point it's cleared to null.
+// recoveryPhase is the loss-recovery bridge's own tracking bit: true from
+// the instant an ordinary loss puts the session in deficit (or a lost
+// bridge trade returns it to exact breakeven) until a bridge trade
+// finally wins and hands off to normal escalation. It deliberately does
+// NOT cover the existing max-escalation RECOVERY sentinel above — that's
+// a separate, already-shipped mechanic with its own one-time reset, so
+// the two never double-trigger off the same loss.
 function advanceProfitLock(state, outcome, pnl, balance, settings, mode, sessionPnlAfter) {
   const base = amBaseStake(balance, settings);
-  if (outcome !== 'WIN') {
-    return { streak: 0, nextStake: base }; // any loss resets to base — never below it
+  const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
+  const recoveryEnabled = getPlBreakevenRecoveryForMode(settings, mode);
+  const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
+
+  // The max-escalation breakeven-recovery trade resolving — one-time,
+  // never chains into a second attempt regardless of outcome.
+  if (state.streak === 'RECOVERY') {
+    return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: false };
   }
+
+  // The loss-recovery bridge trade resolving.
+  if (state.streak === 'BRIDGE') {
+    if (outcome === 'WIN') {
+      // Hands off to normal escalation exactly as a fresh streak's first
+      // win would — this win's OWN individual profit becomes escalation 1.
+      const bankedProfit = Math.max(1, Math.round(Math.min(pnl, ceiling) * 100) / 100);
+      return { streak: 1, nextStake: bankedProfit, firstProfit: bankedProfit, recoveryPhase: false };
+    }
+    // The bridge stake exactly equalled the session's cumulative P&L, so a
+    // loss here lands session P&L at exact breakeven — back into recovery
+    // phase, since we're right back at square one.
+    return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: true };
+  }
+
+  const inRecoveryPhase = !!state.recoveryPhase;
+
+  if (outcome !== 'WIN') {
+    // The max-escalation stake just lost — with recovery on and a tracked
+    // first-win profit to recall, stake exactly that instead of dropping
+    // straight to base, so a further loss lands the session at exact
+    // breakeven rather than sitting on the escalation's partial profit.
+    if (recoveryEnabled && maxEscalations === 2 && state.streak === maxEscalations && state.firstProfit != null) {
+      return { streak: 'RECOVERY', nextStake: state.firstProfit, firstProfit: state.firstProfit, recoveryPhase: false };
+    }
+    // Any other loss resets to base — never below it — and (re-)enters the
+    // loss-recovery phase, since the session is now sitting at or below
+    // whatever it was before this trade.
+    return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: true };
+  }
+
+  // A win while already in loss-recovery phase — the session hasn't yet
+  // earned back to a genuine $1+ of banked profit, so no individual-profit
+  // escalation is allowed to start yet.
+  if (inRecoveryPhase) {
+    if (sessionPnlAfter < 1) {
+      // Still ≤0, or positive but under the $1 floor — stay at base and
+      // re-check on every subsequent trade.
+      return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: true };
+    }
+    // Crossed back to ≥$1 — the NEXT trade is the bridge, staking the
+    // session's cumulative P&L itself, not this win's own individual
+    // profit (which is what an ordinary escalation would have staked).
+    const bridgeStake = Math.max(1, Math.min(Math.round(sessionPnlAfter * 100) / 100, ceiling));
+    return { streak: 'BRIDGE', nextStake: bridgeStake, firstProfit: null, recoveryPhase: true };
+  }
+
+  // Normal path — no active deficit to recover from (this also covers a
+  // session's very first win: recoveryPhase starts false, so it always
+  // escalates on its own individual profit, unchanged).
   // A win only escalates once the SESSION's cumulative P&L (including this
   // trade) is genuinely positive — a win that merely offsets a prior loss
   // has banked nothing real yet, so the next stake must stay at base.
   if (sessionPnlAfter <= 0) {
-    return { streak: 0, nextStake: base };
+    return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: false };
   }
-  const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   // Same pre-increment cap-check pattern as advanceAntiMartingale: the
   // forced reset only fires once a WIN has actually happened AT the max-
   // escalated stake, so every banked-profit level up to the cap gets used.
   if (state.streak >= maxEscalations) {
-    return { streak: 0, nextStake: base };
+    return { streak: 0, nextStake: base, firstProfit: null, recoveryPhase: false };
   }
-  const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
   const bankedProfit = Math.max(1, Math.round(Math.min(pnl, ceiling) * 100) / 100);
-  return { streak: state.streak + 1, nextStake: bankedProfit };
+  const firstProfit = state.streak === 0 ? bankedProfit : state.firstProfit;
+  return { streak: state.streak + 1, nextStake: bankedProfit, firstProfit, recoveryPhase: false };
 }
 function liveProfitLockNextStake(session, balance, settings, mode) {
   const streak = session?.plStreak || 0;
@@ -1078,7 +1156,16 @@ function plStakeReasoning(session, balance, settings, mode) {
   const base = amBaseStake(balance, settings);
   const stake = liveProfitLockNextStake(session, balance, settings, mode);
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
+  if (streak === 'RECOVERY') {
+    return `Recovery stake: $${stake.toFixed(2)} — a loss here returns you to exact breakeven for this streak; a win adds further profit.`;
+  }
+  if (streak === 'BRIDGE') {
+    return `Recovery bridge: staking $${stake.toFixed(2)} — a loss here returns you to exact breakeven; a win begins a normal profit streak.`;
+  }
   if (streak === 0) {
+    if (session?.plRecoveryPhase) {
+      return `Recovering from an early loss — staying at base ($${base.toFixed(2)}) until the session turns positive by at least $1.`;
+    }
     if ((session?.wins || 0) > 0 && (session?.sPnl || 0) <= 0) {
       return `Win recorded, but session is still at breakeven or below — next stake stays at base ($${base.toFixed(2)}) until the session is genuinely in profit.`;
     }
@@ -1121,6 +1208,28 @@ function escalatingStakeReasoning(session, balance, settings, mode, style) {
     ? plStakeReasoning(session, balance, settings, mode)
     : amStakeReasoning(session, balance, settings, mode);
 }
+// True for either of Profit Lock's two bridge sentinels — the max-
+// escalation RECOVERY trade and the loss-recovery BRIDGE trade alike.
+// Every display that shows the next stake checks this to swap in the
+// warning color instead of the normal accent treatment, so a stake
+// jumping back up (rather than down to base) reads as deliberate, not a
+// bug. Use plStakeLabel/plStakeCaption alongside this when the UI needs
+// to say WHICH of the two it is, not just that it's special.
+function isPlRecoveryStake(session, style) {
+  return style === 'PROFIT_LOCK' && (session?.plStreak === 'RECOVERY' || session?.plStreak === 'BRIDGE');
+}
+function plStakeLabel(session, style) {
+  if (style !== 'PROFIT_LOCK') return null;
+  if (session?.plStreak === 'RECOVERY') return 'Recovery stake';
+  if (session?.plStreak === 'BRIDGE') return 'Recovery bridge stake';
+  return null;
+}
+function plStakeCaption(session, style) {
+  if (style !== 'PROFIT_LOCK') return null;
+  if (session?.plStreak === 'RECOVERY') return 'A loss here returns you to exact breakeven for this streak; a win adds further profit.';
+  if (session?.plStreak === 'BRIDGE') return 'A loss here returns you to exact breakeven; a win begins a normal profit streak.';
+  return null;
+}
 // Each check function already gates on its own style match internally, so
 // calling both unconditionally and taking whichever fires is safe — at
 // most one of the two can ever return non-null for a given session.
@@ -1132,9 +1241,9 @@ function checkEscalatingSessionEnd(session, mode, settings, now = Date.now()) {
 // so call sites can just spread the result onto `us` without a branch.
 function advanceEscalatingStake(style, session, outcome, pnl, balance, settings, mode) {
   if (style === 'PROFIT_LOCK') {
-    const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings) };
+    const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings), firstProfit: session.plStreakFirstProfit ?? null, recoveryPhase: session.plRecoveryPhase || false };
     const r = advanceProfitLock(state, outcome, pnl, balance, settings, mode, (session.sPnl || 0) + pnl);
-    return { plStreak: r.streak, plNextStake: r.nextStake };
+    return { plStreak: r.streak, plNextStake: r.nextStake, plStreakFirstProfit: r.firstProfit, plRecoveryPhase: r.recoveryPhase };
   }
   const state = { streak: session.amStreak || 0, nextStake: session.amNextStake ?? amBaseStake(balance, settings) };
   const r = advanceAntiMartingale(state, outcome, balance, settings, mode);
@@ -1218,7 +1327,7 @@ function buildSession(ssState,mode,durationMin,strictAtStart,settings,startBalan
     durationMin,pausedAt:null,pausedMsTotal:0,
     startBalance:startBalance??0,endReason:null,
     amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings):null,
-    plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings):null};
+    plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings):null,plStreakFirstProfit:null,plRecoveryPhase:false};
 }
 // Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
 function sessionElapsedMs(sess,now){
@@ -3142,7 +3251,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
         <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':'losses'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3">
           {isEscalatingStyle(mmStyle)
-            ?<Metric label="Next stake" value={f$(amDisplayStake)} sub={amReasoning} color="var(--text-primary)"/>
+            ?<Metric label={plStakeLabel(active,mmStyle)||'Next stake'} value={f$(amDisplayStake)} sub={amReasoning} color={isPlRecoveryStake(active,mmStyle)?'var(--text-warning)':'var(--text-primary)'}/>
             :<Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/>}
         </div>
 
@@ -3909,7 +4018,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={paStakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={paStakeValue} onChange={e=>setPaStakeValue(e.target.value)}/>
             )}
             <div style={{fontSize:11,color:'var(--text-secondary)',marginTop:4}}>Will log {f$(paStake)}{paStakeMode==='PERCENT'?` (${fp(parseFloat(paStakeValue)||0)} of ${f$(paBal)} balance)`:''}.</div>
-            {isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))&&paStakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-secondary)',marginTop:2}}>{getMoneyMgmtStyleForMode(settings,mode)==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {escalatingStakeReasoning(active,paBal,settings,mode,getMoneyMgmtStyleForMode(settings,mode))}</div>}
+            {isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))&&paStakeMode==='DEFAULT'&&<div style={{fontSize:11,color:isPlRecoveryStake(active,getMoneyMgmtStyleForMode(settings,mode))?'var(--text-warning)':'var(--text-secondary)',marginTop:2}}>{getMoneyMgmtStyleForMode(settings,mode)==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {escalatingStakeReasoning(active,paBal,settings,mode,getMoneyMgmtStyleForMode(settings,mode))}</div>}
           </div>
           <div style={{display:'flex',gap:8}}>
             <button style={{...btn('suc'),flex:1}} onClick={()=>recordPA()} disabled={dailyLocked||strictLocked}>Create journal entry</button>
@@ -4040,7 +4149,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <input style={inp} type="number" min="0" step="0.01" placeholder={mf.stakeMode==='AMOUNT'?'e.g. 10':'e.g. 3'} value={mf.stakeValue} onChange={e=>smf(m=>({...m,stakeValue:e.target.value}))}/>
             )}
             <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>This trade will log {f$(manualStake)}{mf.stakeMode==='PERCENT'?` (${fp(parseFloat(mf.stakeValue)||0)} of ${f$(manualBal)} balance)`:''}.</div>
-            {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{manualStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {manualAmReasoning}</div>}
+            {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:isPlRecoveryStake(getActive(ss,manualAccountMode),manualStyle)?'var(--text-warning)':'var(--text-muted)',marginTop:2}}>{manualStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {manualAmReasoning}</div>}
           </div>
           <div style={{marginTop:10}}>
             <label style={lbl}>Strategy</label>
@@ -4558,6 +4667,13 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   const rows=sessionTrades.map(t=>{running+=t.pnl;return{t,balanceAfter:running};});
 
   const liveStake=canLog?liveEscalatingNextStake(sessionForMode,bal,settings,mode,style):0;
+  const isRecoveryStake=isPlRecoveryStake(sessionForMode,style);
+  const stakeLabel=plStakeLabel(sessionForMode,style);
+  const stakeCaption=plStakeCaption(sessionForMode,style);
+  // Phase 3: a plain base stake while Profit Lock is still waiting to earn
+  // back at least $1 after a deficit — distinct from the two sentinels
+  // above, which have their own label/caption.
+  const isLossRecoveryPhase=style==='PROFIT_LOCK'&&!isRecoveryStake&&!!sessionForMode?.plRecoveryPhase;
   // This app's own local pair/direction quick-entry state, same tiny pattern
   // Journal's addPairOption uses — not lifted to shared state since it's a
   // session-local autocomplete convenience, not persisted data.
@@ -4603,7 +4719,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
         .sort((a,b)=>a.timestamp-b.timestamp);
       const isPL=style==='PROFIT_LOCK';
       const baseStake=amBaseStake(sess.startBalance??0,settings);
-      let state={...sess,trades:0,wins:0,losses:0,sPnl:0,...(isPL?{plStreak:0,plNextStake:baseStake}:{amStreak:0,amNextStake:baseStake})};
+      let state={...sess,trades:0,wins:0,losses:0,sPnl:0,...(isPL?{plStreak:0,plNextStake:baseStake,plStreakFirstProfit:null,plRecoveryPhase:false}:{amStreak:0,amNextStake:baseStake})};
       for(const t of sessionTradesCorrected){
         const isW=t.outcome==='WIN';
         const sp=state.sPnl+(t.pnl||0);
@@ -4724,7 +4840,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
             <div className="grid-3">
               <Metric label="Balance" value={f$(bal)}/>
               <Metric label="Session P&L" value={(sessionForMode.sPnl>=0?'+':'')+f$(sessionForMode.sPnl)} sub={`${sessionForMode.sPnl>=0?'+':''}${fp(startBal?(sessionForMode.sPnl/startBal)*100:0)}`} color={sessionForMode.sPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
-              <Metric label="Trades this session" value={`${sessionForMode.wins}W / ${sessionForMode.losses}L`}/>
+              <Metric label="Trades this session" value={`${sessionForMode.wins}W / ${sessionForMode.losses}L`} sub={isRecoveryStake?`Next trade is ${stakeLabel.toLowerCase()}`:isLossRecoveryPhase?'Recovering — staying at base until +$1':undefined} color={(isRecoveryStake||isLossRecoveryPhase)?'var(--text-warning)':undefined}/>
             </div>
             <div className="grid-3">
               <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
@@ -4775,7 +4891,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
                   <datalist id="quicklog-pairs-desktop">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
                 </td>
                 <td style={{padding:'6px'}}><DirToggle value={draftDir} onChange={setDraftDir}/></td>
-                <td style={{padding:'6px'}}><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></td>
+                <td style={{padding:'6px'}} title={isRecoveryStake?`${stakeLabel} — ${stakeCaption}`:isLossRecoveryPhase?'Recovering from an early loss — staying at base until the session turns positive by at least $1.':undefined}><input type="number" style={isRecoveryStake?{...inp,borderColor:'var(--border-warning)',color:'var(--text-warning)'}:inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></td>
                 <td style={{padding:'6px'}}><input type="number" min="1" max="100" step="1" style={inp} placeholder={String(Math.round(PAYOUT*100))} value={draftPayoutOverride} onChange={e=>setDraftPayoutOverride(e.target.value)}/></td>
                 <td style={{padding:'6px'}}>
                   <button style={btn('suc')} onClick={()=>commitRow('WIN')} disabled={saving}>W</button>{' '}
@@ -4824,7 +4940,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
               <DirToggle value={draftDir} onChange={setDraftDir}/>
             </div>
             <div className="grid-2" style={{marginTop:10,marginBottom:0}}>
-              <div><label style={lbl}>Stake</label><input type="number" style={inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/></div>
+              <div><label style={lbl}>{stakeLabel||'Stake'}</label><input type="number" style={isRecoveryStake?{...inp,borderColor:'var(--border-warning)',color:'var(--text-warning)'}:inp} value={draftStakeOverride||liveStake} onChange={e=>setDraftStakeOverride(e.target.value)}/>{isRecoveryStake&&<div style={{fontSize:11,color:'var(--text-warning)',marginTop:2}}>{stakeCaption}</div>}{isLossRecoveryPhase&&<div style={{fontSize:11,color:'var(--text-warning)',marginTop:2}}>Recovering from an early loss — staying at base until the session turns positive by at least $1.</div>}</div>
               <div><label style={lbl}>Payout %</label><input type="number" min="1" max="100" step="1" style={inp} placeholder={String(Math.round(PAYOUT*100))} value={draftPayoutOverride} onChange={e=>setDraftPayoutOverride(e.target.value)}/></div>
             </div>
             <div style={{fontSize:12,marginTop:10}}>
@@ -4895,7 +5011,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
         <div className="grid-3">
           <Metric label="Balance" value={f$(bal)}/>
           {mmIsEscalating
-            ?<Metric label="Style" value={mmStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} sub={amReasoning}/>
+            ?<Metric label="Style" value={mmStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} sub={amReasoning} color={isPlRecoveryStake(activeAmSession,mmStyle)?'var(--text-warning)':undefined}/>
             :<Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>}
           <Metric label="Trade stake" value={f$(mmIsEscalating?amNextStake:stake.actual)} color="var(--text-accent)"/>
         </div>
@@ -6032,6 +6148,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
     plProfitTargetPctDemo:settings?.plProfitTargetPctDemo ?? 10,plProfitTargetPctReal:settings?.plProfitTargetPctReal ?? 10,
     plLossTargetPctDemo:settings?.plLossTargetPctDemo ?? 10,plLossTargetPctReal:settings?.plLossTargetPctReal ?? 10,
     plMaxTradesDemo:settings?.plMaxTradesDemo ?? 8,plMaxTradesReal:settings?.plMaxTradesReal ?? 8,
+    plBreakevenRecoveryDemo:settings?.plBreakevenRecoveryDemo ?? false,plBreakevenRecoveryReal:settings?.plBreakevenRecoveryReal ?? false,
     riskCalcBalance:'',riskCalcTargetPct:'',riskCalcTradesPerSession:''});
   const[saved,setSaved]=useState(false);
   const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
@@ -6359,6 +6476,17 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
                   <button key={n} type="button" style={{...btn((f[`plMaxEscalations${modeKey}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`plMaxEscalations${modeKey}`,n)}>{n}</button>
                 ))}
               </div>
+              {(f[`plMaxEscalations${modeKey}`]??1)===2?(
+                <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13,marginTop:8}}>
+                  <input type="checkbox" checked={!!f[`plBreakevenRecovery${modeKey}`]} onChange={e=>set(`plBreakevenRecovery${modeKey}`,e.target.checked)}/>
+                  Breakeven recovery after max-escalation loss
+                </label>
+              ):(
+                <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginTop:8,color:'var(--text-muted)'}}>
+                  <input type="checkbox" checked={false} disabled/>
+                  Breakeven recovery — only available with 2 max escalations
+                </label>
+              )}
               <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeKey}`]??10}% of session start balance</label>
               <input type="range" min="1" max="50" step="1" value={f[`plProfitTargetPct${modeKey}`]??10} onChange={e=>set(`plProfitTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
               <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeKey}`]??10}% of session start balance</label>
@@ -7133,7 +7261,7 @@ export default function App(){
       // Rebuild counters from scratch (in order) so streaks are correct.
       const amStyle=getMoneyMgmtStyleForMode(settings,sess.accountMode);
       const isPL=amStyle==='PROFIT_LOCK';
-      let streak=0,nextStake=isEscalatingStyle(amStyle)?amBaseStake(sess.startBalance??0,settings):null;
+      let streak=0,nextStake=isEscalatingStyle(amStyle)?amBaseStake(sess.startBalance??0,settings):null,firstProfit=null,recoveryPhase=false;
       let runningBal=sess.startBalance??0;
       let w=0,l=0,tc=0,cl=0,cw=0,sp=0;
       for(const t of sessionTrades){
@@ -7145,14 +7273,14 @@ export default function App(){
         if(isEscalatingStyle(amStyle)){
           runningBal+=t.pnl||0;
           const r=isPL
-            ?advanceProfitLock({streak,nextStake},t.outcome,t.pnl||0,runningBal,settings,sess.accountMode,sp)
+            ?advanceProfitLock({streak,nextStake,firstProfit,recoveryPhase},t.outcome,t.pnl||0,runningBal,settings,sess.accountMode,sp)
             :advanceAntiMartingale({streak,nextStake},t.outcome,runningBal,settings,sess.accountMode);
-          streak=r.streak;nextStake=r.nextStake;
+          streak=r.streak;nextStake=r.nextStake;if(isPL){firstProfit=r.firstProfit;recoveryPhase=r.recoveryPhase;}
         }
       }
       const nl=Math.max(0,l-w);
       const rebuilt={...sess,trades:tc,wins:w,losses:l,conLoss:cl,conWin:cw,netLoss:nl,sPnl:sp,
-        ...(isPL?{plStreak:streak,plNextStake:nextStake}:amStyle==='ANTI_MARTINGALE'?{amStreak:streak,amNextStake:nextStake}:{})};
+        ...(isPL?{plStreak:streak,plNextStake:nextStake,plStreakFirstProfit:firstProfit,plRecoveryPhase:recoveryPhase}:amStyle==='ANTI_MARTINGALE'?{amStreak:streak,amNextStake:nextStake}:{})};
       // Use the last resolved trade's timestamp as endTime so the 6h
       // session gap is measured from when trading actually stopped,
       // not from when this reconciliation runs.
@@ -7166,7 +7294,7 @@ export default function App(){
         // A trade delete can leave streak/next-stake stale even with no end
         // event (e.g. an escalation trade removed) — still worth persisting.
         const streakKey=isPL?'plStreak':'amStreak',stakeKey=isPL?'plNextStake':'amNextStake';
-        if(rebuilt[streakKey]!==(sess[streakKey]||0)||rebuilt[stakeKey]!==sess[stakeKey]){changed=true;return rebuilt;}
+        if(rebuilt[streakKey]!==(sess[streakKey]||0)||rebuilt[stakeKey]!==sess[stakeKey]||(isPL&&(rebuilt.plStreakFirstProfit!==(sess.plStreakFirstProfit??null)||rebuilt.plRecoveryPhase!==(sess.plRecoveryPhase||false)))){changed=true;return rebuilt;}
         return sess;
       }
       const lk=chkLock(rebuilt,getTradeStyleForMode(settings,sess.accountMode));
