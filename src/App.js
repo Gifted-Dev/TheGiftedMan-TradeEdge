@@ -953,6 +953,13 @@ function getAmMaxTradesForMode(settings,mode){
 // the stake (up to the configured max escalations, capped at amCeilingPct% of
 // balance); any loss, or completing the escalation ladder, resets to base.
 function amBaseStake(balance, settings) {
+  // FIXED risk sizing: the base stake IS the configured dollar amount,
+  // verbatim — same short-circuit as calcStake, no percentage math, no
+  // ceiling (ceilingPct only ever caps escalated stakes above base, applied
+  // in advanceAntiMartingale/liveAmNextStake — never here).
+  if (settings?.riskMode === 'FIXED') {
+    return Math.max(1, parseFloat(settings.riskAmount) || 1);
+  }
   const riskPct = settings?.riskPercent ?? 5;
   return Math.max(1, Math.round(balance * (riskPct / 100) * 100) / 100);
 }
