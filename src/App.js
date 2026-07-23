@@ -260,12 +260,17 @@ function toTradeRow(userId,t){
   return{id:t.id,user_id:userId,timestamp:new Date(t.timestamp).toISOString(),pair:t.pair,direction:t.direction,
     zone_type:t.zoneType,zone_grade:t.zoneGrade,stake:t.stake,outcome:t.outcome,pnl:t.pnl,source:t.source,
     screenshots:(t.screenshots||[]).map(shotPath),notes:t.notes,session_num:t.sessionNum,is_analyzed:t.isAnalyzed,
-    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,score:t.score,hardFilterFailed:t.hardFilterFailed,hardFilterFailures:t.hardFilterFailures,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode,offPlan:t.offPlan||false,lockingModeAtTime:t.lockingModeAtTime||'SOFT',payoutPct:t.payoutPct||null,strategyId:t.strategyId||'zone-sd'}};
+    extra:{date:t.date,analysisId:t.analysisId,criteria:t.criteria,gateResults:t.gateResults,score:t.score,hardFilterFailed:t.hardFilterFailed,hardFilterFailures:t.hardFilterFailures,failedCriteria:t.failedCriteria,keyStrengths:t.keyStrengths,keyWeaknesses:t.keyWeaknesses,executionAdvice:t.executionAdvice,summary:t.summary,confidence:t.confidence,verdict:t.verdict,recommendation:t.recommendation,accountMode:t.accountMode,offPlan:t.offPlan||false,lockingModeAtTime:t.lockingModeAtTime||'SOFT',payoutPct:t.payoutPct||null,strategyIds:t.strategyIds&&t.strategyIds.length?t.strategyIds:['zone-sd']}};
 }
 function fromTradeRow(r){
-  return{id:r.id,timestamp:new Date(r.timestamp).getTime(),pair:r.pair,direction:r.direction,zoneType:r.zone_type,
+  const t={id:r.id,timestamp:new Date(r.timestamp).getTime(),pair:r.pair,direction:r.direction,zoneType:r.zone_type,
     zoneGrade:r.zone_grade,stake:r.stake,outcome:r.outcome,pnl:r.pnl,source:r.source,screenshots:r.screenshots||[],
     notes:r.notes,sessionNum:r.session_num,isAnalyzed:r.is_analyzed,...(r.extra||{})};
+  // Normalizes legacy single strategyId rows into the array shape at read
+  // time — no backfill migration needed, every consumer only ever sees strategyIds.
+  if(!Array.isArray(t.strategyIds)||!t.strategyIds.length)t.strategyIds=[t.strategyId||'zone-sd'];
+  delete t.strategyId;
+  return t;
 }
 function toSessionRow(userId,date,s){
   return{id:s.id,user_id:userId,date,num:s.num,account_mode:s.accountMode,start_time:new Date(s.startTime).toISOString(),
@@ -841,7 +846,7 @@ function getTradeStyleForMode(settings,mode){
   return settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1;
 }
 function styleName(id){return id===1?'Precision':id===2?'Active':id===3?'Structured':'plan';}
-function lastStrategyId(){try{return localStorage.getItem('gm_last_strategy_id')||'';}catch{return'';}}
+function lastStrategyIds(){try{const v=JSON.parse(localStorage.getItem('gm_last_strategy_ids')||'[]');return Array.isArray(v)?v:[];}catch{return[];}}
 // Same "remember the last thing you picked" convenience as lastStrategyId,
 // for Quick Log's direction toggle.
 function lastDirection(){try{return localStorage.getItem('gm_last_direction')||'BUY';}catch{return'BUY';}}
@@ -1739,7 +1744,7 @@ async function composeAdviceOpinion(question,facts,settings,recentHistory){
 // proportionate version: keep the core test simple (non-overlapping
 // confidence intervals vs baseline) but raise the floor for even
 // considering a bucket, so thin buckets never reach the test at all.
-const PATTERN_DIMENSIONS=['sessionNum','dayOfWeek','hourBucket','pair','strategy','zoneGrade','offPlan','streakPosition'];
+const PATTERN_DIMENSIONS=['sessionNum','dayOfWeek','hourBucket','pair','strategy','strategyCombo','zoneGrade','offPlan','streakPosition'];
 const PATTERN_MIN_N=15;          // floor for even considering a bucket
 const PATTERN_SMALL_SAMPLE_N=20; // n in [15,19] still clears the floor but keeps the caveat
 function ciOverlaps(a,b){return a.lower<=b.upper&&b.lower<=a.upper;}
@@ -1775,7 +1780,11 @@ function bucketsFor(dimension,done,strategies){
         case'dayOfWeek':label=new Date(t.timestamp).toLocaleDateString(undefined,{weekday:'long'});break;
         case'hourBucket':{const h=new Date(t.timestamp).getHours();const start=Math.floor(h/4)*4;label=`${fmtHour(start)}-${fmtHour(start+4)}`;break;}
         case'pair':label=t.pair||null;break;
-        case'strategy':label=strategyLabel(t.strategyId||'zone-sd',strategies);break;
+        // Solo and combo trades are separate buckets — a combo trade never
+        // feeds an individual strategy's pattern stats (would double-count
+        // it into every strategy it carries), matching Analytics' split.
+        case'strategy':label=t.strategyIds.length===1?strategyLabel(t.strategyIds[0],strategies):null;break;
+        case'strategyCombo':label=t.strategyIds.length>1?t.strategyIds.slice().sort().map(id=>strategyLabel(id,strategies)).join(' + '):null;break;
         case'zoneGrade':label=t.zoneGrade||null;break;
         case'offPlan':label=t.offPlan?'Off-plan':'On-plan';break;
         default:label=null;
@@ -1851,10 +1860,24 @@ function computeAskFacts(spec,trades,mode,strategies){
       result={...base,streak,streakType:type};break;
     }
     case'GRADE_BREAKDOWN':result={...base,rows:['A+','A','B','C','INVALID','UNGRADED'].map(g=>({grade:g,...wrStat(done.filter(t=>t.zoneGrade===g))})).filter(r=>r.n>0)};break;
-    case'STRATEGY_BREAKDOWN':result={...base,rows:[...new Set(done.map(t=>t.strategyId||'zone-sd'))].map(id=>{
-      const st=done.filter(t=>(t.strategyId||'zone-sd')===id);
-      return{strategy:strategyLabel(id,strategies),...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
-    }).filter(r=>r.n>0)};break;
+    case'STRATEGY_BREAKDOWN':{
+      // Solo trades keep today's per-strategy rows unchanged; combo trades
+      // (2+ tags) get their own rows labeled "(combo)" instead of being
+      // folded into any individual strategy's numbers.
+      const soloDone=done.filter(t=>t.strategyIds.length===1);
+      const comboDone=done.filter(t=>t.strategyIds.length>1);
+      const soloRows=[...new Set(soloDone.map(t=>t.strategyIds[0]))].map(id=>{
+        const st=soloDone.filter(t=>t.strategyIds[0]===id);
+        return{strategy:strategyLabel(id,strategies),...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
+      }).filter(r=>r.n>0);
+      const comboKey=t=>t.strategyIds.slice().sort().join('+');
+      const comboRows=[...new Set(comboDone.map(comboKey))].map(key=>{
+        const st=comboDone.filter(t=>comboKey(t)===key);
+        const label=`${key.split('+').map(id=>strategyLabel(id,strategies)).join(' + ')} (combo)`;
+        return{strategy:label,...wrStat(st),pnl:Math.round(st.reduce((a,t)=>a+t.pnl,0)*100)/100};
+      }).filter(r=>r.n>0);
+      result={...base,rows:[...soloRows,...comboRows]};break;
+    }
     case'PAIR_BREAKDOWN':{
       const byPair={};done.forEach(t=>{(byPair[t.pair]=byPair[t.pair]||[]).push(t);});
       result={...base,rows:Object.entries(byPair).map(([pair,list])=>({pair,...wrStat(list)})).sort((a,b)=>b.n-a.n).slice(0,8)};break;
@@ -1924,9 +1947,12 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   // strategy the real edge is (e.g. "your Trend/Pattern description says any
   // clear trend, but only A/A+ trades in it clear breakeven") rather than
   // only comparing whole strategies against each other.
+  // Combo-tagged trades (2+ strategyIds) are excluded here and rolled up
+  // separately below — folding them in would double-count the same trade
+  // into each of its strategies' win rates.
   const stratMap={};
-  done.forEach(t=>{
-    const sid=t.strategyId||'zone-sd';
+  done.filter(t=>t.strategyIds.length===1).forEach(t=>{
+    const sid=t.strategyIds[0];
     if(!stratMap[sid])stratMap[sid]={wins:0,n:0,pnl:0,offPlan:0,grades:{}};
     const s=stratMap[sid];
     s.n++;if(t.outcome==='WIN')s.wins++;s.pnl+=t.pnl;if(t.offPlan)s.offPlan++;
@@ -1943,12 +1969,23 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
       n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
       offPlanRate:d.n?Math.round((d.offPlan/d.n)*1000)/10:0,gradeBreakdownWithinStrategy};
   }).sort((a,b)=>b.n-a.n);
+  const comboMap={};
+  done.filter(t=>t.strategyIds.length>1).forEach(t=>{
+    const key=t.strategyIds.slice().sort().join('+');
+    if(!comboMap[key])comboMap[key]={wins:0,n:0,pnl:0,ids:t.strategyIds};
+    const c=comboMap[key];
+    c.n++;if(t.outcome==='WIN')c.wins++;c.pnl+=t.pnl;
+  });
+  const combinationBreakdown=Object.entries(comboMap).map(([key,d])=>({
+    key,name:d.ids.map(id=>strategyLabel(id,strategies)).join(' + '),
+    n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
+  })).sort((a,b)=>b.n-a.n);
   // Recent trades (last 15 with notes and grades — gives AI context on recent behavior)
   const recentTrades=[...done].sort((a,b)=>b.timestamp-a.timestamp).slice(0,15).map(t=>({
     timestamp:new Date(t.timestamp).toISOString().split('T')[0],
     pair:t.pair,direction:t.direction,zoneGrade:t.zoneGrade,outcome:t.outcome,
     pnl:Math.round(t.pnl*100)/100,stake:t.stake,offPlan:!!t.offPlan,
-    strategy:strategyLabel(t.strategyId||'zone-sd',strategies),
+    strategy:t.strategyIds.map(id=>strategyLabel(id,strategies)).join(' + '),
     notes:t.notes||null,source:t.source||null,
     accountMode:getTradeMode(t),
   }));
@@ -2017,7 +2054,7 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
         profitTargetPct:getAmProfitTargetPctForMode(settings,mode),lossTargetPct:getAmLossTargetPctForMode(settings,mode),
         maxEscalations:getAmMaxEscalationsForMode(settings,mode),maxTrades:getAmMaxTradesForMode(settings,mode),
       }:null)},
-    gradeBreakdown,strategyBreakdown,recentTrades,
+    gradeBreakdown,strategyBreakdown,combinationBreakdown,recentTrades,
     sessions:{completedCount:completedSessions.length,avgTradesPerSession,endReasons:sessionEndReasons,
       lastSession:completedSessions.length?{trades:completedSessions[0].trades,wins:completedSessions[0].wins,losses:completedSessions[0].losses,
         pnl:Math.round(completedSessions[0].sPnl*100)/100,endReason:completedSessions[0].lockReason||completedSessions[0].endReason||null}:null,
@@ -2059,6 +2096,7 @@ function buildAdvisoryContext(profile,question,advisoryType){
       recentSessions:profile.sessions,endReasons:profile.sessions.endReasons,
       currentBalance:profile.account.currentBalance,riskPatterns:profile.riskPatterns};
     case'STRATEGY_GUIDANCE':return{type:advisoryType,strategyBreakdown:profile.strategyBreakdown,
+      combinationBreakdown:profile.combinationBreakdown,
       gradeBreakdown:profile.gradeBreakdown,allTime:profile.performance.allTime,
       recentTrades:profile.recentTrades,zoneAnalysis:profile.zoneAnalysis};
     default:return{type:advisoryType,profile};
@@ -2118,7 +2156,7 @@ function buildAdvisoryFallback(profile,advisoryType){
     case'DISCIPLINE_CHECK':return`${base} Off-plan rate: ${profile.discipline.offPlanRate}% (${profile.discipline.offPlanCount} of ${profile.account.tradeCount}). Off-plan WR: ${profile.discipline.offPlanWr}% vs on-plan ${profile.discipline.onPlanWr}%.`;
     case'PERFORMANCE_REVIEW':return`${base} Last 7 days: ${profile.performance.last7Days.n} trades, ${profile.performance.last7Days.wins}W/${profile.performance.last7Days.losses}L. Last 30 days: ${profile.performance.last30Days.n} trades, ${profile.performance.last30Days.wins}W/${profile.performance.last30Days.losses}L.`;
     case'SESSION_PREP':return`${base} Style: ${profile.configuration.activeStyle}. Risk: ${profile.configuration.riskPercent}%. Sessions/day: ${profile.configuration.sessionsPerDay}. ${profile.riskPatterns.currentStreakType?`Current streak: ${profile.riskPatterns.currentStreak} ${profile.riskPatterns.currentStreakType}.`:'No active streak.'}`;
-    case'STRATEGY_GUIDANCE':return`${base} By strategy: ${profile.strategyBreakdown.map(s=>`${s.name} ${s.wr}% (n=${s.n})`).join(', ')||'no strategy data yet'}.`;
+    case'STRATEGY_GUIDANCE':return`${base} By strategy: ${profile.strategyBreakdown.map(s=>`${s.name} ${s.wr}% (n=${s.n})`).join(', ')||'no strategy data yet'}.${profile.combinationBreakdown?.length?` Combination trades (tagged with more than one strategy, kept separate from the above): ${profile.combinationBreakdown.map(c=>`${c.name} ${c.wr}% (n=${c.n})`).join(', ')}.`:''}`;
     default:return base;
   }
 }
@@ -3507,7 +3545,7 @@ function TradeDetailView({trade,onZoom,strategies}){
   const facts=[
     ['Pair',trade.pair,null],
     ['Direction',trade.direction,trade.direction==='BUY'?'var(--text-success)':'var(--text-danger)'],
-    ['Strategy',strategyLabel(trade.strategyId,strategies)||'Zone (S&D)',null],
+    ['Strategy',(trade.strategyIds||[]).map(id=>strategyLabel(id,strategies)).join(' + ')||'Zone (S&D)',null],
     ['Trade grade',trade.zoneGrade,null],
     ['Stake',f$(trade.stake),null],
     ['Outcome',trade.outcome,trade.outcome==='WIN'?'var(--text-success)':trade.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'],
@@ -3613,7 +3651,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     // to a hardcoded pick — on a fresh browser with no prior choice this is
     // '', which addManual refuses to save without the user explicitly
     // picking one, so it's never silently assumed either way.
-    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyId:lastStrategyId()};
+    return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyIds:lastStrategyIds()};
   });
   const[pairOptions,setPairOptions]=useState(PAIRS);
   const[selectedTrade,setSelectedTrade]=useState(null);
@@ -3774,7 +3812,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         offPlan=true;
       }
     }
-    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode,offPlan,lockingModeAtTime,strategyId:'zone-sd'};
+    const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode,offPlan,lockingModeAtTime,strategyIds:['zone-sd']};
     await saveTrades(prev=>[t,...(prev||[])]);
     if(sess){
       const us={...sess,trades:sess.trades+1};
@@ -3829,7 +3867,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     if(saving)return;
     // Never silently assumed — the user must actively pick a strategy every
     // time, even though the toggle is pre-filled with their last choice.
-    if(!mf.strategyId){alert('Select a strategy before saving.');return;}
+    if(!(mf.strategyIds||[]).length){alert('Select at least one strategy before saving.');return;}
     const entryAccountMode=mf.accountMode || journalTab;
     // The ONE hard stop left in the whole system.
     if(isDailyCircuitBroken(trades,entryAccountMode)){
@@ -3927,10 +3965,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const tradeDateTime=new Date(ty,tm-1,td,now.getHours(),now.getMinutes(),now.getSeconds());
       const timestamp = tradeDateTime.getTime();
 
-      const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode,offPlan,lockingModeAtTime,payoutPct:payoutPct||null,strategyId:mf.strategyId};
+      const t={id:uid(),timestamp,date:tradeDate,sessionNum:sessionNum,pair,direction:mf.dir,zoneType:'',zoneGrade:mf.grade,stake:entryStake,outcome,pnl,source:'MANUAL',analysisId:null,screenshots:mf.screenshots.map(x=>x.b64||x.b||x).filter(Boolean),notes:mf.notes,isAnalyzed:false,accountMode:entryAccountMode,offPlan,lockingModeAtTime,payoutPct:payoutPct||null,strategyIds:mf.strategyIds};
 
       await saveTrades(prev=>[t,...(prev||[])]);
-      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyId:mf.strategyId});setManualSuggestion(null);
+      setManual(false);setOffPlanOverride(false);smf({pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:journalTab,stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyIds:mf.strategyIds});setManualSuggestion(null);
       try{sessionStorage.removeItem('gm_draft_mf');}catch{}
     }finally{
       setSaving(false);
@@ -3975,7 +4013,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // Outcome and strategy filters combine (AND), not exclusive alternatives —
   // "Zone + Win" narrows both dimensions at once, same as either alone.
   const outcomeFiltered=filt==='ALL'?tabTrades:tabTrades.filter(t=>filt==='PENDING'?t.outcome==='PENDING':t.outcome===filt);
-  const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>(t.strategyId||'zone-sd')===stratFilt);
+  const stratFiltered=stratFilt==='ALL'?outcomeFiltered:outcomeFiltered.filter(t=>t.strategyIds.includes(stratFilt));
   // Ungraded catches everything that isn't a real A+/A/B/C grade — Quick Log
   // trades (zoneGrade:''), never-graded manual entries, and an AI-graded
   // INVALID verdict alike, so the filter's 5 options are exhaustive with no
@@ -4080,6 +4118,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         {[{id:'ALL',label:'All'},...activeStrategies.map(s=>({id:s.id,label:s.name}))].map(f=>(
           <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setStratFilt(f.id)}>{f.label}</button>
         ))}
+        {/* matches solo AND combo trades that include this strategy — .includes(), not === */}
       </div>
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Grade:</span>
@@ -4152,19 +4191,24 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             {manualIsAm&&mf.stakeMode==='DEFAULT'&&<div style={{fontSize:11,color:isPlRecoveryStake(getActive(ss,manualAccountMode),manualStyle)?'var(--text-warning)':'var(--text-muted)',marginTop:2}}>{manualStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'}: {manualAmReasoning}</div>}
           </div>
           <div style={{marginTop:10}}>
-            <label style={lbl}>Strategy</label>
-            <select aria-label="Strategy" style={inp} value={mf.strategyId||''} onChange={e=>{
-              const id=e.target.value;
-              smf(m=>({...m,strategyId:id}));
-              try{localStorage.setItem('gm_last_strategy_id',id);}catch{}
-            }}>
-              <option value="">Select a strategy…</option>
-              {activeStrategies.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
-            {!mf.strategyId&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Required — pick whichever was actually used for this trade.</div>}
+            <label style={lbl}>Strategy (select one or more)</label>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {activeStrategies.map(s=>{
+                const on=(mf.strategyIds||[]).includes(s.id);
+                return(
+                  <button key={s.id} type="button" style={{...btn(on?'pri':'def'),padding:'6px 10px'}} onClick={()=>{
+                    const cur=mf.strategyIds||[];
+                    const next=on?cur.filter(id=>id!==s.id):[...cur,s.id];
+                    try{localStorage.setItem('gm_last_strategy_ids',JSON.stringify(next));}catch{}
+                    smf(m=>({...m,strategyIds:next}));
+                  }}>{s.name}</button>
+                );
+              })}
+            </div>
+            {!(mf.strategyIds||[]).length&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Required — select all strategies that genuinely applied to this trade.</div>}
           </div>
           <div style={{marginTop:10}}>
-            <label style={lbl}>Trade grade{mf.strategyId&&<span style={{fontWeight:400,color:'var(--text-muted)'}}> ({strategyLabel(mf.strategyId,strategies)})</span>}</label>
+            <label style={lbl}>Trade grade{(mf.strategyIds||[]).length>0&&<span style={{fontWeight:400,color:'var(--text-muted)'}}> ({mf.strategyIds.map(id=>strategyLabel(id,strategies)).join(' + ')})</span>}</label>
             <div style={{display:'flex',gap:8}}>
               {['A+','A','B','C','UNGRADED'].map(g=><button key={g} style={{...btn(mf.grade===g?'pri':'def'),flex:1}} onClick={()=>smf(m=>({...m,grade:g}))}>{g}</button>)}
             </div>
@@ -4248,7 +4292,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{(t.accountMode||'DEMO')==='REAL'?'Real':'Demo'}</span>
               {!t.isAnalyzed&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>Manual</span>}
               {t.offPlan&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>Off-plan</span>}
-              {t.strategyId&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{strategyLabel(t.strategyId,strategies)}</span>}
+              {t.strategyIds?.length>0&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{t.strategyIds.length>1?`Combo: ${t.strategyIds.map(id=>strategyLabel(id,strategies)).join(' + ')}`:strategyLabel(t.strategyIds[0],strategies)}</span>}
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:13,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'}}>{t.outcome==='PENDING'?`${f$(t.stake)} pending`:(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
@@ -4321,7 +4365,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
   // Opening a trade always lands on the read-only Detail view first —
   // Edit is a deliberate secondary action, never the default.
   const[editingTrade,setEditingTrade]=useState(false);
-  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategyId:'',dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
+  const[editDraft,setEditDraft]=useState({notes:'',screenshots:[],pair:'',strategyIds:[],dir:'BUY',outcome:'PENDING',grade:'A',stake:'',payoutPct:''});
   const[preview,setPreview]=useState(null); // {items:[url,...], index}
   const[savingEdit,setSavingEdit]=useState(false);
   const[editErr,setEditErr]=useState(null);
@@ -4348,7 +4392,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
       const validStake=Number.isFinite(stake)&&stake>0?stake:trade.stake;
       const payoutPct=editDraft.outcome==='WIN'?parseFloat(editDraft.payoutPct)||undefined:undefined;
       const pnl=calcPnl(validStake,editDraft.outcome,payoutPct);
-      const updated={...trade,notes:editDraft.notes,screenshots,pair,strategyId:editDraft.strategyId,
+      const updated={...trade,notes:editDraft.notes,screenshots,pair,strategyIds:editDraft.strategyIds,
         direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
         payoutPct:payoutPct||null};
       await saveTrades(prev=>prev.map(t=>t.id===trade.id?updated:t));
@@ -4419,7 +4463,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
   // on every such mutation would blow away in-progress notes edits mid-typing.
   useEffect(()=>{
     if(trade){
-      setEditDraft({notes:trade.notes||'',pair:trade.pair||'',strategyId:trade.strategyId||'zone-sd',
+      setEditDraft({notes:trade.notes||'',pair:trade.pair||'',strategyIds:trade.strategyIds?.length?trade.strategyIds:['zone-sd'],
         dir:trade.direction||'BUY',outcome:trade.outcome||'PENDING',grade:trade.zoneGrade||'UNGRADED',
         stake:String(trade.stake??''),payoutPct:trade.payoutPct?String(trade.payoutPct):'',
         screenshots:(trade.screenshots||[]).map((src,i)=>{
@@ -4483,17 +4527,23 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
                 {pairOptions.map(p=><option key={p} value={p}/>)}
               </datalist>
               <div style={{marginTop:10}}>
-                <label style={lbl}>Strategy</label>
-                <select aria-label="Strategy" style={inp} value={editDraft.strategyId||''} onChange={e=>setEditDraft(d=>({...d,strategyId:e.target.value}))}>
-                  <option value="">Select a strategy…</option>
+                <label style={lbl}>Strategy (select one or more)</label>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                   {[...activeStrategies,
-                    // Keep the trade's current strategy selectable inline even if it's
-                    // since been archived — an archived strategy is only hidden from
-                    // NEW entries, not erased from a trade that already references it.
-                    ...(editDraft.strategyId&&!activeStrategies.some(s=>s.id===editDraft.strategyId)
-                      ?(strategies||[]).filter(s=>s.id===editDraft.strategyId):[])
-                  ].map(s=><option key={s.id} value={s.id}>{s.name}{s.archived?' (archived)':''}</option>)}
-                </select>
+                    // Keep any of the trade's current strategies selectable inline even
+                    // if since archived — archiving only hides it from NEW entries, not
+                    // from a trade that already references it.
+                    ...(strategies||[]).filter(s=>editDraft.strategyIds?.includes(s.id)&&!activeStrategies.some(a=>a.id===s.id))
+                  ].map(s=>{
+                    const on=(editDraft.strategyIds||[]).includes(s.id);
+                    return(
+                      <button key={s.id} type="button" style={{...btn(on?'pri':'def'),padding:'6px 10px'}} onClick={()=>setEditDraft(d=>{
+                        const cur=d.strategyIds||[];
+                        return{...d,strategyIds:on?cur.filter(id=>id!==s.id):[...cur,s.id]};
+                      })}>{s.name}{s.archived?' (archived)':''}</button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             <div style={card}>
@@ -4775,7 +4825,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
       const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sessionForMode.num,pair,direction:draftDir,
         zoneType:'',zoneGrade:'',stake,outcome,pnl,source:'QUICKLOG',screenshots:[],notes:'',
         isAnalyzed:false,accountMode:mode,offPlan:false,lockingModeAtTime:'SOFT',payoutPct:payoutPct||null,
-        strategyId:lastStrategyId()||'zone-sd'};
+        strategyIds:lastStrategyIds().length?lastStrategyIds():['zone-sd']};
       await saveTrades(prev=>[t,...(prev||[])]);
 
       setDraftPair('');setDraftStakeOverride('');
@@ -5346,11 +5396,23 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
   // user's full strategies list. A strategyId that no longer resolves (only
   // possible if a row were hard-deleted outside the app, since Settings only
   // ever soft-deletes) defensively falls back to "(unknown)".
-  const strategyBreakdown=[...new Set(done.map(t=>t.strategyId||'zone-sd'))].map(id=>{
-    const st=done.filter(t=>(t.strategyId||'zone-sd')===id),sw=st.filter(t=>t.outcome==='WIN').length;
+  // Only solo-tagged trades count toward an individual strategy's stats — a
+  // combo-tagged trade would otherwise inflate/deflate whichever strategies
+  // it happened to also carry. Combo trades get their own breakdown below,
+  // grouped by exact combination, never blended into the per-strategy numbers.
+  const soloDone=done.filter(t=>t.strategyIds.length===1);
+  const comboDone=done.filter(t=>t.strategyIds.length>1);
+  const strategyBreakdown=[...new Set(soloDone.map(t=>t.strategyIds[0]))].map(id=>{
+    const st=soloDone.filter(t=>t.strategyIds[0]===id),sw=st.filter(t=>t.outcome==='WIN').length;
     const name=strategyLabel(id,strategyList)||'(unknown)';
-    return{id,name,total:st.length,wins:sw,wr:st.length?(sw/st.length)*100:0,pnl:st.reduce((a,t)=>a+t.pnl,0)};
+    return{id,name,total:st.length,wins:sw,wr:st.length?(sw/st.length)*100:0,pnl:st.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(sw,st.length)};
   }).filter(x=>x.total>0);
+  const comboKey=t=>t.strategyIds.slice().sort().join('+');
+  const combinationBreakdown=[...new Set(comboDone.map(comboKey))].map(key=>{
+    const ct=comboDone.filter(t=>comboKey(t)===key),cw=ct.filter(t=>t.outcome==='WIN').length;
+    const label=key.split('+').map(id=>strategyLabel(id,strategyList)||'(unknown)').join(' + ');
+    return{key,label,total:ct.length,wins:cw,wr:ct.length?(cw/ct.length)*100:0,pnl:ct.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(cw,ct.length)};
+  }).sort((a,b)=>b.total-a.total);
   const pairsMap={};done.forEach(t=>{if(!pairsMap[t.pair])pairsMap[t.pair]={wins:0,total:0};pairsMap[t.pair].total++;if(t.outcome==='WIN')pairsMap[t.pair].wins++;});
   const pairs=Object.entries(pairsMap).map(([p,d])=>({p,wr:(d.wins/d.total)*100,...d})).sort((a,b)=>b.total-a.total).slice(0,6);
   const be=(100/(100+PAYOUT*100));
@@ -5482,6 +5544,26 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
             <div key={x.id} style={{marginTop:10,paddingTop:8,borderTop:'0.5px solid var(--border)'}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{x.name}</span><span style={{fontSize:12,color:'var(--text-muted)'}}>{x.total} trades</span></div>
+                <span style={{fontSize:13,fontFamily:'var(--font-mono)',color:x.wr>=65?'var(--text-success)':'var(--text-accent)'}}>{fp(x.wr)}</span>
+              </div>
+              <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
+                <div style={{height:'100%',background:x.wr>=65?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,x.wr)}%`}}/>
+              </div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.total}/></div>
+              <div style={{fontSize:12,marginTop:4,color:x.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(x.pnl>=0?'+':'')+f$(x.pnl)} P&L</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {combinationBreakdown.length>0&&(
+        <div style={card}>
+          <div style={{fontSize:14,fontWeight:500,marginBottom:4}}>Combination trades</div>
+          <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:6}}>Trades tagged with more than one strategy — kept separate so they never inflate an individual strategy's win rate. Buckets are often thin; read the confidence interval, not just the headline rate.</div>
+          {combinationBreakdown.map(x=>(
+            <div key={x.key} style={{marginTop:10,paddingTop:8,borderTop:'0.5px solid var(--border)'}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontSize:13,fontWeight:600,color:'var(--text-primary)'}}>{x.label}</span><span style={{fontSize:12,color:'var(--text-muted)'}}>{x.total} trades{x.total<PATTERN_SMALL_SAMPLE_N?' · small sample':''}</span></div>
                 <span style={{fontSize:13,fontFamily:'var(--font-mono)',color:x.wr>=65?'var(--text-success)':'var(--text-accent)'}}>{fp(x.wr)}</span>
               </div>
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
@@ -6084,7 +6166,7 @@ function StrategyRow({strategy,trades,updateStrategy,deleteStrategy}){
   const[editing,setEditing]=useState(false);
   const[name,setName]=useState(strategy.name);
   const[desc,setDesc]=useState(strategy.description||'');
-  const inUse=(trades||[]).some(t=>(t.strategyId||'zone-sd')===strategy.id);
+  const inUse=(trades||[]).some(t=>t.strategyIds.includes(strategy.id));
   async function save(){
     if(!name.trim())return;
     await updateStrategy({...strategy,name:name.trim(),description:desc.trim()||null});
@@ -7173,7 +7255,7 @@ export default function App(){
   // are never deletable — enforced here too, not just by hiding the button.
   const deleteStrategy=async strat=>{
     if(strat.isBuiltin)return;
-    const inUse=trades.some(t=>(t.strategyId||'zone-sd')===strat.id);
+    const inUse=trades.some(t=>t.strategyIds.includes(strat.id));
     if(inUse){await updateStrategy({...strat,archived:true});return;}
     setStrategies(prev=>prev.filter(s=>s.id!==strat.id));
     if(authUser)await supabase.from('strategies').delete().eq('user_id',authUser.id).eq('id',strat.id);
