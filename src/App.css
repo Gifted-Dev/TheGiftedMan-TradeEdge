@@ -36,3 +36,12 @@
     transform: rotate(360deg);
   }
 }
+
+/* InfoTip's <summary> — hide the default disclosure triangle in both engines
+   so only the (?) circle we render ourselves shows. */
+.gm-infotip > summary {
+  list-style: none;
+}
+.gm-infotip > summary::-webkit-details-marker {
+  display: none;
+}

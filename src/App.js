@@ -224,11 +224,13 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2);
 
 // ── Supabase row mappers (camelCase app shape <-> snake_case db rows) ──────────
 function toSettingsRow(userId,s){
-  return{user_id:userId,risk_percent:s.riskPercent,trade_style:s.tradeStyle,
+  return{user_id:userId,risk_percent:s.riskPercentDemo??s.riskPercent,trade_style:s.tradeStyle,
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,riskMode:s.riskMode,riskAmount:s.riskAmount,alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn,strictLockingDemo:s.strictLockingDemo,strictLockingReal:s.strictLockingReal,
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,
+      riskModeDemo:s.riskModeDemo,riskModeReal:s.riskModeReal,riskPercentDemo:s.riskPercentDemo,riskPercentReal:s.riskPercentReal,riskAmountDemo:s.riskAmountDemo,riskAmountReal:s.riskAmountReal,
+      alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn,strictLockingDemo:s.strictLockingDemo,strictLockingReal:s.strictLockingReal,
       moneyMgmtStyleDemo:s.moneyMgmtStyleDemo,moneyMgmtStyleReal:s.moneyMgmtStyleReal,
       amMultiplierDemo:s.amMultiplierDemo,amMultiplierReal:s.amMultiplierReal,
       amCeilingPctDemo:s.amCeilingPctDemo,amCeilingPctReal:s.amCeilingPctReal,
@@ -236,12 +238,19 @@ function toSettingsRow(userId,s){
       amLossTargetPctDemo:s.amLossTargetPctDemo,amLossTargetPctReal:s.amLossTargetPctReal,
       amMaxEscalationsDemo:s.amMaxEscalationsDemo,amMaxEscalationsReal:s.amMaxEscalationsReal,
       amMaxTradesDemo:s.amMaxTradesDemo,amMaxTradesReal:s.amMaxTradesReal,
+      amMaxLossesDemo:s.amMaxLossesDemo,amMaxLossesReal:s.amMaxLossesReal,
+      amMaxConsecutiveLossesDemo:s.amMaxConsecutiveLossesDemo,amMaxConsecutiveLossesReal:s.amMaxConsecutiveLossesReal,
       plMaxEscalationsDemo:s.plMaxEscalationsDemo,plMaxEscalationsReal:s.plMaxEscalationsReal,
       plCeilingPctDemo:s.plCeilingPctDemo,plCeilingPctReal:s.plCeilingPctReal,
       plProfitTargetPctDemo:s.plProfitTargetPctDemo,plProfitTargetPctReal:s.plProfitTargetPctReal,
       plLossTargetPctDemo:s.plLossTargetPctDemo,plLossTargetPctReal:s.plLossTargetPctReal,
       plMaxTradesDemo:s.plMaxTradesDemo,plMaxTradesReal:s.plMaxTradesReal,
+      plMaxLossesDemo:s.plMaxLossesDemo,plMaxLossesReal:s.plMaxLossesReal,
+      plMaxConsecutiveLossesDemo:s.plMaxConsecutiveLossesDemo,plMaxConsecutiveLossesReal:s.plMaxConsecutiveLossesReal,
       plBreakevenRecoveryDemo:s.plBreakevenRecoveryDemo,plBreakevenRecoveryReal:s.plBreakevenRecoveryReal,
+      mbEnabledDemo:s.mbEnabledDemo,mbEnabledReal:s.mbEnabledReal,
+      mbDemotionBufferPctDemo:s.mbDemotionBufferPctDemo,mbDemotionBufferPctReal:s.mbDemotionBufferPctReal,
+      mbTierDemo:s.mbTierDemo,mbTierReal:s.mbTierReal,
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
@@ -254,6 +263,23 @@ function fromSettingsRow(r){
   // any already-saved value so accounts that picked it before the rename
   // don't silently land on the wrong provider tab in Settings.
   if(s.aiProvider==='gemini')s.aiProvider='openrouter';
+  // Migration: riskMode/riskPercent/riskAmount used to be single global
+  // fields shared by Demo and Real (a bug — every other Money Management
+  // setting is a genuine per-mode pair). The first time a legacy account
+  // loads post-fix, seed both Demo and Real from whatever the old global
+  // value was, so nobody's existing configuration silently resets.
+  if(s.riskModeDemo===undefined){
+    const legacyMode=r.extra?.riskMode??'PERCENT';
+    s.riskModeDemo=legacyMode;s.riskModeReal=legacyMode;
+  }
+  if(s.riskPercentDemo===undefined){
+    const legacyPct=r.risk_percent??5;
+    s.riskPercentDemo=legacyPct;s.riskPercentReal=legacyPct;
+  }
+  if(s.riskAmountDemo===undefined){
+    const legacyAmt=r.extra?.riskAmount??5;
+    s.riskAmountDemo=legacyAmt;s.riskAmountReal=legacyAmt;
+  }
   return s;
 }
 function toTradeRow(userId,t){
@@ -425,17 +451,113 @@ function calcBal(start,trades,wds){
   return start+pnl-wd;
 }
 
-// Risk sizing supports two modes, switchable anytime in Settings:
+// Risk sizing — mode (PERCENT/FIXED), percent, and amount are all genuine
+// per-mode pairs (riskModeDemo/Real etc.), same as every other Money
+// Management setting — a trader can run Demo on % of balance and Real on a
+// Fixed $ amount, entirely independently.
+function getRiskModeForMode(settings,mode){
+  return(mode==='REAL'?settings?.riskModeReal:settings?.riskModeDemo)||'PERCENT';
+}
+function getRiskPercentForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.riskPercentReal:settings?.riskPercentDemo);
+  return Number.isFinite(v)?v:5;
+}
+function getRiskAmountForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.riskAmountReal:settings?.riskAmountDemo);
+  return Number.isFinite(v)?v:5;
+}
+// ── Milestone Base Sizing ───────────────────────────────────────────────────
+// Optional layer, per mode, that recalculates BASE stake between sessions as
+// the account grows — tiers are FIXED, UNIVERSAL dollar bands (MB_BASE_FLOOR
+// × 2^i: $10-19, $20-39, $40-79, $80-159, ...), the same ladder for every
+// account regardless of that account's own starting balance. Feeds whichever
+// Money Management style is active as its "base stake" — has no
+// escalation/rollover/session-ending logic of its own, and is entirely
+// separate from Withdrawal Milestones (a trader can withdraw at any
+// milestone regardless of which sizing tier they're on).
+// Tiers were originally multiples of the user's OWN starting balance (2^i ×
+// startBal), which meant every account began at "Tier 0, 10%" no matter how
+// much real money that was — a $10 account and a $100 account both computed
+// Tier 0's floor as "1x my own start." Fixed dollar bands are what actually
+// make this balance-AWARE: a $100 account starts several tiers up the same
+// universal ladder a $10 account starts at the bottom of, with a
+// correspondingly lower %.
+const MB_BASE_FLOOR = 10;   // Tier 0's floor, in dollars — fixed, same for every account
+const MB_START_PCT = 10;    // base-stake % at tier 0
+const MB_FLOOR_PCT = 4.5;   // % the taper asymptotically approaches at high tiers
+const MB_DECAY = 0.6;       // how fast each tier's % closes the gap to the floor
+const MB_DEMOTION_BUFFER_PCT_DEFAULT = 5; // hysteresis, configurable per mode
+function getMbEnabledForMode(settings,mode){
+  return!!(mode==='REAL'?settings?.mbEnabledReal:settings?.mbEnabledDemo);
+}
+function getMbDemotionBufferPctForMode(settings,mode){
+  const v=parseFloat(mode==='REAL'?settings?.mbDemotionBufferPctReal:settings?.mbDemotionBufferPctDemo);
+  return Number.isFinite(v)&&v>0?v:MB_DEMOTION_BUFFER_PCT_DEFAULT;
+}
+// The tier currently ASSIGNED (persisted) — never recomputed inline here.
+// Only the between-sessions sync effect resolves and writes a new value, so
+// every read of this getter — including from amBaseStake/calcStake mid-
+// session — always reflects the tier as of the last session's close. The 0
+// default is also what makes first-activation correct with no separate code
+// path: resolveMilestoneTier's promotion branch is instant/unbuffered, so
+// the very first sync-effect run after enabling immediately promotes from
+// this 0 default up to whatever tier the CURRENT balance actually earns.
+function getMbTierForMode(settings,mode){
+  const v=parseInt(mode==='REAL'?settings?.mbTierReal:settings?.mbTierDemo,10);
+  return Number.isFinite(v)&&v>=0?v:0;
+}
+// Tier i's base-stake % — a smooth exponential taper, not a table, so it's
+// defined for any tier index with no upper limit.
+function milestoneTierPct(i){
+  return MB_FLOOR_PCT+(MB_START_PCT-MB_FLOOR_PCT)*Math.pow(MB_DECAY,i);
+}
+// Tier i's balance floor — MB_BASE_FLOOR × 2^i. Fixed and universal, not
+// relative to any account's own starting balance.
+function milestoneTierFloor(i){
+  return MB_BASE_FLOOR*Math.pow(2,i);
+}
+// Dollar base stake for tier i.
+function milestoneTierStake(i){
+  return Math.max(1,Math.round(milestoneTierFloor(i)*(milestoneTierPct(i)/100)*100)/100);
+}
+// Natural tier for a balance, ignoring hysteresis — which fixed band the
+// CURRENT balance falls into, universal, not relative to a starting point.
+function naturalMilestoneTier(balance){
+  if(balance<MB_BASE_FLOOR)return 0; // floor — never below Tier 0
+  return Math.max(0,Math.floor(Math.log2(balance/MB_BASE_FLOOR)));
+}
+// Resolves the tier to actually USE, applying demotion hysteresis — a
+// demotion only happens once the balance falls more than bufferPct% below
+// the CURRENT tier's own floor (not the lower tier's), so balance hovering
+// near a boundary doesn't flip the base stake back and forth. Promotion is
+// always instant, no buffer, the moment balance reaches the next floor —
+// which is also what correctly seeds the RIGHT starting tier the first
+// time this runs after enabling (see getMbTierForMode's comment).
+function resolveMilestoneTier(closingBalance,currentTierIdx,bufferPct=MB_DEMOTION_BUFFER_PCT_DEFAULT){
+  const natural=naturalMilestoneTier(closingBalance);
+  if(natural>=currentTierIdx)return natural;
+  const curFloor=milestoneTierFloor(currentTierIdx);
+  const demotionThreshold=curFloor*(1-bufferPct/100);
+  return closingBalance<demotionThreshold?natural:currentTierIdx;
+}
+
 // PERCENT (default) — stake is riskPercent% of current balance, like before.
 // FIXED — stake is always the same dollar amount regardless of balance.
 // Either way this returns the same {calc,actual,eff} shape so every call site
 // (Dashboard, Journal, Money) stays agnostic to which mode is active.
-function calcStake(bal,settings){
-  if(settings?.riskMode==='FIXED'){
-    const amt=Math.max(1,parseFloat(settings.riskAmount)||1);
+// Milestone Base Sizing, when on for this mode, overrides both — the base
+// becomes whatever the currently ASSIGNED tier (persisted, resolved only
+// between sessions) stakes, read as a pure value here with no recompute.
+function calcStake(bal,settings,mode){
+  if(getMbEnabledForMode(settings,mode)){
+    const amt=milestoneTierStake(getMbTierForMode(settings,mode));
     return{calc:amt,actual:amt,eff:bal?(amt/bal)*100:0};
   }
-  const rPct=settings?.riskPercent??5;
+  if(getRiskModeForMode(settings,mode)==='FIXED'){
+    const amt=Math.max(1,getRiskAmountForMode(settings,mode)||1);
+    return{calc:amt,actual:amt,eff:bal?(amt/bal)*100:0};
+  }
+  const rPct=getRiskPercentForMode(settings,mode);
   const c=bal*(rPct/100);
   const a=Math.max(1,Math.round(c*100)/100);
   return{calc:c,actual:a,eff:bal?(a/bal)*100:0};
@@ -548,6 +670,70 @@ function monthGrid(year,month){
     cells.push({dateKey:mkDateKey(dt.getFullYear(),dt.getMonth(),dt.getDate()),day:dt.getDate(),inMonth:dt.getMonth()===month});
   }
   return cells;
+}
+
+// ── Calendar view helpers ────────────────────────────────────────────────────
+// A separate grid generator, Monday-first, rather than reusing monthGrid
+// above (Sunday-first, purpose-built for DateRangePicker) — keeps the
+// already-working date picker completely untouched.
+function monthGridMonFirst(year,month){
+  const jsDow=new Date(year,month,1).getDay(); // 0=Sun..6=Sat
+  const leadDays=(jsDow+6)%7; // days to back up to the preceding Monday
+  const gridStart=new Date(year,month,1-leadDays);
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const dt=new Date(gridStart.getFullYear(),gridStart.getMonth(),gridStart.getDate()+i);
+    cells.push({dateKey:mkDateKey(dt.getFullYear(),dt.getMonth(),dt.getDate()),day:dt.getDate(),inMonth:dt.getMonth()===month});
+  }
+  return cells;
+}
+// Per-day aggregation for the whole account history (not just the displayed
+// month) — pctPnl needs a continuous running balance carried from the
+// account's actual start, not reset at month boundaries, or a day's %
+// wouldn't be measuring against its own real starting point. Trades' `date`
+// field is the same timezone-safe local-calendar-day string stamped at
+// creation everywhere else in the app (tod()/the manual-entry y/m/d build),
+// never re-derived from timestamp here — reusing it, not recomputing it,
+// is what keeps this immune to the UTC-midnight class of bug fixed earlier.
+// Withdrawals (Real only) are folded in by date too, so the running balance
+// — and therefore the sparkline/drawdown built from it — stays accurate,
+// but a day's pctPnl reflects trading performance only, not withdrawals.
+function buildDayStats(trades,wds,mode,startBal){
+  const byDate={};
+  trades.filter(t=>getTradeMode(t)===mode&&t.outcome!=='PENDING').forEach(t=>{
+    const d=byDate[t.date]??={wins:0,total:0,pnl:0,withdrawn:0};
+    d.total++;if(t.outcome==='WIN')d.wins++;
+    d.pnl+=t.pnl;
+  });
+  if(mode==='REAL')(wds||[]).forEach(w=>{
+    const d=byDate[w.date]??={wins:0,total:0,pnl:0,withdrawn:0};
+    d.withdrawn+=w.amount;
+  });
+  const out={};
+  let running=startBal;
+  Object.keys(byDate).sort().forEach(date=>{
+    const d=byDate[date];
+    const startOfDay=running;
+    running+=d.pnl-d.withdrawn;
+    out[date]={...d,pctPnl:startOfDay?(d.pnl/startOfDay)*100:0,startBalance:startOfDay,endingBalance:running};
+  });
+  return out;
+}
+// Runs of 3+ consecutive TRADING days (gaps/no-trade days don't break or
+// count toward a streak) with the same win/loss sign — returns a Set of
+// dateKeys that should get the streak border accent.
+function detectStreakDates(dayStatsByDate){
+  const dates=Object.keys(dayStatsByDate).filter(d=>dayStatsByDate[d].total>0).sort();
+  const marked=new Set();
+  let runStart=0;
+  for(let i=1;i<=dates.length;i++){
+    const brokeRun=i===dates.length||(dayStatsByDate[dates[i]].pctPnl>=0)!==(dayStatsByDate[dates[runStart]].pctPnl>=0);
+    if(brokeRun){
+      if(i-runStart>=3)for(let j=runStart;j<i;j++)marked.add(dates[j]);
+      runStart=i;
+    }
+  }
+  return marked;
 }
 
 function isValidDateKey(s){
@@ -948,23 +1134,55 @@ function getAmMaxTradesForMode(settings,mode){
   const v=parseInt(mode==='REAL'?settings?.amMaxTradesReal:settings?.amMaxTradesDemo,10);
   return Number.isFinite(v)&&v>=3&&v<=20?v:8;
 }
+// Total losses (not necessarily consecutive) — a separate safety net from
+// the dollar loss target, protecting against a losing run even while the
+// session's overall P&L hasn't yet crossed the loss-target %. Bounded to
+// [1, current max trades for this mode] — never above max trades, since
+// losing every single trade can't exceed the trade cap either.
+function getAmMaxLossesForMode(settings,mode){
+  const maxTrades=getAmMaxTradesForMode(settings,mode);
+  const v=parseInt(mode==='REAL'?settings?.amMaxLossesReal:settings?.amMaxLossesDemo,10);
+  return Number.isFinite(v)?Math.min(maxTrades,Math.max(1,v)):maxTrades;
+}
+// Back-to-back losses only — reads session.conLoss (the existing streak
+// counter, reset to 0 on any win), not session.losses. Independent of and
+// checked alongside Max Losses Per Session: a WLL session ends here (2
+// consecutive) even if its total-loss count would otherwise still be under
+// budget; an LWL session does NOT end here even with 2 total losses, since
+// the win between them reset the streak. Same [1, max trades] bound.
+function getAmMaxConsecutiveLossesForMode(settings,mode){
+  const maxTrades=getAmMaxTradesForMode(settings,mode);
+  const v=parseInt(mode==='REAL'?settings?.amMaxConsecutiveLossesReal:settings?.amMaxConsecutiveLossesDemo,10);
+  return Number.isFinite(v)?Math.min(maxTrades,Math.max(1,v)):maxTrades;
+}
 
 // Anti-Martingale engine — verbatim per spec, do not redesign. A win escalates
 // the stake (up to the configured max escalations, capped at amCeilingPct% of
 // balance); any loss, or completing the escalation ladder, resets to base.
-function amBaseStake(balance, settings) {
+function amBaseStake(balance, settings, mode) {
+  // Milestone Base Sizing, when on for this mode, overrides riskMode/
+  // riskPercent/riskAmount entirely as the source of "base" — AM/PL's own
+  // escalation/rollover/ceiling/session-ending logic is completely
+  // unchanged, it just escalates off a different base number. Reads the
+  // persisted tier as-is; only the between-sessions sync effect resolves a
+  // new tier, so this stays frozen for the life of any active session.
+  if (getMbEnabledForMode(settings, mode)) {
+    return milestoneTierStake(getMbTierForMode(settings, mode));
+  }
   // FIXED risk sizing: the base stake IS the configured dollar amount,
   // verbatim — same short-circuit as calcStake, no percentage math, no
   // ceiling (ceilingPct only ever caps escalated stakes above base, applied
-  // in advanceAntiMartingale/liveAmNextStake — never here).
-  if (settings?.riskMode === 'FIXED') {
-    return Math.max(1, parseFloat(settings.riskAmount) || 1);
+  // in advanceAntiMartingale/liveAmNextStake — never here). Both riskMode and
+  // riskAmount/riskPercent are resolved per-mode, matching every other MM
+  // setting — Demo and Real can use a different sizing method entirely.
+  if (getRiskModeForMode(settings, mode) === 'FIXED') {
+    return Math.max(1, getRiskAmountForMode(settings, mode) || 1);
   }
-  const riskPct = settings?.riskPercent ?? 5;
+  const riskPct = getRiskPercentForMode(settings, mode);
   return Math.max(1, Math.round(balance * (riskPct / 100) * 100) / 100);
 }
 function advanceAntiMartingale(state, outcome, balance, settings, mode) {
-  const base = amBaseStake(balance, settings);
+  const base = amBaseStake(balance, settings, mode);
   if (outcome !== 'WIN') {
     return { streak: 0, nextStake: base }; // any loss resets immediately
   }
@@ -987,15 +1205,15 @@ function advanceAntiMartingale(state, outcome, balance, settings, mode) {
 // withdrawal (or any other balance change) is reflected without a new trade.
 function liveAmNextStake(session, balance, settings, mode) {
   const streak = session?.amStreak || 0;
-  if (streak === 0) return amBaseStake(balance, settings);
+  if (streak === 0) return amBaseStake(balance, settings, mode);
   const ceiling = balance * (getAmCeilingPctForMode(settings, mode) / 100);
-  return Math.max(1, Math.min(session?.amNextStake ?? amBaseStake(balance, settings), ceiling));
+  return Math.max(1, Math.min(session?.amNextStake ?? amBaseStake(balance, settings, mode), ceiling));
 }
 // One line of "what to bet and why" — computed from the same live inputs as
 // liveAmNextStake, so the number and the reasoning can never drift apart.
 function amStakeReasoning(session, balance, settings, mode) {
   const streak = session?.amStreak || 0;
-  const base = amBaseStake(balance, settings);
+  const base = amBaseStake(balance, settings, mode);
   const stake = liveAmNextStake(session, balance, settings, mode);
   const maxEscalations = getAmMaxEscalationsForMode(settings, mode);
   if (streak === 0) {
@@ -1024,6 +1242,8 @@ function checkAntiMartingaleSessionEnd(session, mode, settings, now = Date.now()
   if (pnlPct >= profitTarget) return 'AM_PROFIT_TARGET';
   if (pnlPct <= -Math.abs(lossTarget)) return 'AM_LOSS_TARGET';
   if (session.trades >= getAmMaxTradesForMode(settings, mode)) return 'AM_MAX_TRADES';
+  if (session.losses >= getAmMaxLossesForMode(settings, mode)) return 'AM_MAX_LOSSES';
+  if (session.conLoss >= getAmMaxConsecutiveLossesForMode(settings, mode)) return 'AM_MAX_CONSECUTIVE_LOSSES';
   if (sessionElapsedMs(session, now) >= ESCALATING_TIME_LIMIT_MS) return 'AM_TIME_LIMIT';
   return null;
 }
@@ -1058,6 +1278,20 @@ function getPlMaxTradesForMode(settings, mode) {
   const v = parseInt(mode === 'REAL' ? settings?.plMaxTradesReal : settings?.plMaxTradesDemo, 10);
   return Number.isFinite(v) && v >= 3 && v <= 20 ? v : 8;
 }
+// Same "total losses, not necessarily consecutive" safety net as
+// getAmMaxLossesForMode — bounded to [1, current max trades for this mode].
+function getPlMaxLossesForMode(settings, mode) {
+  const maxTrades = getPlMaxTradesForMode(settings, mode);
+  const v = parseInt(mode === 'REAL' ? settings?.plMaxLossesReal : settings?.plMaxLossesDemo, 10);
+  return Number.isFinite(v) ? Math.min(maxTrades, Math.max(1, v)) : maxTrades;
+}
+// Same "back-to-back only, reads conLoss" distinction as
+// getAmMaxConsecutiveLossesForMode — independent of Max Losses Per Session.
+function getPlMaxConsecutiveLossesForMode(settings, mode) {
+  const maxTrades = getPlMaxTradesForMode(settings, mode);
+  const v = parseInt(mode === 'REAL' ? settings?.plMaxConsecutiveLossesReal : settings?.plMaxConsecutiveLossesDemo, 10);
+  return Number.isFinite(v) ? Math.min(maxTrades, Math.max(1, v)) : maxTrades;
+}
 // Off by default — the originally-designed "any loss always resets to base"
 // behavior stays the default experience; this only changes what happens
 // specifically to the trade immediately after a max-escalation loss.
@@ -1081,7 +1315,7 @@ function getPlBreakevenRecoveryForMode(settings, mode) {
 // a separate, already-shipped mechanic with its own one-time reset, so
 // the two never double-trigger off the same loss.
 function advanceProfitLock(state, outcome, pnl, balance, settings, mode, sessionPnlAfter) {
-  const base = amBaseStake(balance, settings);
+  const base = amBaseStake(balance, settings, mode);
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   const recoveryEnabled = getPlBreakevenRecoveryForMode(settings, mode);
   const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
@@ -1159,13 +1393,13 @@ function advanceProfitLock(state, outcome, pnl, balance, settings, mode, session
 }
 function liveProfitLockNextStake(session, balance, settings, mode) {
   const streak = session?.plStreak || 0;
-  if (streak === 0) return amBaseStake(balance, settings);
+  if (streak === 0) return amBaseStake(balance, settings, mode);
   const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
-  return Math.max(1, Math.min(session?.plNextStake ?? amBaseStake(balance, settings), ceiling));
+  return Math.max(1, Math.min(session?.plNextStake ?? amBaseStake(balance, settings, mode), ceiling));
 }
 function plStakeReasoning(session, balance, settings, mode) {
   const streak = session?.plStreak || 0;
-  const base = amBaseStake(balance, settings);
+  const base = amBaseStake(balance, settings, mode);
   const stake = liveProfitLockNextStake(session, balance, settings, mode);
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   if (streak === 'RECOVERY') {
@@ -1198,6 +1432,8 @@ function checkProfitLockSessionEnd(session, mode, settings, now = Date.now()) {
   if (pnlPct >= profitTarget) return 'PL_PROFIT_TARGET';
   if (pnlPct <= -Math.abs(lossTarget)) return 'PL_LOSS_TARGET';
   if (session.trades >= getPlMaxTradesForMode(settings, mode)) return 'PL_MAX_TRADES';
+  if (session.losses >= getPlMaxLossesForMode(settings, mode)) return 'PL_MAX_LOSSES';
+  if (session.conLoss >= getPlMaxConsecutiveLossesForMode(settings, mode)) return 'PL_MAX_CONSECUTIVE_LOSSES';
   if (sessionElapsedMs(session, now) >= ESCALATING_TIME_LIMIT_MS) return 'PL_TIME_LIMIT';
   return null;
 }
@@ -1253,11 +1489,11 @@ function checkEscalatingSessionEnd(session, mode, settings, now = Date.now()) {
 // so call sites can just spread the result onto `us` without a branch.
 function advanceEscalatingStake(style, session, outcome, pnl, balance, settings, mode) {
   if (style === 'PROFIT_LOCK') {
-    const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings), firstProfit: session.plStreakFirstProfit ?? null, recoveryPhase: session.plRecoveryPhase || false };
+    const state = { streak: session.plStreak || 0, nextStake: session.plNextStake ?? amBaseStake(balance, settings, mode), firstProfit: session.plStreakFirstProfit ?? null, recoveryPhase: session.plRecoveryPhase || false };
     const r = advanceProfitLock(state, outcome, pnl, balance, settings, mode, (session.sPnl || 0) + pnl);
     return { plStreak: r.streak, plNextStake: r.nextStake, plStreakFirstProfit: r.firstProfit, plRecoveryPhase: r.recoveryPhase };
   }
-  const state = { streak: session.amStreak || 0, nextStake: session.amNextStake ?? amBaseStake(balance, settings) };
+  const state = { streak: session.amStreak || 0, nextStake: session.amNextStake ?? amBaseStake(balance, settings, mode) };
   const r = advanceAntiMartingale(state, outcome, balance, settings, mode);
   return { amStreak: r.streak, amNextStake: r.nextStake };
 }
@@ -1338,8 +1574,8 @@ function buildSession(ssState,mode,durationMin,strictAtStart,settings,startBalan
     isActive:true,isLocked:false,lockReason:null,lockCode:null,strictAtStart:!!strictAtStart,
     durationMin,pausedAt:null,pausedMsTotal:0,
     startBalance:startBalance??0,endReason:null,
-    amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings):null,
-    plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings):null,plStreakFirstProfit:null,plRecoveryPhase:false};
+    amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings,mode):null,
+    plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings,mode):null,plStreakFirstProfit:null,plRecoveryPhase:false};
 }
 // Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
 function sessionElapsedMs(sess,now){
@@ -2053,7 +2289,7 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
     performance:{allTime:{wr,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10,n:done.length,pnl:totalPnl,wins,losses:done.length-wins},
       last7Days:{wr:last7.wr,ciLower:last7.ci?Math.round(last7.ci.lower*1000)/10:null,ciUpper:last7.ci?Math.round(last7.ci.upper*1000)/10:null,n:last7.total,pnl:last7.realPnl,wins:last7.wins,losses:last7.total-last7.wins},
       last30Days:{wr:last30.wr,ciLower:last30.ci?Math.round(last30.ci.lower*1000)/10:null,ciUpper:last30.ci?Math.round(last30.ci.upper*1000)/10:null,n:last30.total,pnl:last30.realPnl,wins:last30.wins,losses:last30.total-last30.wins}},
-    configuration:{activeStyle:styleName(tradeStyle),moneyMgmtStyle:style,riskPercent:settings?.riskPercent??5,
+    configuration:{activeStyle:styleName(tradeStyle),moneyMgmtStyle:style,riskMode:getRiskModeForMode(settings,mode),riskPercent:getRiskPercentForMode(settings,mode),riskAmount:getRiskAmountForMode(settings,mode),
       sessionsPerDay:settings?.sessionsPerDay??2,brokerMin:settings?.brokerMin??10,
       strictLocking:isStrictForMode(settings,mode),
       ...(isEscalatingStyle(style)?{
@@ -2241,6 +2477,17 @@ function WinRateCI({wins,total,style}){
   );
 }
 
+// Plain <details>/<summary> disclosure — tap-to-open on mobile and
+// click-to-open on desktop for free, no JS state or outside-click handling
+// needed. Used for the (?) explainer next to every AM/PL setting.
+function InfoTip({text}){
+  return(
+    <details className="gm-infotip" style={{display:'inline-block',position:'relative',marginLeft:5,verticalAlign:'middle'}} onClick={e=>e.stopPropagation()}>
+      <summary style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:14,height:14,borderRadius:'50%',border:'1px solid var(--border)',color:'var(--text-muted)',fontSize:9,fontWeight:700,cursor:'pointer',userSelect:'none'}}>?</summary>
+      <div style={{position:'absolute',zIndex:20,top:20,left:0,width:230,maxWidth:'70vw',padding:'8px 10px',borderRadius:'var(--radius)',background:'var(--surface-1)',border:'1px solid var(--border)',boxShadow:'0 4px 16px rgba(0,0,0,0.25)',fontSize:11,fontWeight:400,color:'var(--text-secondary)',lineHeight:1.45}}>{text}</div>
+    </details>
+  );
+}
 function Metric({label,value,sub,color,animate,format}){
   return(
     <div className="card-lift" style={{background:'var(--surface-1)',borderRadius:'var(--radius)',padding:'14px 16px',border:'1px solid var(--border)',overflow:'hidden',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
@@ -2522,7 +2769,9 @@ function Setup({onDone}){
     setError('');
     try{
       console.log('[Setup] finish — Saving to Supabase');
-      await onDone({...f,startingBalanceDemo:demo,startingBalanceReal:real,setupComplete:true,createdAt:Date.now()});
+      await onDone({...f,startingBalanceDemo:demo,startingBalanceReal:real,
+        riskModeDemo:'PERCENT',riskModeReal:'PERCENT',riskPercentDemo:f.riskPercent,riskPercentReal:f.riskPercent,riskAmountDemo:5,riskAmountReal:5,
+        setupComplete:true,createdAt:Date.now()});
       console.log('[Setup] finish — Setup complete');
     }catch(e){
       console.log('[Setup] finish — Error:', e);
@@ -3060,7 +3309,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const startBal=getStartingBalanceForMode(settings,mode);
   const growth=startBal?((bal-startBal)/startBal)*100:0;
-  const stake=calcStake(bal,settings);
+  const stake=calcStake(bal,settings,mode);
   const active=getActive(ss,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
   const amDisplayStake=liveEscalatingNextStake(active,bal,settings,mode,mmStyle);
@@ -3297,7 +3546,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
         <div className="col-span-6 lg:col-span-3">
           {isEscalatingStyle(mmStyle)
             ?<Metric label={plStakeLabel(active,mmStyle)||'Next stake'} value={f$(amDisplayStake)} sub={amReasoning} color={isPlRecoveryStake(active,mmStyle)?'var(--text-warning)':'var(--text-primary)'}/>
-            :<Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.5?'var(--text-warning)':'var(--text-primary)'}/>}
+            :<Metric label="Next stake" value={f$(stake.actual)} sub={`${fp(stake.eff)} effective risk`} color={getRiskModeForMode(settings,mode)!=='FIXED'&&stake.eff>getRiskPercentForMode(settings,mode)*1.5?'var(--text-warning)':'var(--text-primary)'}/>}
         </div>
 
         {/* Recent trades */}
@@ -3637,6 +3886,17 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
   const[gradeFilt,setGradeFilt]=useState('ALL');
+  // One-shot nav param from Calendar's day-cell click-through — same
+  // sessionStorage handoff pattern as gm_view (App.js). Consumed once on
+  // mount then cleared, so navigating to Journal any other way never
+  // silently carries a stale date filter forward.
+  const[dateFilt,setDateFilt]=useState(()=>{
+    try{
+      const d=sessionStorage.getItem('gm_journal_date');
+      sessionStorage.removeItem('gm_journal_date');
+      return d;
+    }catch{return null;}
+  });
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
   const[mf,smf]=useState(()=>{
@@ -3721,7 +3981,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const actual=liveEscalatingNextStake(getActive(ss,m),modeBal,settings,m,style);
       return{calc:actual,actual,eff:modeBal?(actual/modeBal)*100:0};
     }
-    return calcStake(modeBal,settings);
+    return calcStake(modeBal,settings,m);
   };
   // Analyzer results always log to the global toggle's account (Change 4) —
   // no separate confirmation step. Manual entries log to whichever tab is open.
@@ -4026,7 +4286,8 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // INVALID verdict alike, so the filter's 5 options are exhaustive with no
   // gap a trade could silently fall through.
   const gradeFiltered=gradeFilt==='ALL'?stratFiltered:gradeFilt==='UNGRADED'?stratFiltered.filter(t=>!['A+','A','B','C'].includes(t.zoneGrade)):stratFiltered.filter(t=>t.zoneGrade===gradeFilt);
-  const sorted=[...gradeFiltered].sort((a,b)=>b.timestamp-a.timestamp);
+  const dateFiltered=dateFilt?gradeFiltered.filter(t=>t.date===dateFilt):gradeFiltered;
+  const sorted=[...dateFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
   // Live summary for whatever's currently filtered — derived straight from
   // `sorted`, so it always matches the list below with zero extra state and
@@ -4042,6 +4303,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   return(
     <div>
       <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Trading journal</div>
+
+      {dateFilt&&(
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',borderRadius:'var(--radius)',background:'var(--bg-accent)',border:'1px solid var(--border-accent)',marginBottom:12,fontSize:13}}>
+          <span>Showing only <strong>{dateFilt}</strong> (from Calendar)</span>
+          <button style={{...btn(),padding:'3px 10px',fontSize:11}} onClick={()=>setDateFilt(null)}>Clear</button>
+        </div>
+      )}
 
       {pa&&(
         <div style={{...card,background:'var(--bg-success)',borderColor:'var(--border-success)'}}>
@@ -4775,7 +5043,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
         .filter(t=>getTradeMode(t)===mode&&t.sessionNum===sess.num&&t.date===tod())
         .sort((a,b)=>a.timestamp-b.timestamp);
       const isPL=style==='PROFIT_LOCK';
-      const baseStake=amBaseStake(sess.startBalance??0,settings);
+      const baseStake=amBaseStake(sess.startBalance??0,settings,mode);
       let state={...sess,trades:0,wins:0,losses:0,sPnl:0,...(isPL?{plStreak:0,plNextStake:baseStake,plStreakFirstProfit:null,plRecoveryPhase:false}:{amStreak:0,amNextStake:baseStake})};
       for(const t of sessionTradesCorrected){
         const isW=t.outcome==='WIN';
@@ -4846,6 +5114,8 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   const endedText=sessionForMode?.lockCode==='MANUAL'?'ended manually'
     :sessionForMode?.endReason?.endsWith('PROFIT_TARGET')?'profit target reached'
     :sessionForMode?.endReason?.endsWith('LOSS_TARGET')?'loss target reached'
+    :sessionForMode?.endReason?.endsWith('MAX_CONSECUTIVE_LOSSES')?'max consecutive losses reached'
+    :sessionForMode?.endReason?.endsWith('MAX_LOSSES')?'max total losses reached'
     :sessionForMode?.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached'
     :'max trades reached for this session';
 
@@ -4882,9 +5152,13 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
         const profitTargetPct=isPL?getPlProfitTargetPctForMode(settings,mode):getAmProfitTargetPctForMode(settings,mode);
         const lossTargetPct=isPL?getPlLossTargetPctForMode(settings,mode):getAmLossTargetPctForMode(settings,mode);
         const maxTrades=isPL?getPlMaxTradesForMode(settings,mode):getAmMaxTradesForMode(settings,mode);
+        const maxLosses=isPL?getPlMaxLossesForMode(settings,mode):getAmMaxLossesForMode(settings,mode);
+        const maxConsecutiveLosses=isPL?getPlMaxConsecutiveLossesForMode(settings,mode):getAmMaxConsecutiveLossesForMode(settings,mode);
         const profitTargetDollars=startBal*(profitTargetPct/100);
         const lossTargetDollars=startBal*(lossTargetPct/100);
         const tradesRemaining=Math.max(0,maxTrades-sessionForMode.trades);
+        const lossesRemaining=Math.max(0,maxLosses-sessionForMode.losses);
+        const consecutiveLossesRemaining=Math.max(0,maxConsecutiveLosses-(sessionForMode.conLoss||0));
         const timeRemainingMs=Math.max(0,ESCALATING_TIME_LIMIT_MS-sessionElapsedMs(sessionForMode,now));
         // Normalized bar, not a raw dollar span: each half is independently
         // scaled to its own target, so zero always sits exactly at center
@@ -4903,6 +5177,8 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
               <Metric label="Profit target" value={`+${f$(profitTargetDollars)}`} color="var(--text-success)"/>
               <Metric label="Loss stop" value={`-${f$(lossTargetDollars)}`} color="var(--text-danger)"/>
               <Metric label="Max trades" value={`${maxTrades} — ${tradesRemaining} left`}/>
+              <Metric label="Max losses" value={`${maxLosses} — ${lossesRemaining} left`} color={lossesRemaining<=1?'var(--text-warning)':undefined}/>
+              <Metric label="Max consecutive losses" value={`${sessionForMode.conLoss||0} / ${maxConsecutiveLosses}`} sub={`${consecutiveLossesRemaining} left`} color={consecutiveLossesRemaining<=1?'var(--text-warning)':undefined}/>
               <Metric label="Time limit" value={`60 min — ${fmtClock(timeRemainingMs)} left`} color={timeRemainingMs<=60000?'var(--text-danger)':undefined}/>
             </div>
             <div style={{marginBottom:16}}>
@@ -5028,7 +5304,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   const[amt,setAmt]=useState('');
   const[note,setNote]=useState('');
   const[wks,setWks]=useState(12);
-  const stake=calcStake(bal,settings);
+  const stake=calcStake(bal,settings,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
   const activeAmSession=ss?getActive(ss,mode):null;
   const mmIsEscalating=isEscalatingStyle(mmStyle);
@@ -5054,7 +5330,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   }
 
   const proj=[];let b=bal;
-  for(let i=0;i<=wks;i++){proj.push(b);const tw=settings.sessionsPerDay*6,ws=tw*wr,ls=tw-ws,stk=calcStake(b,settings).actual;b=b+(ws*stk*PAYOUT)-(ls*stk);}
+  for(let i=0;i<=wks;i++){proj.push(b);const tw=settings.sessionsPerDay*6,ws=tw*wr,ls=tw-ws,stk=calcStake(b,settings,mode).actual;b=b+(ws*stk*PAYOUT)-(ls*stk);}
   const maxP=Math.max(...proj);
 
   return(
@@ -5069,7 +5345,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
           <Metric label="Balance" value={f$(bal)}/>
           {mmIsEscalating
             ?<Metric label="Style" value={mmStyle==='PROFIT_LOCK'?'Profit Lock':'Anti-Martingale'} sub={amReasoning} color={isPlRecoveryStake(activeAmSession,mmStyle)?'var(--text-warning)':undefined}/>
-            :<Metric label={settings.riskMode==='FIXED'?'Fixed stake':'Risk %'} value={settings.riskMode==='FIXED'?f$(settings.riskAmount):fp(settings.riskPercent)}/>}
+            :<Metric label={getRiskModeForMode(settings,mode)==='FIXED'?'Fixed stake':'Risk %'} value={getRiskModeForMode(settings,mode)==='FIXED'?f$(getRiskAmountForMode(settings,mode)):fp(getRiskPercentForMode(settings,mode))}/>}
           <Metric label="Trade stake" value={f$(mmIsEscalating?amNextStake:stake.actual)} color="var(--text-accent)"/>
         </div>
         {mmStyle==='ANTI_MARTINGALE'&&(
@@ -5082,9 +5358,9 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
             Stakes only banked profit, never base capital, capped at {getPlCeilingPctForMode(settings,mode)}% of balance · ends at +{getPlProfitTargetPctForMode(settings,mode)}% or −{getPlLossTargetPctForMode(settings,mode)}% of this session's starting balance.
           </div>
         )}
-        {!mmIsEscalating&&settings.riskMode!=='FIXED'&&stake.eff>settings.riskPercent*1.1&&(
+        {!mmIsEscalating&&getRiskModeForMode(settings,mode)!=='FIXED'&&stake.eff>getRiskPercentForMode(settings,mode)*1.1&&(
           <div style={{fontSize:12,color:'var(--text-warning)',marginTop:8,padding:'6px 10px',background:'var(--bg-warning)',borderRadius:'var(--radius)'}}>
-            ⚠ $1 minimum means effective risk is {fp(stake.eff)} — above your target {fp(settings.riskPercent)}. Balance needs {f$(1/(settings.riskPercent/100))} for correct sizing.
+            ⚠ $1 minimum means effective risk is {fp(stake.eff)} — above your target {fp(getRiskPercentForMode(settings,mode))}. Balance needs {f$(1/(getRiskPercentForMode(settings,mode)/100))} for correct sizing.
           </div>
         )}
       </div>
@@ -5138,7 +5414,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
         <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginTop:4}}>
           <span>Now: {f$(bal)}</span><span>{wks}w: {f$(proj[proj.length-1])}</span>
         </div>
-        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate{wrOverride!=null?' (custom)':''} · {fp(settings.riskPercent)} risk · {settings.sessionsPerDay*6} trades/week</div>
+        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate{wrOverride!=null?' (custom)':''} · {fp(getRiskPercentForMode(settings,mode))} risk · {settings.sessionsPerDay*6} trades/week</div>
       </div>
 
       {mode==='REAL'&&(
@@ -5185,7 +5461,7 @@ const ZONE_CHECKLIST=[
   {k:'width',label:'WIDTH — One precise price level?'},
 ];
 
-function Plan({settings}){
+function Plan({settings,mode}){
   const[zoneCheck,setZoneCheck]=useState({});
   const zoneCheckedCount=Object.values(zoneCheck).filter(Boolean).length;
   const sn={1:'Precision (Style 1)',2:'Active (Style 2)',3:'Structured (Style 3)'};
@@ -5197,7 +5473,7 @@ function Plan({settings}){
   const sections=[
     {t:'Zone rules',items:['A+, A, or B graded zones only','Zone must pass the 10-gate AI validation, including all 4 hard filters','Confirm a live Tier 1 trigger on the 10-second chart yourself before entry — the app no longer tracks this','Use zone analyzer before every trade','No C-grade or invalid zones']},
     {t:'Instrument rules',items:['OTC pairs only','Minimum 90%+ ROI payout','Avoid any pair below 90% payout']},
-    {t:'Risk rules',items:[settings.riskMode==='FIXED'?`${f$(settings.riskAmount)} fixed stake per trade`:`${settings.riskPercent}% risk per trade`,'$1 minimum trade (broker floor)','No Martingale or loss recovery','No mid-session risk increases']},
+    {t:'Risk rules',items:[getRiskModeForMode(settings,mode)==='FIXED'?`${f$(getRiskAmountForMode(settings,mode))} fixed stake per trade`:`${getRiskPercentForMode(settings,mode)}% risk per trade`,'$1 minimum trade (broker floor)','No Martingale or loss recovery','No mid-session risk increases']},
     {t:'Daily circuit breaker',items:[`${MAX_DL} total losses locks the day until midnight`,'No exceptions — step away and reset']},
     {t:'Behavioral rules',items:['Win the war, not every battle','No chasing losses — accept session stops','No revenge trading','Weekly trade log review']},
   ];
@@ -5602,6 +5878,252 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
 
       {total===0&&<div style={{...card,textAlign:'center',padding:'2rem',color:'var(--text-muted)'}}><i className="ti ti-chart-bar" style={{fontSize:28,display:'block',marginBottom:8}} aria-hidden="true"/>{range.preset==='ALL'?'No completed trades yet.':'No trades in this range.'}</div>}
       </>}
+    </div>
+  );
+}
+
+// ── Calendar ─────────────────────────────────────────────────────────────────
+// Background is a solid-color layer at variable opacity, rendered BEHIND a
+// full-opacity content layer — not color-mix() (which needs a real <color>
+// argument; --fill-success/--fill-danger are linear-gradient() values in
+// index.css, so color-mix() with them is invalid and silently no-ops).
+// Cap raised from 5 to 15 — at 5%, nearly every real trading day (commonly
+// 4-15%) clipped to full intensity, so a +3.9% day and a +12.7% day looked
+// almost identically saturated. 15% gives visible gradation across the
+// range actually seen in practice. Max alpha is deliberately low (~0.22 at
+// the cap) — a soft tint, not a solid block — which is also what keeps
+// normal --text-success/danger text legible directly, no white/shadow
+// override needed: the background is never dark or saturated enough to
+// fight with theme text colors, in either the dark or light theme.
+const DAY_INTENSITY_CAP_PCT=15;
+function dayCellColor(pctPnl,hasTrades){
+  if(!hasTrades)return{accent:null,alpha:0};
+  const intensity=Math.min(1,Math.abs(pctPnl)/DAY_INTENSITY_CAP_PCT);
+  const isWin=pctPnl>=0;
+  return{
+    accent:isWin?'var(--text-success)':'var(--text-danger)',
+    alpha:0.04+intensity*0.18,
+  };
+}
+function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
+  const hasTrades=!!dayStats?.total;
+  const{accent,alpha}=dayCellColor(dayStats?.pctPnl||0,hasTrades);
+  const recede=!hasTrades||!inMonth;
+  return(
+    <details className="gm-infotip" style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
+      <summary style={{
+        listStyle:'none',display:'block',position:'relative',minHeight:64,borderRadius:'var(--radius)',padding:'8px 10px',
+        background:'transparent',cursor:hasTrades?'pointer':'default',overflow:'hidden',
+        border:isStreakEdge?`1px solid ${accent}`:'1px solid var(--border)',
+        opacity:recede?(inMonth?0.55:0.22):1,
+      }}>
+        {hasTrades&&<div style={{position:'absolute',inset:0,background:accent,opacity:alpha}}/>}
+        <div style={{position:'relative'}}>
+          {/* Day number: small, muted, unobtrusive — clearly secondary to the % */}
+          <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>{day}</div>
+          {hasTrades
+            ?<div style={{fontSize:15,fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{dayStats.pctPnl.toFixed(1)}%</div>
+            :<div style={{fontSize:11,color:'var(--text-muted)'}}>—</div>}
+          {hasTrades&&<div style={{fontSize:9,color:'var(--text-muted)',marginTop:2}}>{dayStats.total} trade{dayStats.total===1?'':'s'}</div>}
+        </div>
+      </summary>
+      {hasTrades&&(
+        <div style={{position:'absolute',zIndex:30,top:'100%',left:0,marginTop:2,width:180,padding:'8px 10px',borderRadius:'var(--radius)',background:'var(--surface-1)',border:'1px solid var(--border)',boxShadow:'0 4px 16px rgba(0,0,0,0.3)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.6}}>
+          <div style={{fontWeight:600,color:'var(--text-primary)',marginBottom:2}}>{dateKey}</div>
+          <div>P&amp;L: <span style={{color:dayStats.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{dayStats.pnl>=0?'+':''}{f$(dayStats.pnl)}</span></div>
+          <div>{dayStats.wins}W / {dayStats.total-dayStats.wins}L ({dayStats.total} trades)</div>
+          <div>Ending balance: {f$(dayStats.endingBalance)}</div>
+          {dayStats.withdrawn>0&&<div>Withdrawn: {f$(dayStats.withdrawn)}</div>}
+          <div style={{marginTop:4,color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>onOpen(dateKey)}>View trades →</div>
+        </div>
+      )}
+    </details>
+  );
+}
+function CalendarGrid({year,month,dayStatsByDate,streakDates,onOpenDay}){
+  const cells=monthGridMonFirst(year,month);
+  return(
+    <div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',fontSize:11,color:'var(--text-muted)',marginBottom:6,textAlign:'center'}}>
+        {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=><div key={d}>{d}</div>)}
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+        {cells.map(c=>(
+          <DayCell key={c.dateKey} dateKey={c.dateKey} day={c.day} inMonth={c.inMonth}
+            dayStats={dayStatsByDate[c.dateKey]} isStreakEdge={streakDates.has(c.dateKey)}
+            onOpen={onOpenDay}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+// Thin SVG line threading through the month's trading days' ending balance —
+// peak and trough get a small labeled marker. Only plots days that actually
+// traded (gaps skipped, not interpolated) so the line reflects real balance
+// checkpoints, not a guess at what happened on non-trading days.
+// Was using var(--fill-accent)/var(--fill-success)/var(--fill-danger) as
+// SVG fill/stroke — same underlying bug as dayCellColor: those resolve to
+// linear-gradient() values, but SVG fill/stroke need a solid <paint> value,
+// not a CSS gradient function, so the line/markers rendered near-invisible
+// (browser default/fallback paint). Switched to the solid --text-* vars.
+// The garbled/overlapping LABELS were a separate bug: preserveAspectRatio=
+// "none" on the <svg> non-uniformly stretches it to fill the container
+// width while viewBox stays 600 units — any SVG <text> inside gets
+// stretched horizontally right along with the path, distorting the glyphs.
+// Labels are now plain HTML positioned over the SVG instead: horizontal
+// position as a %, matching the SVG's own responsive width scaling;
+// vertical position in raw px, since the SVG's CSS height is fixed (not
+// stretched) — so this tracks the actual rendered marker position exactly
+// without ever being subject to non-uniform scaling.
+function MonthSparkline({points}){ // [{dateKey,balance}], chronological
+  if(points.length<2)return<div style={{fontSize:11,color:'var(--text-muted)',padding:'12px 0'}}>Not enough trading days this month for a balance trend.</div>;
+  const W=600,H=80,PAD=16;
+  const vals=points.map(p=>p.balance);
+  const min=Math.min(...vals),max=Math.max(...vals);
+  const span=max-min||1;
+  const xFrac=i=>i/(points.length-1);
+  const x=i=>PAD+xFrac(i)*(W-PAD*2);
+  const y=v=>PAD+(1-(v-min)/span)*(H-PAD*2);
+  const path=points.map((p,i)=>`${i===0?'M':'L'}${x(i).toFixed(1)},${y(p.balance).toFixed(1)}`).join(' ');
+  const peakIdx=vals.indexOf(max),troughIdx=vals.indexOf(min);
+  const peakY=y(max),troughY=y(min);
+  const labelStyle=color=>({position:'absolute',transform:'translateX(-50%)',fontSize:10,fontWeight:600,color,whiteSpace:'nowrap',background:'var(--surface-1)',padding:'0 3px',borderRadius:3,pointerEvents:'none'});
+  return(
+    <div style={{position:'relative',height:H}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:H,display:'block'}} preserveAspectRatio="none">
+        <path d={path} fill="none" stroke="var(--text-accent)" strokeWidth="2"/>
+        <circle cx={x(peakIdx)} cy={peakY} r="3.5" fill="var(--text-success)"/>
+        <circle cx={x(troughIdx)} cy={troughY} r="3.5" fill="var(--text-danger)"/>
+      </svg>
+      <div style={{...labelStyle('var(--text-success)'),left:`${xFrac(peakIdx)*100}%`,top:peakY-14}}>{f$(max)}</div>
+      <div style={{...labelStyle('var(--text-danger)'),left:`${xFrac(troughIdx)*100}%`,top:troughY+6}}>{f$(min)}</div>
+    </div>
+  );
+}
+// Was a bare "5 / 5 / 21" string, requiring the reader to cross-reference
+// the "Green / Red / No-trade" label above by POSITION to know which
+// number meant what — replaced with a proportional segmented bar (each
+// segment's width matches its share of the month) plus a color-coded
+// legend row, so the mapping from number to meaning is direct, not
+// positional.
+function DayMixStat({green,red,noTrade}){
+  // flex-grow already distributes proportionally by ratio among siblings —
+  // no need to divide by a total.
+  const seg=(n,color)=>n>0&&<div style={{flex:n,minWidth:n?2:0,background:color}}/>;
+  return(
+    <div className="card-lift" style={{background:'var(--surface-1)',borderRadius:'var(--radius)',padding:'14px 16px',border:'1px solid var(--border)',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
+      <div style={{fontSize:10,fontWeight:600,color:'var(--text-muted)',marginBottom:8,textTransform:'uppercase',letterSpacing:'0.1em'}}>Day mix</div>
+      <div style={{display:'flex',height:8,borderRadius:4,overflow:'hidden',background:'var(--surface-0)',marginBottom:10}}>
+        {seg(green,'var(--text-success)')}
+        {seg(red,'var(--text-danger)')}
+        {seg(noTrade,'var(--text-muted)')}
+      </div>
+      <div style={{display:'flex',gap:14,fontSize:12,flexWrap:'wrap'}}>
+        <span style={{display:'flex',alignItems:'center',gap:5}}><span style={{width:8,height:8,borderRadius:'50%',background:'var(--text-success)',flexShrink:0}}/>{green} green</span>
+        <span style={{display:'flex',alignItems:'center',gap:5}}><span style={{width:8,height:8,borderRadius:'50%',background:'var(--text-danger)',flexShrink:0}}/>{red} red</span>
+        <span style={{display:'flex',alignItems:'center',gap:5}}><span style={{width:8,height:8,borderRadius:'50%',background:'var(--text-muted)',flexShrink:0}}/>{noTrade} no-trade</span>
+      </div>
+    </div>
+  );
+}
+export function CalendarPage({trades,settings,wds,mode,nav}){
+  const now=new Date();
+  const[cursor,setCursor]=useState({y:now.getFullYear(),m:now.getMonth()});
+  const startBal=getStartingBalanceForMode(settings,mode);
+  // Full history, always — a month's pctPnl must measure against the real
+  // running balance carried from account start, never reset at month
+  // boundaries (see buildDayStats' own comment for why).
+  const allDayStats=buildDayStats(trades,wds,mode,startBal);
+  const monthPrefix=`${cursor.y}-${String(cursor.m+1).padStart(2,'0')}`;
+  const monthDates=Object.keys(allDayStats).filter(d=>d.startsWith(monthPrefix)).sort();
+  const monthDayStats={};monthDates.forEach(d=>monthDayStats[d]=allDayStats[d]);
+  const streakDates=detectStreakDates(monthDayStats);
+  const monthLabel=new Date(cursor.y,cursor.m,1).toLocaleDateString(undefined,{month:'long',year:'numeric'});
+
+  // Monthly summary
+  const tradingDays=monthDates.map(d=>monthDayStats[d]);
+  const greenDays=tradingDays.filter(d=>d.pctPnl>=0).length;
+  const redDays=tradingDays.filter(d=>d.pctPnl<0).length;
+  const totalCellsInMonth=new Date(cursor.y,cursor.m+1,0).getDate();
+  const noTradeDays=totalCellsInMonth-tradingDays.length;
+  const monthPnl=tradingDays.reduce((s,d)=>s+d.pnl,0);
+  const monthStartBalance=monthDates.length?monthDayStats[monthDates[0]].startBalance:startBal;
+  const monthPnlPct=monthStartBalance?(monthPnl/monthStartBalance)*100:0;
+  const bestDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl>=monthDayStats[b].pctPnl?a:b):null;
+  const worstDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl<=monthDayStats[b].pctPnl?a:b):null;
+  const wins=tradingDays.reduce((s,d)=>s+d.wins,0);
+  const totalTrades=tradingDays.reduce((s,d)=>s+d.total,0);
+  // Max drawdown — peak-to-trough of the running ENDING balance across the
+  // month's trading days, in the same chronological order as the sparkline.
+  let peak=monthStartBalance,maxDd=0;
+  monthDates.forEach(d=>{
+    const bal=monthDayStats[d].endingBalance;
+    if(bal>peak)peak=bal;
+    const dd=peak?((peak-bal)/peak)*100:0;
+    if(dd>maxDd)maxDd=dd;
+  });
+
+  // Month-over-month strip — past 6 months including current, each a
+  // one-line summary computed the same way (buildDayStats slice), clickable
+  // to jump straight to that month.
+  const stripMonths=Array.from({length:6},(_,i)=>{
+    const d=new Date(cursor.y,cursor.m-5+i,1);
+    return{y:d.getFullYear(),m:d.getMonth()};
+  });
+
+  function openDay(dateKey){
+    try{sessionStorage.setItem('gm_journal_date',dateKey);}catch{}
+    nav('journal');
+  }
+
+  const sparkPoints=monthDates.map(d=>({dateKey:d,balance:monthDayStats[d].endingBalance}));
+
+  return(
+    <div>
+      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Calendar</div>
+
+      {/* Month-over-month strip */}
+      <div style={{display:'flex',gap:8,marginBottom:16,overflowX:'auto'}}>
+        {stripMonths.map(sm=>{
+          const prefix=`${sm.y}-${String(sm.m+1).padStart(2,'0')}`;
+          const dates=Object.keys(allDayStats).filter(d=>d.startsWith(prefix));
+          const pnl=dates.reduce((s,d)=>s+allDayStats[d].pnl,0);
+          const isCurrent=sm.y===cursor.y&&sm.m===cursor.m;
+          const label=new Date(sm.y,sm.m,1).toLocaleDateString(undefined,{month:'short'});
+          return(
+            <button key={prefix} onClick={()=>setCursor({y:sm.y,m:sm.m})} style={{
+              flex:'0 0 auto',minWidth:64,padding:'6px 10px',borderRadius:'var(--radius-sm)',cursor:'pointer',
+              border:isCurrent?'1.5px solid var(--border-accent)':'1px solid var(--border)',
+              background:isCurrent?'var(--bg-accent)':'var(--surface-1)',textAlign:'center',
+            }}>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>{label}</div>
+              <div style={{fontSize:12,fontWeight:600,color:dates.length?(pnl>=0?'var(--text-success)':'var(--text-danger)'):'var(--text-muted)'}}>{dates.length?`${pnl>=0?'+':''}${f$(pnl)}`:'—'}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={card}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <button style={btn()} onClick={()=>setCursor(c=>{const d=new Date(c.y,c.m-1,1);return{y:d.getFullYear(),m:d.getMonth()};})}><ChevronLeft size={14}/></button>
+          <div style={{fontSize:15,fontWeight:600}}>{monthLabel}</div>
+          <button style={btn()} onClick={()=>setCursor(c=>{const d=new Date(c.y,c.m+1,1);return{y:d.getFullYear(),m:d.getMonth()};})}><ChevronRight size={14}/></button>
+        </div>
+        <CalendarGrid year={cursor.y} month={cursor.m} dayStatsByDate={monthDayStats} streakDates={streakDates} onOpenDay={openDay}/>
+        <div style={{marginTop:14}}>
+          <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:4}}>Balance trend this month {maxDd>0&&`· max drawdown ${maxDd.toFixed(1)}%`}</div>
+          <MonthSparkline points={sparkPoints}/>
+        </div>
+      </div>
+
+      <div className="grid-3">
+        <Metric label="Month P&L" value={`${monthPnl>=0?'+':''}${f$(monthPnl)}`} sub={`${monthPnlPct>=0?'+':''}${monthPnlPct.toFixed(1)}%`} color={monthPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+        <Metric label="Win rate" value={totalTrades?`${Math.round((wins/totalTrades)*100)}%`:'—'} sub={totalTrades?<WinRateCI wins={wins} total={totalTrades}/>:'No trades this month'}/>
+        <Metric label="Max drawdown" value={`${maxDd.toFixed(1)}%`} color={maxDd>10?'var(--text-danger)':'var(--text-primary)'}/>
+        <Metric label="Best day" value={bestDay?`+${monthDayStats[bestDay].pctPnl.toFixed(1)}%`:'—'} sub={bestDay} color="var(--text-success)"/>
+        <Metric label="Worst day" value={worstDay?`${monthDayStats[worstDay].pctPnl.toFixed(1)}%`:'—'} sub={worstDay} color="var(--text-danger)"/>
+        <DayMixStat green={greenDays} red={redDays} noTrade={noTradeDays}/>
+      </div>
     </div>
   );
 }
@@ -6218,13 +6740,31 @@ function StrategyRow({strategy,trades,updateStrategy,deleteStrategy}){
   );
 }
 
+// Plain-language explainers for every Anti-Martingale/Profit Lock setting —
+// shared between both tabs' (?) icons since the mechanics are identical
+// (only Multiplier and Breakeven Recovery are style-specific).
+const MM_TOOLTIPS={
+  multiplier:"How much bigger each stake gets after a win. 1.3× means a $10 stake becomes $13 on the next trade.",
+  ceiling:"The most any single stake is allowed to grow to, as a percent of your balance — protects you from one runaway winning streak risking too much.",
+  maxEscalations:"How many wins in a row can escalate the stake before it's forced back to base. Set to 1, a single win locks in and the very next stake resets to base regardless of outcome.",
+  profitTarget:"Ends the session automatically once it's up this percent of your starting balance for the session — locks in the win instead of risking giving it back.",
+  lossTarget:"Ends the session automatically once it's down this percent of your starting balance for the session — a hard stop before losses go further.",
+  maxTrades:"Ends the session once this many trades have been taken, win or lose — a simple cap on how long any one session runs.",
+  maxLosses:"Ends the session once you've had this many losing trades in total, even if some wins happened in between. A separate safety net from the dollar loss target above.",
+  maxConsecutiveLosses:"Ends the session the moment you hit this many losses in a row, back-to-back. A single win anywhere in between resets this count — so this only catches a genuine losing streak, not scattered losses across the session.",
+  breakevenRecovery:"After the max-escalation stake loses, the next trade stakes exactly enough to return you to breakeven for this streak, instead of dropping straight back to base — a one-time recovery attempt, not a repeating Martingale.",
+};
 function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy}){
   // Same global account-mode toggle Dashboard/Journal/QuickLog already read
   // — no separate mode concept for Settings. `f` still holds every Demo/Real
   // field at once (storage stays per-mode); only which slice renders here
   // changes with `modeKey`.
   const modeKey=mode==='REAL'?'Real':'Demo';
-  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,riskMode:settings?.riskMode ?? 'PERCENT',riskAmount:settings?.riskAmount ?? 5,alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true,
+  const[f,sf]=useState({...settings,tradeStyleDemo:settings?.tradeStyleDemo ?? settings?.tradeStyle ?? 1,tradeStyleReal:settings?.tradeStyleReal ?? settings?.tradeStyle ?? 1,startingBalanceDemo:settings?.startingBalanceDemo ?? 0,startingBalanceReal:settings?.startingBalanceReal ?? 0,
+    riskModeDemo:settings?.riskModeDemo ?? 'PERCENT',riskModeReal:settings?.riskModeReal ?? 'PERCENT',
+    riskPercentDemo:settings?.riskPercentDemo ?? 5,riskPercentReal:settings?.riskPercentReal ?? 5,
+    riskAmountDemo:settings?.riskAmountDemo ?? 5,riskAmountReal:settings?.riskAmountReal ?? 5,
+    alertVolume:settings?.alertVolume ?? ALERT_VOLUME_DEFAULT,soundAlertOn:settings?.soundAlertOn ?? true,desktopAlertOn:settings?.desktopAlertOn ?? true,
     moneyMgmtStyleDemo:settings?.moneyMgmtStyleDemo ?? 'FIXED',moneyMgmtStyleReal:settings?.moneyMgmtStyleReal ?? 'FIXED',
     amMultiplierDemo:Math.min(1.5,Math.max(1.2,settings?.amMultiplierDemo ?? 1.3)),amMultiplierReal:Math.min(1.5,Math.max(1.2,settings?.amMultiplierReal ?? 1.3)),
     amCeilingPctDemo:settings?.amCeilingPctDemo ?? 20,amCeilingPctReal:settings?.amCeilingPctReal ?? 20,
@@ -6232,12 +6772,18 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
     amLossTargetPctDemo:settings?.amLossTargetPctDemo ?? 10,amLossTargetPctReal:settings?.amLossTargetPctReal ?? 10,
     amMaxEscalationsDemo:settings?.amMaxEscalationsDemo ?? 1,amMaxEscalationsReal:settings?.amMaxEscalationsReal ?? 1,
     amMaxTradesDemo:settings?.amMaxTradesDemo ?? 8,amMaxTradesReal:settings?.amMaxTradesReal ?? 8,
+    amMaxLossesDemo:settings?.amMaxLossesDemo ?? settings?.amMaxTradesDemo ?? 8,amMaxLossesReal:settings?.amMaxLossesReal ?? settings?.amMaxTradesReal ?? 8,
+    amMaxConsecutiveLossesDemo:settings?.amMaxConsecutiveLossesDemo ?? settings?.amMaxTradesDemo ?? 8,amMaxConsecutiveLossesReal:settings?.amMaxConsecutiveLossesReal ?? settings?.amMaxTradesReal ?? 8,
     plMaxEscalationsDemo:settings?.plMaxEscalationsDemo ?? 1,plMaxEscalationsReal:settings?.plMaxEscalationsReal ?? 1,
     plCeilingPctDemo:settings?.plCeilingPctDemo ?? 20,plCeilingPctReal:settings?.plCeilingPctReal ?? 20,
     plProfitTargetPctDemo:settings?.plProfitTargetPctDemo ?? 10,plProfitTargetPctReal:settings?.plProfitTargetPctReal ?? 10,
     plLossTargetPctDemo:settings?.plLossTargetPctDemo ?? 10,plLossTargetPctReal:settings?.plLossTargetPctReal ?? 10,
     plMaxTradesDemo:settings?.plMaxTradesDemo ?? 8,plMaxTradesReal:settings?.plMaxTradesReal ?? 8,
+    plMaxLossesDemo:settings?.plMaxLossesDemo ?? settings?.plMaxTradesDemo ?? 8,plMaxLossesReal:settings?.plMaxLossesReal ?? settings?.plMaxTradesReal ?? 8,
+    plMaxConsecutiveLossesDemo:settings?.plMaxConsecutiveLossesDemo ?? settings?.plMaxTradesDemo ?? 8,plMaxConsecutiveLossesReal:settings?.plMaxConsecutiveLossesReal ?? settings?.plMaxTradesReal ?? 8,
     plBreakevenRecoveryDemo:settings?.plBreakevenRecoveryDemo ?? false,plBreakevenRecoveryReal:settings?.plBreakevenRecoveryReal ?? false,
+    mbEnabledDemo:settings?.mbEnabledDemo ?? false,mbEnabledReal:settings?.mbEnabledReal ?? false,
+    mbDemotionBufferPctDemo:settings?.mbDemotionBufferPctDemo ?? MB_DEMOTION_BUFFER_PCT_DEFAULT,mbDemotionBufferPctReal:settings?.mbDemotionBufferPctReal ?? MB_DEMOTION_BUFFER_PCT_DEFAULT,
     riskCalcBalance:'',riskCalcTargetPct:'',riskCalcTradesPerSession:''});
   const[saved,setSaved]=useState(false);
   const[notifPerm,setNotifPerm]=useState(typeof Notification!=='undefined'?Notification.permission:'unsupported');
@@ -6257,12 +6803,29 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
   const set=(k,v)=>sf(p=>({...p,[k]:v}));
   const activeSession=ss?getActive(ss):null;
 
+  // `f` is seeded once at mount from `settings` and never re-synced on prop
+  // changes — so if the user flips the global Demo/Real toggle in the
+  // sidebar while Settings stays open (no remount, since that only happens
+  // on view changes), f.activeMode goes stale. Settings doesn't own that
+  // field at all; every save must echo back whatever `settings.activeMode`
+  // CURRENTLY is (the live prop), never f's possibly-stale copy — otherwise
+  // saving here would silently roll the active mode back to whatever it was
+  // when Settings was opened. Routed through one wrapper so every call site
+  // gets this for free instead of needing the same guard five times over.
+  // mbTierDemo/mbTierReal get the exact same treatment, for the opposite
+  // reason: they're not in `f` at all (deliberately — Settings never edits
+  // the assigned tier directly, only the between-sessions sync effect
+  // does), and saveSettings REPLACES the whole settings object rather than
+  // merging, so omitting them here would silently reset both tiers to 0 on
+  // every single Settings save.
+  const persistSettings=v=>saveSettings({...v,activeMode:settings?.activeMode,mbTierDemo:settings?.mbTierDemo,mbTierReal:settings?.mbTierReal});
+
   async function applyMoneyMgmtStyle(styleVal){
     if(activeSession)setSessionWarn(true);
     const key=mode==='REAL'?'moneyMgmtStyleReal':'moneyMgmtStyleDemo';
     const updated={...f,[key]:styleVal};
     sf(updated);
-    await saveSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
+    await persistSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
   }
 
   // Suggested risk % — display-only, never writes to riskPercent or any other
@@ -6311,14 +6874,14 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
   // edge per session both mean less risk needed on any single one.
   const calcEdge=Math.max(0.05,(calcWinRate-(100-calcWinRate))/100);
   const calcSuggestedRisk=Math.min(20,Math.max(0.5,+(calcTargetPct/(calcTradesN*calcEdge)).toFixed(1)));
-  // riskPercent is global (not per-mode), so "current setting" is the same
-  // number regardless of which mode the calculator's toggle is on.
-  const calcCurrentPct=parseFloat(f.riskPercent)||5;
+  // riskPercent is per-mode now — "current setting" reads whichever mode the
+  // calculator (and the rest of this page) is currently configuring.
+  const calcCurrentPct=parseFloat(f[`riskPercent${modeKey}`])||5;
   const calcBalanceNum=parseFloat(f.riskCalcBalance)||0;
   const calcClose=Math.abs(calcCurrentPct-calcSuggestedRisk)<=0.5;
-  function applySuggestedRisk(){set('riskPercent',Math.max(1,Math.min(20,calcSuggestedRisk)));}
+  function applySuggestedRisk(){set(`riskPercent${modeKey}`,Math.max(1,Math.min(20,calcSuggestedRisk)));}
 
-  async function save(){await saveSettings({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0)});setSaved(true);setTimeout(()=>setSaved(false),2000);}
+  async function save(){await persistSettings({...f,startingBalanceDemo:parseFloat(f.startingBalanceDemo||0),startingBalanceReal:parseFloat(f.startingBalanceReal||0)});setSaved(true);setTimeout(()=>setSaved(false),2000);}
 
   function requestDesktopAlerts(){
     if(typeof Notification==='undefined')return;
@@ -6348,14 +6911,14 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
     if(activeSession)setSessionWarn(true);
     const updated=mode==='REAL'?{...f,tradeStyleReal:id}:{...f,tradeStyleDemo:id};
     sf(updated);
-    await saveSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
+    await persistSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
   }
 
   async function applySessions(n){
     if(activeSession)setSessionWarn(true);
     const updated={...f,sessionsPerDay:n};
     sf(updated);
-    await saveSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
+    await persistSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
   }
 
   // Never affects a session already in progress — enforcement for a running
@@ -6371,7 +6934,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
     }
     const updated={...f,[key]:on};
     sf(updated);
-    await saveSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
+    await persistSettings({...updated,startingBalanceDemo:parseFloat(updated.startingBalanceDemo||0),startingBalanceReal:parseFloat(updated.startingBalanceReal||0)});
   }
 
   const STYLES=[
@@ -6456,31 +7019,97 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
           </div>
         </div>
 
-        {/* Risk sizing — shared across all three styles, not Fixed-Risk-%-
-            specific: amBaseStake() (the base stake formula every style
-            escalates or resets to) reads riskPercent/riskAmount directly,
-            regardless of which Money Management style is active. Lives
-            above the tabs so it's always visible, never hidden by tab
-            selection. */}
+        {/* Risk sizing — shared across all three Money Management styles
+            (amBaseStake() reads it regardless of active style), but fully
+            per-mode: {modeKey} gets its own sizing METHOD (% vs Fixed $) and
+            its own amount/percent, independent of the other mode — same
+            pattern as every other field on this page. Lives above the tabs
+            so it's always visible, never hidden by tab selection. */}
         <div style={{background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px',marginBottom:16}}>
-          <label style={lbl}>Risk sizing</label>
+          <label style={lbl}>Risk sizing ({modeKey})</label>
+          {f[`mbEnabled${modeKey}`]&&<p style={{fontSize:11,color:'var(--text-warning)',marginTop:-2,marginBottom:8}}>Overridden by Milestone base sizing below — these values are ignored while it's on.</p>}
+          <div style={{...(f[`mbEnabled${modeKey}`]?{opacity:0.45,pointerEvents:'none'}:undefined)}}>
           <div style={{display:'flex',gap:8,marginBottom:10}}>
             {[{id:'PERCENT',label:'% of balance'},{id:'FIXED',label:'Fixed $ amount'}].map(m=>(
-              <button key={m.id} style={{...btn((f.riskMode||'PERCENT')===m.id?'pri':'def'),flex:1}} onClick={()=>set('riskMode',m.id)}>{m.label}</button>
+              <button key={m.id} style={{...btn((f[`riskMode${modeKey}`]||'PERCENT')===m.id?'pri':'def'),flex:1}} onClick={()=>set(`riskMode${modeKey}`,m.id)}>{m.label}</button>
             ))}
           </div>
-          {(f.riskMode||'PERCENT')==='PERCENT'?(
+          {(f[`riskMode${modeKey}`]||'PERCENT')==='PERCENT'?(
             <>
-              <label style={lbl}>Risk per trade: {f.riskPercent}%</label>
-              <input type="range" min="1" max="20" step="0.5" value={f.riskPercent} onChange={e=>set('riskPercent',parseFloat(e.target.value))} style={{width:'100%'}}/>
+              <label style={lbl}>Risk per trade: {f[`riskPercent${modeKey}`]}%</label>
+              <input type="range" min="1" max="20" step="0.5" value={f[`riskPercent${modeKey}`]} onChange={e=>set(`riskPercent${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
             </>
           ):(
             <>
               <label style={lbl}>Fixed stake per trade ($)</label>
-              <input style={inp} type="number" min="1" step="0.5" value={f.riskAmount} onChange={e=>set('riskAmount',parseFloat(e.target.value))}/>
+              <input style={inp} type="number" min="1" step="0.5" value={f[`riskAmount${modeKey}`]} onChange={e=>set(`riskAmount${modeKey}`,parseFloat(e.target.value))}/>
               <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Every trade stakes this amount regardless of balance — change it anytime, it applies from your next stake calculation.</p>
             </>
           )}
+          </div>
+        </div>
+
+        {/* Milestone Base Sizing — optional layer, per mode, that overrides
+            the flat risk %/fixed $ above as the source of "base stake" once
+            on, feeding whichever Money Management style is active. Fully
+            separate from Withdrawal Milestones below (different system,
+            different purpose — a trader withdraws at whatever milestone
+            they choose regardless of which sizing tier they're on). */}
+        <div style={{background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',padding:'10px 12px',marginBottom:16}}>
+          <label style={lbl}>Milestone base sizing ({modeKey})<InfoTip text="Instead of a flat risk % or fixed $ amount, automatically recalculates your base stake using a fixed dollar-tier ladder ($10-19, $20-39, $40-79, doubling from there) — the same ladder for every account, so a bigger balance lands on a higher tier with a correspondingly smaller %. Only changes between sessions, never mid-session, and only feeds whichever Money Management style is already active — it doesn't add its own escalation logic."/></label>
+          <div style={{display:'flex',gap:8,marginBottom:10}}>
+            {[{id:true,label:'On'},{id:false,label:'Off'}].map(o=>(
+              <button key={String(o.id)} type="button" style={{...btn(!!f[`mbEnabled${modeKey}`]===o.id?'pri':'def'),flex:1}} onClick={()=>set(`mbEnabled${modeKey}`,o.id)}>{o.label}</button>
+            ))}
+          </div>
+          {f[`mbEnabled${modeKey}`]&&(()=>{
+            const bufferPct=parseFloat(f[`mbDemotionBufferPct${modeKey}`])||MB_DEMOTION_BUFFER_PCT_DEFAULT;
+            const liveBalance=balForMode(settings,trades,wds,mode);
+            const curTier=getMbTierForMode(settings,mode);
+            const curStake=milestoneTierStake(curTier);
+            const curFloor=milestoneTierFloor(curTier);
+            const nextFloor=milestoneTierFloor(curTier+1);
+            const demotionFloor=curFloor*(1-bufferPct/100);
+            const naturalTier=naturalMilestoneTier(liveBalance);
+            const progressToNext=Math.max(0,Math.min(100,((liveBalance-curFloor)/(nextFloor-curFloor))*100));
+            const band=i=>`${f$(milestoneTierFloor(i))}–${f$(milestoneTierFloor(i+1))}`;
+            return(
+              <div>
+                <label style={{...lbl,marginTop:4}}>Demotion buffer: {bufferPct}%<InfoTip text="How far the balance must drop below the current tier's floor before you're moved back down a tier — prevents the base stake flip-flopping when balance hovers right at a boundary."/></label>
+                <input type="range" min="1" max="20" step="1" value={bufferPct} onChange={e=>set(`mbDemotionBufferPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
+                <div style={{marginTop:10,padding:10,borderRadius:'var(--radius)',background:'var(--surface-0)',border:'1px solid var(--border)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                    <span style={{color:'var(--text-muted)'}}>Current tier</span>
+                    <span style={{fontWeight:600}}>Tier {curTier} — {band(curTier)}</span>
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:8}}>
+                    <span style={{color:'var(--text-muted)'}}>Base stake</span>
+                    <span style={{fontWeight:600,color:'var(--text-accent)'}}>{f$(curStake)} ({milestoneTierPct(curTier).toFixed(1)}%)</span>
+                  </div>
+                  <div style={{background:'var(--surface-1)',borderRadius:4,height:6,overflow:'hidden'}}>
+                    <div style={{height:'100%',background:'var(--fill-accent)',width:`${progressToNext}%`}}/>
+                  </div>
+                  <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+                    {liveBalance>=nextFloor
+                      ?`Ready to promote to Tier ${curTier+1} at next session close.`
+                      :`${f$(Math.max(0,nextFloor-liveBalance))} to Tier ${curTier+1} (${f$(nextFloor)})`}
+                    {naturalTier<curTier&&liveBalance<demotionFloor&&<> — below the demotion threshold ({f$(demotionFloor)}); will drop to Tier {naturalTier} at next session close.</>}
+                  </div>
+                  <details style={{marginTop:8}}>
+                    <summary style={{fontSize:11,color:'var(--text-accent)',cursor:'pointer'}}>Full tier ladder (reference — same for every account)</summary>
+                    <div style={{marginTop:6,display:'grid',gap:4}}>
+                      {Array.from({length:8},(_,i)=>i).map(i=>(
+                        <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:11,padding:'2px 0',color:i===curTier?'var(--text-accent)':'var(--text-muted)',fontWeight:i===curTier?600:400}}>
+                          <span>Tier {i} — {band(i)}</span>
+                          <span>{f$(milestoneTierStake(i))} ({milestoneTierPct(i).toFixed(1)}%)</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Tab content — a distinct bordered/elevated card, tabs as its header
@@ -6507,7 +7136,7 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
           {mmTab==='FIXED'?(
             <div>
               <p style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
-                Risk per trade is set once above and shared by all three styles — this tab is just Fixed Risk %'s own session-ending rules: which Trade Management style governs the countdown/stop conditions, and how many sessions you run per day.
+                Risk per trade for {modeKey} is set once above and shared by all three styles — this tab is just Fixed Risk %'s own session-ending rules: which Trade Management style governs the countdown/stop conditions, and how many sessions you run per day.
               </p>
               <div>
                 <label style={lbl}>Trade management style</label>
@@ -6537,29 +7166,38 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
             </div>
           ):mmTab==='ANTI_MARTINGALE'?(
             <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
-              <label style={lbl}>Multiplier: {(f[`amMultiplier${modeKey}`]??1.3).toFixed(1)}×</label>
+              <label style={lbl}>Multiplier: {(f[`amMultiplier${modeKey}`]??1.3).toFixed(1)}×<InfoTip text={MM_TOOLTIPS.multiplier}/></label>
               <input type="range" min="1.2" max="1.5" step="0.1" value={f[`amMultiplier${modeKey}`]??1.3} onChange={e=>set(`amMultiplier${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeKey}`]??20}% of balance</label>
+              <label style={{...lbl,marginTop:8}}>Ceiling: {f[`amCeilingPct${modeKey}`]??20}% of balance<InfoTip text={MM_TOOLTIPS.ceiling}/></label>
               <input type="range" min="5" max="50" step="1" value={f[`amCeilingPct${modeKey}`]??20} onChange={e=>set(`amCeilingPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
+              <label style={{...lbl,marginTop:8}}>Max consecutive escalations<InfoTip text={MM_TOOLTIPS.maxEscalations}/></label>
               <div style={{display:'flex',gap:8}}>
                 {[1,2].map(n=>(
                   <button key={n} type="button" style={{...btn((f[`amMaxEscalations${modeKey}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`amMaxEscalations${modeKey}`,n)}>{n}</button>
                 ))}
               </div>
-              <label style={{...lbl,marginTop:8}}>Profit target: {f[`amProfitTargetPct${modeKey}`]??10}% of session start balance</label>
+              <label style={{...lbl,marginTop:8}}>Profit target: {f[`amProfitTargetPct${modeKey}`]??10}% of session start balance<InfoTip text={MM_TOOLTIPS.profitTarget}/></label>
               <input type="range" min="1" max="50" step="1" value={f[`amProfitTargetPct${modeKey}`]??10} onChange={e=>set(`amProfitTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Loss target: {f[`amLossTargetPct${modeKey}`]??10}% of session start balance</label>
+              <label style={{...lbl,marginTop:8}}>Loss target: {f[`amLossTargetPct${modeKey}`]??10}% of session start balance<InfoTip text={MM_TOOLTIPS.lossTarget}/></label>
               <input type="range" min="1" max="50" step="1" value={f[`amLossTargetPct${modeKey}`]??10} onChange={e=>set(`amLossTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`amMaxTrades${modeKey}`]??8}</label>
-              <input type="range" min="3" max="20" step="1" value={f[`amMaxTrades${modeKey}`]??8} onChange={e=>set(`amMaxTrades${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`amMaxTrades${modeKey}`]??8}<InfoTip text={MM_TOOLTIPS.maxTrades}/></label>
+              <input type="range" min="3" max="20" step="1" value={f[`amMaxTrades${modeKey}`]??8} onChange={e=>{
+                const n=parseInt(e.target.value,10);
+                sf(p=>({...p,[`amMaxTrades${modeKey}`]:n,[`amMaxLosses${modeKey}`]:Math.min(p[`amMaxLosses${modeKey}`]??n,n),[`amMaxConsecutiveLosses${modeKey}`]:Math.min(p[`amMaxConsecutiveLosses${modeKey}`]??n,n)}));
+              }} style={{width:'100%'}}/>
               <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session also ends the moment this trade count is reached, regardless of P&L — a separate safety net from the profit/loss targets above.</p>
+              <label style={{...lbl,marginTop:8}}>Max losses per session: {Math.min(f[`amMaxLosses${modeKey}`]??f[`amMaxTrades${modeKey}`]??8,f[`amMaxTrades${modeKey}`]??8)}<InfoTip text={MM_TOOLTIPS.maxLosses}/></label>
+              <input type="range" min="1" max={f[`amMaxTrades${modeKey}`]??8} step="1" value={Math.min(f[`amMaxLosses${modeKey}`]??f[`amMaxTrades${modeKey}`]??8,f[`amMaxTrades${modeKey}`]??8)} onChange={e=>set(`amMaxLosses${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session ends the moment total losses (not necessarily consecutive) reach this count, regardless of P&L or trades remaining — protects against a losing run even before the loss-target % is hit.</p>
+              <label style={{...lbl,marginTop:8}}>Max consecutive losses: {Math.min(f[`amMaxConsecutiveLosses${modeKey}`]??f[`amMaxTrades${modeKey}`]??8,f[`amMaxTrades${modeKey}`]??8)}<InfoTip text={MM_TOOLTIPS.maxConsecutiveLosses}/></label>
+              <input type="range" min="1" max={f[`amMaxTrades${modeKey}`]??8} step="1" value={Math.min(f[`amMaxConsecutiveLosses${modeKey}`]??f[`amMaxTrades${modeKey}`]??8,f[`amMaxTrades${modeKey}`]??8)} onChange={e=>set(`amMaxConsecutiveLosses${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Independent of Max losses per session above — this only fires on a genuine back-to-back losing streak; a win anywhere in between resets it, even if the total-loss count keeps climbing.</p>
             </div>
           ):(
             <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
-              <label style={lbl}>Ceiling: {f[`plCeilingPct${modeKey}`]??20}% of balance</label>
+              <label style={lbl}>Ceiling: {f[`plCeilingPct${modeKey}`]??20}% of balance<InfoTip text={MM_TOOLTIPS.ceiling}/></label>
               <input type="range" min="5" max="50" step="1" value={f[`plCeilingPct${modeKey}`]??20} onChange={e=>set(`plCeilingPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Max consecutive escalations</label>
+              <label style={{...lbl,marginTop:8}}>Max consecutive escalations<InfoTip text={MM_TOOLTIPS.maxEscalations}/></label>
               <div style={{display:'flex',gap:8}}>
                 {[1,2].map(n=>(
                   <button key={n} type="button" style={{...btn((f[`plMaxEscalations${modeKey}`]??1)===n?'pri':'def'),flex:1,fontSize:12}} onClick={()=>set(`plMaxEscalations${modeKey}`,n)}>{n}</button>
@@ -6568,21 +7206,30 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
               {(f[`plMaxEscalations${modeKey}`]??1)===2?(
                 <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13,marginTop:8}}>
                   <input type="checkbox" checked={!!f[`plBreakevenRecovery${modeKey}`]} onChange={e=>set(`plBreakevenRecovery${modeKey}`,e.target.checked)}/>
-                  Breakeven recovery after max-escalation loss
+                  Breakeven recovery after max-escalation loss<InfoTip text={MM_TOOLTIPS.breakevenRecovery}/>
                 </label>
               ):(
                 <label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,marginTop:8,color:'var(--text-muted)'}}>
                   <input type="checkbox" checked={false} disabled/>
-                  Breakeven recovery — only available with 2 max escalations
+                  Breakeven recovery — only available with 2 max escalations<InfoTip text={MM_TOOLTIPS.breakevenRecovery}/>
                 </label>
               )}
-              <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeKey}`]??10}% of session start balance</label>
+              <label style={{...lbl,marginTop:8}}>Profit target: {f[`plProfitTargetPct${modeKey}`]??10}% of session start balance<InfoTip text={MM_TOOLTIPS.profitTarget}/></label>
               <input type="range" min="1" max="50" step="1" value={f[`plProfitTargetPct${modeKey}`]??10} onChange={e=>set(`plProfitTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeKey}`]??10}% of session start balance</label>
+              <label style={{...lbl,marginTop:8}}>Loss target: {f[`plLossTargetPct${modeKey}`]??10}% of session start balance<InfoTip text={MM_TOOLTIPS.lossTarget}/></label>
               <input type="range" min="1" max="50" step="1" value={f[`plLossTargetPct${modeKey}`]??10} onChange={e=>set(`plLossTargetPct${modeKey}`,parseFloat(e.target.value))} style={{width:'100%'}}/>
-              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`plMaxTrades${modeKey}`]??8}</label>
-              <input type="range" min="3" max="20" step="1" value={f[`plMaxTrades${modeKey}`]??8} onChange={e=>set(`plMaxTrades${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <label style={{...lbl,marginTop:8}}>Max trades per session: {f[`plMaxTrades${modeKey}`]??8}<InfoTip text={MM_TOOLTIPS.maxTrades}/></label>
+              <input type="range" min="3" max="20" step="1" value={f[`plMaxTrades${modeKey}`]??8} onChange={e=>{
+                const n=parseInt(e.target.value,10);
+                sf(p=>({...p,[`plMaxTrades${modeKey}`]:n,[`plMaxLosses${modeKey}`]:Math.min(p[`plMaxLosses${modeKey}`]??n,n),[`plMaxConsecutiveLosses${modeKey}`]:Math.min(p[`plMaxConsecutiveLosses${modeKey}`]??n,n)}));
+              }} style={{width:'100%'}}/>
               <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>No multiplier — growth comes from actual trade profit, not a configured rate. Session also ends the moment this trade count is reached, regardless of P&L.</p>
+              <label style={{...lbl,marginTop:8}}>Max losses per session: {Math.min(f[`plMaxLosses${modeKey}`]??f[`plMaxTrades${modeKey}`]??8,f[`plMaxTrades${modeKey}`]??8)}<InfoTip text={MM_TOOLTIPS.maxLosses}/></label>
+              <input type="range" min="1" max={f[`plMaxTrades${modeKey}`]??8} step="1" value={Math.min(f[`plMaxLosses${modeKey}`]??f[`plMaxTrades${modeKey}`]??8,f[`plMaxTrades${modeKey}`]??8)} onChange={e=>set(`plMaxLosses${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Session ends the moment total losses (not necessarily consecutive) reach this count, regardless of P&L or trades remaining — protects against a losing run even before the loss-target % is hit.</p>
+              <label style={{...lbl,marginTop:8}}>Max consecutive losses: {Math.min(f[`plMaxConsecutiveLosses${modeKey}`]??f[`plMaxTrades${modeKey}`]??8,f[`plMaxTrades${modeKey}`]??8)}<InfoTip text={MM_TOOLTIPS.maxConsecutiveLosses}/></label>
+              <input type="range" min="1" max={f[`plMaxTrades${modeKey}`]??8} step="1" value={Math.min(f[`plMaxConsecutiveLosses${modeKey}`]??f[`plMaxTrades${modeKey}`]??8,f[`plMaxTrades${modeKey}`]??8)} onChange={e=>set(`plMaxConsecutiveLosses${modeKey}`,parseInt(e.target.value,10))} style={{width:'100%'}}/>
+              <p style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Independent of Max losses per session above — this only fires on a genuine back-to-back losing streak; a win anywhere in between resets it, even if the total-loss count keeps climbing.</p>
             </div>
           )}
           </div>
@@ -7350,7 +7997,7 @@ export default function App(){
       // Rebuild counters from scratch (in order) so streaks are correct.
       const amStyle=getMoneyMgmtStyleForMode(settings,sess.accountMode);
       const isPL=amStyle==='PROFIT_LOCK';
-      let streak=0,nextStake=isEscalatingStyle(amStyle)?amBaseStake(sess.startBalance??0,settings):null,firstProfit=null,recoveryPhase=false;
+      let streak=0,nextStake=isEscalatingStyle(amStyle)?amBaseStake(sess.startBalance??0,settings,sess.accountMode):null,firstProfit=null,recoveryPhase=false;
       let runningBal=sess.startBalance??0;
       let w=0,l=0,tc=0,cl=0,cw=0,sp=0;
       for(const t of sessionTrades){
@@ -7438,6 +8085,34 @@ export default function App(){
     return()=>clearInterval(id);
   },[todaySS]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Milestone Base Sizing's ONLY recalculation point, for both modes,
+  // regardless of which one is currently toggled in the UI — deliberately a
+  // single App-level watcher rather than hooking into every individual
+  // session-end path (manual end, natural profit/loss/trades/losses target,
+  // Trade Management's own timer/lock ending above), so the "only between
+  // sessions, never mid-session" rule holds everywhere for free. Skips a
+  // mode entirely while it has an active session; once that session ends
+  // (any way), the next run of this effect (triggered by todaySS/trades/wds
+  // changing) resolves against the CLOSING balance and persists if the tier
+  // actually changed. Self-resolving: once patched, resolved===curTier next
+  // run, so this never loops.
+  useEffect(()=>{
+    if(!settings||!todaySS)return;
+    const patch={};
+    for(const m of['DEMO','REAL']){
+      if(!getMbEnabledForMode(settings,m))continue;
+      if(getActive(todaySS,m))continue; // never mid-session
+      // No startBal dependency anymore — the ladder is fixed/universal, so
+      // the tier is determined purely by the current balance.
+      const balance=balForMode(settings,trades,wds,m);
+      const curTier=getMbTierForMode(settings,m);
+      const resolved=resolveMilestoneTier(balance,curTier,getMbDemotionBufferPctForMode(settings,m));
+      if(resolved!==curTier)patch[m==='REAL'?'mbTierReal':'mbTierDemo']=resolved;
+    }
+    if(Object.keys(patch).length)saveSettings({...settings,...patch});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[settings,todaySS,trades,wds]);
+
   // Plays the session-lock chime the instant any session (either mode) ends —
   // separate from the email effect above so it isn't gated on having an email
   // on file. If the tab is in the background at that moment, also fires an OS
@@ -7497,6 +8172,7 @@ export default function App(){
     ...(isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))?[{id:'quicklog',icon:Zap,label:'Quick log'}]:[]),
     {id:'money',icon:Wallet,label:'Money mgmt'},
     {id:'plan',icon:ClipboardList,label:'Trading plan'},
+    {id:'calendar',icon:Calendar,label:'Calendar'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},
     {id:'ask',icon:MessageCircle,label:'Ask'},
     {id:'settings',icon:Settings,label:'Settings'},
@@ -7672,7 +8348,8 @@ export default function App(){
             {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies}/>}
             {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} music={music} userId={authUser?.id}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
-            {view==='plan'&&<Plan settings={settings}/>}
+            {view==='plan'&&<Plan settings={settings} mode={mode}/>}
+            {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} mode={mode} nav={setView}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
             {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
             {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy}/>}
