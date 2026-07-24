@@ -5957,12 +5957,29 @@ function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
           {/* Day number: small, muted, unobtrusive — clearly secondary to the % */}
           <div className="gm-daycell-day" style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>{day}</div>
           {hasTrades
-            ?<div className="gm-daycell-pct" style={{fontSize:15,fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{dayStats.pctPnl.toFixed(1)}%</div>
+            ?<>
+              {/* Desktop: full 1-decimal precision, room to fit it. Mobile:
+                  a separate whole-number rendering, not the same string
+                  shrunk — "+19.6%" has no valid line-break point, so at
+                  mobile cell width it was clipping the trailing "%" via
+                  overflow:hidden instead of wrapping. Rounding removes the
+                  "." and one digit, which is what actually guarantees it
+                  fits, not a font-size tweak (any 3-digit or long-decimal
+                  value would still overflow at any font size that's still
+                  legible in a ~30px-wide cell). Same .ql-desktop/.ql-mobile
+                  split-by-viewport pattern already used for Quick Log. */}
+              <div className="gm-daycell-pct gm-cal-desktop-only" style={{fontSize:15,fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{dayStats.pctPnl.toFixed(1)}%</div>
+              <div className="gm-daycell-pct-mobile gm-cal-mobile-only" style={{fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{Math.round(dayStats.pctPnl)}%</div>
+            </>
             :<div style={{fontSize:11,color:'var(--text-muted)'}}>—</div>}
-          {/* Trade count is dropped entirely below 640px (see index.css) —
-              it's already repeated in the tap-detail popover below, so
-              nothing is lost, just deferred to the existing tap. */}
-          {hasTrades&&<div className="gm-daycell-tradecount" style={{fontSize:9,color:'var(--text-muted)',marginTop:2}}>{dayStats.total} trade{dayStats.total===1?'':'s'}</div>}
+          {/* Trade count: full "N trades" on desktop, a compact "Nt" on
+              mobile (the full word wouldn't fit any better than the
+              percentage did) — visible on both now, not hidden on mobile,
+              matching desktop's always-visible behavior. */}
+          {hasTrades&&<>
+            <div className="gm-daycell-tradecount gm-cal-desktop-only" style={{fontSize:9,color:'var(--text-muted)',marginTop:2}}>{dayStats.total} trade{dayStats.total===1?'':'s'}</div>
+            <div className="gm-daycell-tradecount-mobile gm-cal-mobile-only" style={{color:'var(--text-muted)',marginTop:1}}>{dayStats.total}t</div>
+          </>}
         </div>
       </summary>
       {hasTrades&&(

@@ -394,21 +394,32 @@ button:active:not(:disabled) { transform: scale(0.98); }
 /* Calendar view's day grid, mobile only — a 7-column grid can't collapse to
    1 column like grid-2/grid-3 and stay recognizable as a calendar, so this
    condenses cell content/chrome instead of restructuring the layout.
-   Reclaims width three ways: drops the trade-count line entirely (already
-   repeated in the tap-detail popover, so nothing is lost), shrinks
-   type/padding/min-height, and tightens the wrapping card's own padding.
-   Cell width still lands just under the app's 44px touch-target guideline
-   at the smallest supported width (375px) even after this — a hard ceiling
-   from fitting 7 non-negotiable columns in that space with any padding at
-   all, not something further tuning here can close without going
-   edge-to-edge and making the grid harder to read, which is the wrong
-   trade. See DayCell/CalendarGrid in App.js for the classed elements. */
+   Reclaims width by shrinking type/padding/min-height and tightening the
+   wrapping card's own padding. Cell width still lands just under the app's
+   44px touch-target guideline at the smallest supported width (375px) even
+   after this — a hard ceiling from fitting 7 non-negotiable columns in that
+   space with any padding at all, not something further tuning here can
+   close without going edge-to-edge and making the grid harder to read,
+   which is the wrong trade. See DayCell/CalendarGrid in App.js.
+
+   gm-cal-desktop-only/gm-cal-mobile-only: the percentage and trade-count
+   each render as TWO separate elements (full precision/"N trades" on
+   desktop, a shorter rounded/"Nt" form on mobile), not one element whose
+   font-size just shrinks — a string like "+19.6%" has no valid line-break
+   point, so shrinking its font still overflows a ~30px-wide mobile cell at
+   some value (any 3-digit % or a 2-digit trade count), clipping the last
+   character via the cell's overflow:hidden. The shorter mobile string is
+   what actually guarantees it fits, not the font size. Same split-by-
+   viewport pattern as .ql-desktop/.ql-mobile below. */
+.gm-cal-mobile-only { display: none; }
 @media (max-width: 640px) {
+  .gm-cal-desktop-only { display: none !important; }
+  .gm-cal-mobile-only { display: block !important; }
   .gm-cal-card { padding: 16px 10px !important; }
-  .gm-daycell { min-height: 48px !important; padding: 4px 5px !important; }
+  .gm-daycell { min-height: 52px !important; padding: 4px 5px !important; }
   .gm-daycell-day { font-size: 9px !important; margin-bottom: 2px !important; }
-  .gm-daycell-pct { font-size: 12px !important; }
-  .gm-daycell-tradecount { display: none !important; }
+  .gm-daycell-pct-mobile { font-size: 12px !important; }
+  .gm-daycell-tradecount-mobile { font-size: 8px !important; }
 }
 
 /* Quick Log: dense table on desktop, card-per-row on mobile — same data,
