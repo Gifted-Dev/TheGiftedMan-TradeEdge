@@ -391,6 +391,26 @@ button:active:not(:disabled) { transform: scale(0.98); }
   .grid-2, .grid-3 { grid-template-columns: 1fr !important; }
 }
 
+/* Calendar view's day grid, mobile only — a 7-column grid can't collapse to
+   1 column like grid-2/grid-3 and stay recognizable as a calendar, so this
+   condenses cell content/chrome instead of restructuring the layout.
+   Reclaims width three ways: drops the trade-count line entirely (already
+   repeated in the tap-detail popover, so nothing is lost), shrinks
+   type/padding/min-height, and tightens the wrapping card's own padding.
+   Cell width still lands just under the app's 44px touch-target guideline
+   at the smallest supported width (375px) even after this — a hard ceiling
+   from fitting 7 non-negotiable columns in that space with any padding at
+   all, not something further tuning here can close without going
+   edge-to-edge and making the grid harder to read, which is the wrong
+   trade. See DayCell/CalendarGrid in App.js for the classed elements. */
+@media (max-width: 640px) {
+  .gm-cal-card { padding: 16px 10px !important; }
+  .gm-daycell { min-height: 48px !important; padding: 4px 5px !important; }
+  .gm-daycell-day { font-size: 9px !important; margin-bottom: 2px !important; }
+  .gm-daycell-pct { font-size: 12px !important; }
+  .gm-daycell-tradecount { display: none !important; }
+}
+
 /* Quick Log: dense table on desktop, card-per-row on mobile — same data,
    two renderings, toggled purely by viewport width (no JS media query). */
 .ql-mobile { display: none; }

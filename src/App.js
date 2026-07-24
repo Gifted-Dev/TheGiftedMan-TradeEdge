@@ -5946,7 +5946,7 @@ function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
   const recede=!hasTrades||!inMonth;
   return(
     <details className="gm-infotip" style={{position:'relative'}} onClick={e=>e.stopPropagation()}>
-      <summary style={{
+      <summary className="gm-daycell" style={{
         listStyle:'none',display:'block',position:'relative',minHeight:64,borderRadius:'var(--radius)',padding:'8px 10px',
         background:'transparent',cursor:hasTrades?'pointer':'default',overflow:'hidden',
         border:isStreakEdge?`1px solid ${accent}`:'1px solid var(--border)',
@@ -5955,11 +5955,14 @@ function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
         {hasTrades&&<div style={{position:'absolute',inset:0,background:accent,opacity:alpha}}/>}
         <div style={{position:'relative'}}>
           {/* Day number: small, muted, unobtrusive — clearly secondary to the % */}
-          <div style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>{day}</div>
+          <div className="gm-daycell-day" style={{fontSize:10,color:'var(--text-muted)',marginBottom:4}}>{day}</div>
           {hasTrades
-            ?<div style={{fontSize:15,fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{dayStats.pctPnl.toFixed(1)}%</div>
+            ?<div className="gm-daycell-pct" style={{fontSize:15,fontWeight:600,color:accent}}>{dayStats.pctPnl>=0?'+':''}{dayStats.pctPnl.toFixed(1)}%</div>
             :<div style={{fontSize:11,color:'var(--text-muted)'}}>—</div>}
-          {hasTrades&&<div style={{fontSize:9,color:'var(--text-muted)',marginTop:2}}>{dayStats.total} trade{dayStats.total===1?'':'s'}</div>}
+          {/* Trade count is dropped entirely below 640px (see index.css) —
+              it's already repeated in the tap-detail popover below, so
+              nothing is lost, just deferred to the existing tap. */}
+          {hasTrades&&<div className="gm-daycell-tradecount" style={{fontSize:9,color:'var(--text-muted)',marginTop:2}}>{dayStats.total} trade{dayStats.total===1?'':'s'}</div>}
         </div>
       </summary>
       {hasTrades&&(
@@ -6138,7 +6141,7 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
         })}
       </div>
 
-      <div style={card}>
+      <div className="gm-cal-card" style={card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
           <button style={btn()} onClick={()=>setCursor(c=>{const d=new Date(c.y,c.m-1,1);return{y:d.getFullYear(),m:d.getMonth()};})}><ChevronLeft size={14}/></button>
           <div style={{fontSize:15,fontWeight:600}}>{monthLabel}</div>
