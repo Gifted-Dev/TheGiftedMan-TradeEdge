@@ -5982,10 +5982,15 @@ function CalendarGrid({year,month,dayStatsByDate,streakDates,onOpenDay}){
   const cells=monthGridMonFirst(year,month);
   return(
     <div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',fontSize:11,color:'var(--text-muted)',marginBottom:6,textAlign:'center'}}>
+      {/* minmax(0,1fr), not bare 1fr — a plain 1fr track's automatic min
+          width is its content's min-content size, so un-wrappable text
+          ("Wed", a percentage) forces the track (and everything containing
+          it, up through main) wider than the viewport instead of shrinking.
+          Same bug class .grid-2/.grid-3 already carry the fix for. */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',fontSize:11,color:'var(--text-muted)',marginBottom:6,textAlign:'center'}}>
         {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map(d=><div key={d}>{d}</div>)}
       </div>
-      <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:4}}>
+      <div style={{display:'grid',gridTemplateColumns:'repeat(7,minmax(0,1fr))',gap:4}}>
         {cells.map(c=>(
           <DayCell key={c.dateKey} dateKey={c.dateKey} day={c.day} inMonth={c.inMonth}
             dayStats={dayStatsByDate[c.dateKey]} isStreakEdge={streakDates.has(c.dateKey)}
@@ -8296,7 +8301,7 @@ export default function App(){
           </div>
         </aside>
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8">
           {/* Mobile top bar */}
           <div className="mb-4 flex items-center justify-between rounded px-4 py-3 lg:hidden" style={{background:'var(--surface-1)',border:'1px solid var(--border)'}}>
             <div className="flex items-center gap-2.5">
