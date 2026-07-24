@@ -77,6 +77,42 @@ const PAIRS = [
   'EUR/USD OTC','EUR/GBP OTC','EUR/JPY OTC','AUD/USD OTC','USD/CAD OTC',
   'GBP/CHF OTC','AUD/JPY OTC','NZD/USD OTC','USD/SGD OTC',
 ];
+// Shared, cross-flow pair memory — every pair ever typed at ANY trade-entry
+// point (Journal manual entry, Journal edit, Quick Log, Zone Analyzer)
+// lands in the same localStorage list, so a pair typed once shows up as a
+// suggestion everywhere else too. No cap — a trader's real pair list is
+// small enough that this is never a practical concern.
+const CUSTOM_PAIRS_KEY='gm_custom_pairs';
+function loadCustomPairs(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(CUSTOM_PAIRS_KEY)||'[]');
+    return Array.isArray(raw)?raw:[];
+  }catch{return[];}
+}
+function saveCustomPair(value){
+  const trimmed=(value||'').trim();
+  if(!trimmed)return;
+  try{
+    const cur=loadCustomPairs();
+    if(!cur.includes(trimmed))localStorage.setItem(CUSTOM_PAIRS_KEY,JSON.stringify([...cur,trimmed]));
+  }catch{}
+}
+// Every entry point's pairOptions state seeds from this — the static PAIRS
+// list plus whatever's accumulated in localStorage, deduped.
+function initialPairOptions(){
+  const custom=loadCustomPairs();
+  return[...PAIRS,...custom.filter(p=>!PAIRS.includes(p))];
+}
+// Thin wrapper each entry point's own addPairOption calls: updates that
+// component's local state (so the datalist reflects it immediately, same
+// render) AND persists to localStorage (so every OTHER entry point picks
+// it up on their next mount/reload).
+function persistPairOption(value,setPairOptions){
+  const trimmed=(value||'').trim();
+  if(!trimmed)return;
+  setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+  saveCustomPair(trimmed);
+}
 
 const DEF_MS = [
   {mul:2,pct:20},{mul:3,pct:25},{mul:5,pct:30},
@@ -228,7 +264,7 @@ function toSettingsRow(userId,s){
     sessions_per_day:s.sessionsPerDay,broker_min:s.brokerMin,milestones:s.milestones,
     api_keys:{apiKey:s.apiKey,groqApiKey:s.groqApiKey},setup_complete:s.setupComplete,
     created_at:new Date(s.createdAt||Date.now()).toISOString(),
-    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,
+    extra:{startingBalanceDemo:s.startingBalanceDemo,startingBalanceReal:s.startingBalanceReal,tradeStyleDemo:s.tradeStyleDemo,tradeStyleReal:s.tradeStyleReal,aiProvider:s.aiProvider,sessionDurations:s.sessionDurations,activeMode:s.activeMode,
       riskModeDemo:s.riskModeDemo,riskModeReal:s.riskModeReal,riskPercentDemo:s.riskPercentDemo,riskPercentReal:s.riskPercentReal,riskAmountDemo:s.riskAmountDemo,riskAmountReal:s.riskAmountReal,
       alertVolume:s.alertVolume,soundAlertOn:s.soundAlertOn,desktopAlertOn:s.desktopAlertOn,strictLockingDemo:s.strictLockingDemo,strictLockingReal:s.strictLockingReal,
       moneyMgmtStyleDemo:s.moneyMgmtStyleDemo,moneyMgmtStyleReal:s.moneyMgmtStyleReal,
@@ -3586,6 +3622,10 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
   const[err,setErr]=useState(null);
   const[extras,setExtras]=useState([]);
   const[pairEdit,setPairEdit]=useState('');
+  const[pairOptions,setPairOptions]=useState(initialPairOptions);
+  function addPairOption(value){
+    persistPairOption(value,setPairOptions);
+  }
   const fRef=useRef();const xRef=useRef();
 
   const active=getActive(ss,mode);
@@ -3738,8 +3778,8 @@ export function Analyzer({settings,ss,mode,saveAnalyses,analyses,nav,setPA,trade
             <div style={{fontSize:13,color:'var(--text-secondary)'}}>{res.summary}</div>
             <div style={{display:'flex',gap:8,alignItems:'center',marginTop:10}}>
               <label style={{fontSize:12,color:'var(--text-secondary)',flexShrink:0}}>Pair:</label>
-              <input style={{...inp,padding:'6px 8px',fontSize:13}} value={pairEdit} onChange={e=>setPairEdit(e.target.value)} placeholder={res.detectedPair==='UNKNOWN'?'Not detected — enter manually':'Pair'} list="analyzer-pair-options"/>
-              <datalist id="analyzer-pair-options">{PAIRS.map(p=><option key={p} value={p}/>)}</datalist>
+              <input style={{...inp,padding:'6px 8px',fontSize:13}} value={pairEdit} onChange={e=>setPairEdit(e.target.value)} onBlur={()=>addPairOption(pairEdit)} placeholder={res.detectedPair==='UNKNOWN'?'Not detected — enter manually':'Pair'} list="analyzer-pair-options"/>
+              <datalist id="analyzer-pair-options">{pairOptions.map(p=><option key={p} value={p}/>)}</datalist>
               {res.detectedPair==='UNKNOWN'&&<span style={{fontSize:11,color:'var(--text-warning)',flexShrink:0}}>⚠ Not detected</span>}
             </div>
           </div>
@@ -3920,7 +3960,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     // picking one, so it's never silently assumed either way.
     return{pair:'',dir:'BUY',grade:'A',notes:'',screenshots:[],outcome:'PENDING',tradeDate:tod(),accountMode:mode||'DEMO',stakeMode:'DEFAULT',stakeValue:'',payoutPct:lastPayoutPct(),strategyIds:lastStrategyIds()};
   });
-  const[pairOptions,setPairOptions]=useState(PAIRS);
+  const[pairOptions,setPairOptions]=useState(initialPairOptions);
   const[selectedTrade,setSelectedTrade]=useState(null);
   // Per-trade draft payout % for resolving a PENDING trade's outcome — keyed
   // by trade id since these render inline in a list, not their own component.
@@ -4080,6 +4120,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       }
     }
     const t={id:uid(),timestamp:Date.now(),date:tod(),sessionNum:sess?sess.num:null,pair:pa.detectedPair||'Unknown',direction:pa.direction||'BUY',zoneType:pa.zoneType||'',zoneGrade:pa.grade||'A',stake:paStake,outcome:'PENDING',pnl:0,source:'ANALYZER',analysisId:pa.id||null,screenshots:[pa.screenshot,...(pa.extras?.map(e=>e.b64)||[])],notes:'',isAnalyzed:true,criteria:pa.criteria||null,gateResults:pa.gateResults||null,score:pa.score??null,hardFilterFailed:pa.hardFilterFailed??null,hardFilterFailures:pa.hardFilterFailures||[],failedCriteria:pa.failedCriteria||[],keyStrengths:pa.keyStrengths||[],keyWeaknesses:pa.keyWeaknesses||[],executionAdvice:pa.executionAdvice||'',summary:pa.summary||'',confidence:pa.confidence||0,verdict:pa.verdict||'',recommendation:pa.recommendation||'',accountMode:mode,offPlan,lockingModeAtTime,strategyIds:['zone-sd']};
+    addPairOption(t.pair);
     await saveTrades(prev=>[t,...(prev||[])]);
     if(sess){
       const us={...sess,trades:sess.trades+1};
@@ -4125,9 +4166,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   }
 
   function addPairOption(value){
-    const trimmed=(value||'').trim();
-    if(!trimmed)return;
-    setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+    persistPairOption(value,setPairOptions);
   }
 
   async function addManual(){
@@ -4636,7 +4675,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 // guard did inline.
 function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategies,settings}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
-  const[pairOptions,setPairOptions]=useState(PAIRS);
+  const[pairOptions,setPairOptions]=useState(initialPairOptions);
   // Opening a trade always lands on the read-only Detail view first —
   // Edit is a deliberate secondary action, never the default.
   const[editingTrade,setEditingTrade]=useState(false);
@@ -4651,9 +4690,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
   const tradeNotesRef=useRef(null);
 
   function addPairOption(value){
-    const trimmed=(value||'').trim();
-    if(!trimmed)return;
-    setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+    persistPairOption(value,setPairOptions);
   }
 
   async function saveTradeEdits(){
@@ -5002,7 +5039,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   // This app's own local pair/direction quick-entry state, same tiny pattern
   // Journal's addPairOption uses — not lifted to shared state since it's a
   // session-local autocomplete convenience, not persisted data.
-  const[pairOptions,setPairOptions]=useState(PAIRS);
+  const[pairOptions,setPairOptions]=useState(initialPairOptions);
   const[draftPair,setDraftPair]=useState('');
   const[draftDir,setDraftDir]=useState(lastDirection());
   const[draftStakeOverride,setDraftStakeOverride]=useState('');
@@ -5013,9 +5050,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   const draftPayoutPct=parseFloat(draftPayoutOverride)||undefined;
 
   function addPairOption(value){
-    const trimmed=(value||'').trim();
-    if(!trimmed)return;
-    setPairOptions(prev=>prev.includes(trimmed)?prev:[...prev,trimmed]);
+    persistPairOption(value,setPairOptions);
   }
 
   // Fixes a mis-tapped outcome without leaving Quick Log. Updates the trade
@@ -6118,6 +6153,7 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
 
       <div className="grid-3">
         <Metric label="Month P&L" value={`${monthPnl>=0?'+':''}${f$(monthPnl)}`} sub={`${monthPnlPct>=0?'+':''}${monthPnlPct.toFixed(1)}%`} color={monthPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
+        <Metric label="Total trades" value={totalTrades} sub={`${wins}W / ${totalTrades-wins}L`}/>
         <Metric label="Win rate" value={totalTrades?`${Math.round((wins/totalTrades)*100)}%`:'—'} sub={totalTrades?<WinRateCI wins={wins} total={totalTrades}/>:'No trades this month'}/>
         <Metric label="Max drawdown" value={`${maxDd.toFixed(1)}%`} color={maxDd>10?'var(--text-danger)':'var(--text-primary)'}/>
         <Metric label="Best day" value={bestDay?`+${monthDayStats[bestDay].pctPnl.toFixed(1)}%`:'—'} sub={bestDay} color="var(--text-success)"/>
