@@ -1613,11 +1613,21 @@ function buildSession(ssState,mode,durationMin,strictAtStart,settings,startBalan
     amStreak:0,amNextStake:amStyle==='ANTI_MARTINGALE'?amBaseStake(startBalance??0,settings,mode):null,
     plStreak:0,plNextStake:amStyle==='PROFIT_LOCK'?amBaseStake(startBalance??0,settings,mode):null,plStreakFirstProfit:null,plRecoveryPhase:false};
 }
-// Elapsed time excludes any time spent paused, so pausing genuinely freezes the countdown.
+// Elapsed time excludes any time spent paused, so pausing genuinely freezes
+// the countdown — and, same principle, a session that's already ENDED (for
+// any reason: profit/loss target, max trades/losses/consecutive losses,
+// manual end, time expiry) freezes at its own endTime rather than
+// continuing to tick against the live clock. Quick Log keeps showing the
+// most recent session for a mode even after it ends (so the "Ended —
+// reason" banner has something to render against), so without this an
+// already-over session's "Time limit" metric kept counting down live —
+// which is what was reported as still running after a max-consecutive-
+// losses end, but the same bug would show for ANY ending reason.
 function sessionElapsedMs(sess,now){
   if(!sess)return 0;
-  const pausedNow=sess.pausedAt?now-sess.pausedAt:0;
-  return(now-sess.startTime)-(sess.pausedMsTotal||0)-pausedNow;
+  const effectiveNow=(!sess.isActive&&sess.endTime)?sess.endTime:now;
+  const pausedNow=sess.pausedAt?effectiveNow-sess.pausedAt:0;
+  return(effectiveNow-sess.startTime)-(sess.pausedMsTotal||0)-pausedNow;
 }
 // Sessions created before this feature shipped have no durationMin — never time-expire those.
 function sessionRemainingMs(sess,now){
