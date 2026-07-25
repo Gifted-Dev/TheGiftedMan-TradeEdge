@@ -3926,6 +3926,12 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
   const[gradeFilt,setGradeFilt]=useState('ALL');
+  // Same DateRangePicker/rangeBounds combo Analytics uses — one shared
+  // definition of "which trades fall in this range," not a second copy.
+  // Independent of dateFilt below (Calendar's exact-day click-through);
+  // both apply together (AND) if both happen to be set, which is a rare
+  // combination in practice, not something that needs special-casing.
+  const[range,setRange]=useState({preset:'ALL',start:null,end:null});
   // One-shot nav param from Calendar's day-cell click-through — same
   // sessionStorage handoff pattern as gm_view (App.js). Consumed once on
   // mount then cleared, so navigating to Journal any other way never
@@ -4326,7 +4332,9 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // gap a trade could silently fall through.
   const gradeFiltered=gradeFilt==='ALL'?stratFiltered:gradeFilt==='UNGRADED'?stratFiltered.filter(t=>!['A+','A','B','C'].includes(t.zoneGrade)):stratFiltered.filter(t=>t.zoneGrade===gradeFilt);
   const dateFiltered=dateFilt?gradeFiltered.filter(t=>t.date===dateFilt):gradeFiltered;
-  const sorted=[...dateFiltered].sort((a,b)=>b.timestamp-a.timestamp);
+  const{start:rangeStart,end:rangeEnd}=rangeBounds(range);
+  const rangeFiltered=dateFiltered.filter(t=>t.timestamp>=rangeStart&&t.timestamp<rangeEnd);
+  const sorted=[...rangeFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
   // Live summary for whatever's currently filtered — derived straight from
   // `sorted`, so it always matches the list below with zero extra state and
@@ -4439,6 +4447,13 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         {[{id:'ALL',label:'All Grades'},{id:'A+',label:'A+'},{id:'A',label:'A'},{id:'B',label:'B'},{id:'C',label:'C'},{id:'UNGRADED',label:'Ungraded'}].map(f=>(
           <button key={f.id} style={{...btn(gradeFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setGradeFilt(f.id)}>{f.label}</button>
         ))}
+      </div>
+      {/* Same picker Analytics uses (presets left, custom dual-month
+          calendar right) — study a specific period's trades here instead
+          of only being able to see them aggregated in Analytics. */}
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <span style={{fontSize:11,color:'var(--text-muted)'}}>Period:</span>
+        <DateRangePicker range={range} setRange={setRange}/>
       </div>
 
       <div style={{...card,marginBottom:12}}>
