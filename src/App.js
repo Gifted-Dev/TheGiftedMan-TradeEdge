@@ -3931,7 +3931,7 @@ function applyTextWithUndo(ref,text){
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────────
-export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies}){
+export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies,addStrategy}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
@@ -3955,6 +3955,9 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   });
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
+  const[addingStrat,setAddingStrat]=useState(false);
+  const[newStratName,setNewStratName]=useState('');
+  const[newStratDesc,setNewStratDesc]=useState('');
   const[mf,smf]=useState(()=>{
     try{
       const saved=sessionStorage.getItem('gm_draft_mf');
@@ -4304,6 +4307,20 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     smf(m=>({...m,screenshots:[...(m.screenshots||[]),{url,b,mime:file.type||'image/png'}]}));
   }
 
+  // Inline "add a strategy" from the manual-entry form — lets a trader create
+  // a new strategy and immediately tag it on the trade being logged, without
+  // leaving for Settings. addStrategy persists it (Supabase) and updates the
+  // shared strategies state in the parent, then we auto-select it here.
+  async function createStrategyFromForm(name,description){
+    const s=await addStrategy(name,description);
+    if(!s)return null;
+    const cur=mf.strategyIds||[];
+    const next=cur.includes(s.id)?cur:[...cur,s.id];
+    try{localStorage.setItem('gm_last_strategy_ids',JSON.stringify(next));}catch{}
+    smf(m=>({...m,strategyIds:next}));
+    return s;
+  }
+
   // Global (document-level), matching the Analyzer's paste handling — an
   // onPaste prop on just the notes textarea only fires while that exact
   // element has focus, which is easy to miss (open the form, hit Ctrl+V
@@ -4543,7 +4560,21 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                   }}>{s.name}</button>
                 );
               })}
+              <button type="button" style={{...btn(addingStrat?'pri':'def'),padding:'6px 10px'}} onClick={()=>{setAddingStrat(v=>!v);setNewStratName('');setNewStratDesc('');}}>
+                {addingStrat?'Cancel':'+ New strategy'}
+              </button>
             </div>
+            {addingStrat&&(
+              <div style={{marginTop:8,padding:10,borderRadius:'var(--radius-sm)',border:'1px solid var(--border)',background:'var(--surface-2)'}}>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:6}}>Add a new strategy and tag it on this trade</div>
+                <input style={inp} placeholder="Strategy name" value={newStratName} onChange={e=>setNewStratName(e.target.value)}/>
+                <input style={{...inp,marginTop:6}} placeholder="Description (optional)" value={newStratDesc} onChange={e=>setNewStratDesc(e.target.value)}/>
+                <button type="button" style={{...btn('pri'),marginTop:8}} disabled={!newStratName.trim()} onClick={async()=>{
+                  const s=await createStrategyFromForm(newStratName,newStratDesc);
+                  if(s){setAddingStrat(false);setNewStratName('');setNewStratDesc('');}
+                }}>Add & use</button>
+              </div>
+            )}
             {!(mf.strategyIds||[]).length&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Required — select all strategies that genuinely applied to this trade.</div>}
           </div>
           <div style={{marginTop:10}}>
@@ -8431,7 +8462,7 @@ export default function App(){
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
             {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music} userId={authUser?.id}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA} trades={trades}/>}
-            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies}/>}
+            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies} addStrategy={addStrategy}/>}
             {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} music={music} userId={authUser?.id}/>}
             {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
             {view==='plan'&&<Plan settings={settings} mode={mode}/>}
