@@ -737,12 +737,12 @@ function monthGridMonFirst(year,month){
 function buildDayStats(trades,wds,mode,startBal){
   const byDate={};
   trades.filter(t=>getTradeMode(t)===mode&&t.outcome!=='PENDING').forEach(t=>{
-    const d=byDate[t.date]??={wins:0,total:0,pnl:0,withdrawn:0};
-    d.total++;if(t.outcome==='WIN')d.wins++;
+    const d=byDate[t.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0};
+    d.total++;if(t.outcome==='WIN')d.wins++;if(t.outcome==='LOSS')d.losses++;
     d.pnl+=t.pnl;
   });
   if(mode==='REAL')(wds||[]).forEach(w=>{
-    const d=byDate[w.date]??={wins:0,total:0,pnl:0,withdrawn:0};
+    const d=byDate[w.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0};
     d.withdrawn+=w.amount;
   });
   const out={};
@@ -934,17 +934,20 @@ function computeDigest({trades,analyses,mode,start,end}){
   const periodTrades=trades.filter(t=>getTradeMode(t)===mode&&inRange(t));
   const done=periodTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
-  const wr=done.length?(wins/done.length)*100:0;
+  const losses=done.filter(t=>t.outcome==='LOSS').length;
+  const decided=wins+losses; // draws are pushes, excluded from the win-rate denominator
+  const wr=decided?(wins/decided)*100:0;
 
   const pairMap={};
   done.forEach(t=>{
     const key=t.pair||'Unknown';
-    if(!pairMap[key])pairMap[key]={wins:0,total:0};
+    if(!pairMap[key])pairMap[key]={wins:0,losses:0,total:0};
     pairMap[key].total++;
     if(t.outcome==='WIN')pairMap[key].wins++;
+    if(t.outcome==='LOSS')pairMap[key].losses++;
   });
   // Minimum 3 trades to qualify — otherwise a single lucky trade reads as a "100% pair".
-  const pairStats=Object.entries(pairMap).map(([pair,d])=>({pair,...d,wr:(d.wins/d.total)*100})).filter(p=>p.total>=3);
+  const pairStats=Object.entries(pairMap).map(([pair,d])=>({pair,...d,wr:(d.wins+d.losses)?(d.wins/(d.wins+d.losses))*100:0})).filter(p=>p.total>=3);
   const bestPair=pairStats.length?pairStats.reduce((a,b)=>b.wr>a.wr?b:a):null;
   const worstPair=pairStats.length?pairStats.reduce((a,b)=>b.wr<a.wr?b:a):null;
 
@@ -974,13 +977,15 @@ function computeDigest({trades,analyses,mode,start,end}){
   const onPlanDone=done.filter(t=>!t.offPlan);
   const offPlanWins=offPlanDone.filter(t=>t.outcome==='WIN').length;
   const onPlanWins=onPlanDone.filter(t=>t.outcome==='WIN').length;
+  const offPlanLosses=offPlanDone.filter(t=>t.outcome==='LOSS').length;
+  const onPlanLosses=onPlanDone.filter(t=>t.outcome==='LOSS').length;
   const offPlanPnl=offPlanDone.reduce((s,t)=>s+t.pnl,0);
 
   return{
     totalTrades:periodTrades.length,
     demoCount:trades.filter(t=>getTradeMode(t)==='DEMO'&&inRange(t)).length,
     realCount:trades.filter(t=>getTradeMode(t)==='REAL'&&inRange(t)).length,
-    wins,total:done.length,wr,ci:wilsonInterval(wins,done.length),
+    wins,losses,total:done.length,wr,ci:wilsonInterval(wins,decided),
     bestPair,worstPair,topGateFailure,
     unanalyzedTrades,
     // Real P&L is tracked regardless of which mode is toggled — Demo P&L
@@ -988,9 +993,9 @@ function computeDigest({trades,analyses,mode,start,end}){
     realPnl:trades.filter(t=>getTradeMode(t)==='REAL'&&inRange(t)&&t.outcome!=='PENDING').reduce((s,t)=>s+t.pnl,0),
     offPlanCount:periodTrades.filter(t=>t.offPlan).length,
     offPlanDoneCount:offPlanDone.length,onPlanDoneCount:onPlanDone.length,
-    offPlanWins,onPlanWins,
-    offPlanWr:offPlanDone.length?(offPlanWins/offPlanDone.length)*100:0,
-    onPlanWr:onPlanDone.length?(onPlanWins/onPlanDone.length)*100:0,
+    offPlanWins,onPlanWins,offPlanLosses,onPlanLosses,
+    offPlanWr:(offPlanWins+offPlanLosses)?(offPlanWins/(offPlanWins+offPlanLosses))*100:0,
+    onPlanWr:(onPlanWins+onPlanLosses)?(onPlanWins/(onPlanWins+onPlanLosses))*100:0,
     offPlanPnl,
   };
 }
@@ -1099,12 +1104,14 @@ function DirToggle({value,onChange,compact,disabled}){
   };
   return<div style={{display:'flex',gap:4}} onClick={onChange?e=>e.stopPropagation():undefined}>{opt('BUY','BUY')}{opt('SELL','SELL')}</div>;
 }
-// Compact WIN/LOSS toggle for a COMMITTED row — same segmented-pill pattern
-// as DirToggle, but always interactive (correcting a mistaken outcome is the
-// whole point) rather than switching between an editable and read-only mode.
-// stopPropagation on each button since these render inside clickable
-// row/card elements that otherwise navigate to the trade's detail view.
+// Compact WIN/LOSS/DRAW toggle for a COMMITTED row — same segmented-pill
+// pattern as DirToggle, but always interactive (correcting a mistaken
+// outcome is the whole point) rather than switching between an editable and
+// read-only mode. stopPropagation on each button since these render inside
+// clickable row/card elements that otherwise navigate to the trade's detail
+// view.
 function OutcomeToggle({value,onChange,disabled}){
+  const clr=o=>o==='WIN'?'success':o==='LOSS'?'danger':'warning';
   const opt=(o,label)=>{
     const on=value===o;
     return(
@@ -1112,14 +1119,14 @@ function OutcomeToggle({value,onChange,disabled}){
         onClick={e=>{e.stopPropagation();if(!disabled&&o!==value)onChange(o);}}
         style={{padding:'3px 9px',fontSize:11,fontWeight:700,borderRadius:6,border:'1px solid var(--border)',
           cursor:disabled?'default':'pointer',opacity:disabled?0.6:1,
-          background:on?(o==='WIN'?'var(--bg-success)':'var(--bg-danger)'):'transparent',
-          color:on?(o==='WIN'?'var(--text-success)':'var(--text-danger)'):'var(--text-muted)',
-          borderColor:on?(o==='WIN'?'var(--border-success)':'var(--border-danger)'):'var(--border)'}}>
+          background:on?`var(--bg-${clr(o)})`:'transparent',
+          color:on?`var(--text-${clr(o)})`:'var(--text-muted)',
+          borderColor:on?`var(--border-${clr(o)})`:'var(--border)'}}>
         {label}
       </button>
     );
   };
-  return<div style={{display:'flex',gap:4}} onClick={e=>e.stopPropagation()}>{opt('WIN','W')}{opt('LOSS','L')}</div>;
+  return<div style={{display:'flex',gap:4}} onClick={e=>e.stopPropagation()}>{opt('WIN','W')}{opt('LOSS','L')}{opt('DRAW','D')}</div>;
 }
 // `strategies` is the user's full loaded list (Journal/Analytics/Settings/Ask
 // all thread it through). Falls back to the two reserved builtins, then the
@@ -1219,6 +1226,9 @@ function amBaseStake(balance, settings, mode) {
 }
 function advanceAntiMartingale(state, outcome, balance, settings, mode) {
   const base = amBaseStake(balance, settings, mode);
+  if (outcome === 'DRAW') {
+    return { streak: state.streak, nextStake: state.nextStake }; // push — stake held steady
+  }
   if (outcome !== 'WIN') {
     return { streak: 0, nextStake: base }; // any loss resets immediately
   }
@@ -1355,6 +1365,12 @@ function advanceProfitLock(state, outcome, pnl, balance, settings, mode, session
   const maxEscalations = getPlMaxEscalationsForMode(settings, mode);
   const recoveryEnabled = getPlBreakevenRecoveryForMode(settings, mode);
   const ceiling = balance * (getPlCeilingPctForMode(settings, mode) / 100);
+
+  // A draw is a push — nothing about the ladder's progress changes,
+  // regardless of which state (including the two sentinels) it's in.
+  if (outcome === 'DRAW') {
+    return { ...state };
+  }
 
   // The max-escalation breakeven-recovery trade resolving — one-time,
   // never chains into a second attempt regardless of outcome.
@@ -2044,9 +2060,10 @@ function bucketsFor(dimension,done,strategies){
   const groups={};
   const push=(label,t)=>{
     if(label==null)return;
-    if(!groups[label])groups[label]={wins:0,n:0};
+    if(!groups[label])groups[label]={wins:0,losses:0,n:0};
     groups[label].n++;
     if(t.outcome==='WIN')groups[label].wins++;
+    if(t.outcome==='LOSS')groups[label].losses++;
   };
   if(dimension==='streakPosition'){
     // Tags each trade by the streak state that PRECEDED it (chronological),
@@ -2081,7 +2098,7 @@ function bucketsFor(dimension,done,strategies){
       push(label,t);
     });
   }
-  return Object.entries(groups).map(([label,g])=>({dimension,label,n:g.n,wins:g.wins}));
+  return Object.entries(groups).map(([label,g])=>({dimension,label,n:g.n,wins:g.wins,losses:g.losses}));
 }
 // The single most notable cross-dimensional finding for this mode/range, or
 // null if nothing clears the bar. Used both as computeAskFacts's
@@ -2092,12 +2109,14 @@ function findNotablePattern(trades,mode,range={preset:'ALL',start:null,end:null}
   const done=scoped.filter(t=>t.outcome!=='PENDING');
   if(!done.length)return null;
   const baseWins=done.filter(t=>t.outcome==='WIN').length;
-  const baseWr=baseWins/done.length;
-  const baseCI=wilsonInterval(baseWins,done.length);
+  const baseLosses=done.filter(t=>t.outcome==='LOSS').length;
+  const baseDecided=baseWins+baseLosses; // draws are pushes, excluded from win rate
+  const baseWr=baseDecided?baseWins/baseDecided:0;
+  const baseCI=wilsonInterval(baseWins,baseDecided);
   const candidates=PATTERN_DIMENSIONS
     .flatMap(dim=>bucketsFor(dim,done,strategies))
     .filter(b=>b.n>=PATTERN_MIN_N)
-    .map(b=>({...b,wr:b.wins/b.n,ci:wilsonInterval(b.wins,b.n)}))
+    .map(b=>{const decided=b.wins+b.losses;return{...b,wr:decided?b.wins/decided:0,ci:wilsonInterval(b.wins,decided)};})
     .filter(b=>!ciOverlaps(b.ci,baseCI));
   if(!candidates.length)return null;
   const best=candidates.sort((a,b)=>Math.abs(b.wr-baseWr)-Math.abs(a.wr-baseWr))[0];
@@ -2128,20 +2147,24 @@ function computeAskFacts(spec,trades,mode,strategies){
   const scoped=tradesInRange(trades,mode,range);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
+  const losses=done.filter(t=>t.outcome==='LOSS').length;
   const base={mode,rangeLabel:rangeLabel(range),n:done.length};
   const wrStat=(list)=>{
     const w=list.filter(t=>t.outcome==='WIN').length;
-    const ci=wilsonInterval(w,list.length);
-    return{n:list.length,wins:w,wr:list.length?Math.round((w/list.length)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
+    const l=list.filter(t=>t.outcome==='LOSS').length;
+    const decided=w+l; // draws are pushes, excluded from win rate
+    const ci=wilsonInterval(w,decided);
+    return{n:list.length,wins:w,wr:decided?Math.round((w/decided)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
   };
   const bucketRowsWithCI=(dimension)=>bucketsFor(dimension,done,strategies).map(b=>{
-    const ci=wilsonInterval(b.wins,b.n);
-    return{label:b.label,n:b.n,wins:b.wins,wr:b.n?Math.round((b.wins/b.n)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
+    const decided=b.wins+b.losses;
+    const ci=wilsonInterval(b.wins,decided);
+    return{label:b.label,n:b.n,wins:b.wins,wr:decided?Math.round((b.wins/decided)*1000)/10:null,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10};
   }).sort((a,b)=>b.n-a.n);
   let result;
   switch(spec.metric){
     case'PNL':result={...base,pnl:Math.round(done.reduce((s,t)=>s+t.pnl,0)*100)/100};break;
-    case'TRADE_COUNT':result={...base,wins,losses:done.length-wins};break;
+    case'TRADE_COUNT':result={...base,wins,losses};break;
     case'STREAK':{
       const byRecency=[...done].sort((a,b)=>b.timestamp-a.timestamp);
       let streak=0,type=null;
@@ -2200,7 +2223,7 @@ function factsToText(facts){
     return r.wr==null?`${label}: no completed trades`:`${label}: ${r.wr}% (95% CI: ${r.ciLower}%-${r.ciUpper}%, n=${r.n})`;
   }).join(' · ')||'No completed trades in this range.';
   else if('pnl'in facts&&!('wr'in facts))base=`P&L: ${facts.pnl>=0?'+':''}${facts.pnl} (n=${facts.n})`;
-  else if('streak'in facts)base=facts.streakType?`Current streak: ${facts.streak} ${facts.streakType==='WIN'?'wins':'losses'}`:'No completed trades yet.';
+  else if('streak'in facts)base=facts.streakType?`Current streak: ${facts.streak} ${facts.streakType==='WIN'?'wins':facts.streakType==='LOSS'?'losses':'draws'}`:'No completed trades yet.';
   else if('offPlanCount'in facts)base=`Off-plan: ${facts.offPlanCount} trades, ${facts.offPlanWr!=null?facts.offPlanWr+'%':'—'} win rate (n=${facts.offPlanN||0}) vs on-plan ${facts.onPlanWr!=null?facts.onPlanWr+'%':'—'} (n=${facts.onPlanN||0}).`;
   else if('wins'in facts&&!('wr'in facts))base=`${facts.n} trades — ${facts.wins}W / ${facts.losses}L`;
   else base=facts.wr==null?'No completed trades in this range.':`${facts.wr}% (95% CI: ${facts.ciLower}%-${facts.ciUpper}%, n=${facts.n})`;
@@ -2215,8 +2238,10 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   const modeTrades=(trades||[]).filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
-  const wr=done.length?Math.round((wins/done.length)*1000)/10:0;
-  const ci=wilsonInterval(wins,done.length);
+  const losses=done.filter(t=>t.outcome==='LOSS').length;
+  const decided=wins+losses; // draws are pushes, excluded from win rate
+  const wr=decided?Math.round((wins/decided)*1000)/10:0;
+  const ci=wilsonInterval(wins,decided);
   const edge=Math.max(0,(wr/100)-((100-wr)/100));
   const totalPnl=Math.round(done.reduce((s,t)=>s+t.pnl,0)*100)/100;
   const startBal=getStartingBalanceForMode(settings,mode);
@@ -2229,8 +2254,8 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   const last30=computeDigest({trades,analyses,mode,start:now-30*DAY_MS,end:now});
   // Grade breakdown
   const grades={};
-  done.forEach(t=>{const g=t.zoneGrade||'UNGRADED';if(!grades[g])grades[g]={wins:0,n:0,pnl:0};grades[g].n++;if(t.outcome==='WIN')grades[g].wins++;grades[g].pnl+=t.pnl;});
-  const gradeBreakdown=Object.entries(grades).map(([g,d])=>({grade:g,n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100})).sort((a,b)=>b.n-a.n);
+  done.forEach(t=>{const g=t.zoneGrade||'UNGRADED';if(!grades[g])grades[g]={wins:0,losses:0,n:0,pnl:0};grades[g].n++;if(t.outcome==='WIN')grades[g].wins++;if(t.outcome==='LOSS')grades[g].losses++;grades[g].pnl+=t.pnl;});
+  const gradeBreakdown=Object.entries(grades).map(([g,d])=>({grade:g,n:d.n,wins:d.wins,wr:(d.wins+d.losses)?Math.round((d.wins/(d.wins+d.losses))*1000)/10:0,pnl:Math.round(d.pnl*100)/100})).sort((a,b)=>b.n-a.n);
   // Strategy breakdown with descriptions — plus a per-strategy grade cross-tab
   // and off-plan rate, so refinement coaching can point at WHERE within a
   // strategy the real edge is (e.g. "your Trend/Pattern description says any
@@ -2242,32 +2267,32 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   const stratMap={};
   done.filter(t=>t.strategyIds.length===1).forEach(t=>{
     const sid=t.strategyIds[0];
-    if(!stratMap[sid])stratMap[sid]={wins:0,n:0,pnl:0,offPlan:0,grades:{}};
+    if(!stratMap[sid])stratMap[sid]={wins:0,losses:0,n:0,pnl:0,offPlan:0,grades:{}};
     const s=stratMap[sid];
-    s.n++;if(t.outcome==='WIN')s.wins++;s.pnl+=t.pnl;if(t.offPlan)s.offPlan++;
+    s.n++;if(t.outcome==='WIN')s.wins++;if(t.outcome==='LOSS')s.losses++;s.pnl+=t.pnl;if(t.offPlan)s.offPlan++;
     const g=t.zoneGrade||'UNGRADED';
-    if(!s.grades[g])s.grades[g]={wins:0,n:0};
-    s.grades[g].n++;if(t.outcome==='WIN')s.grades[g].wins++;
+    if(!s.grades[g])s.grades[g]={wins:0,losses:0,n:0};
+    s.grades[g].n++;if(t.outcome==='WIN')s.grades[g].wins++;if(t.outcome==='LOSS')s.grades[g].losses++;
   });
   const strategyBreakdown=Object.entries(stratMap).map(([id,d])=>{
     const strat=(strategies||[]).find(s=>s.id===id);
     const gradeBreakdownWithinStrategy=Object.entries(d.grades)
-      .map(([g,gd])=>({grade:g,n:gd.n,wins:gd.wins,wr:gd.n?Math.round((gd.wins/gd.n)*1000)/10:0}))
+      .map(([g,gd])=>({grade:g,n:gd.n,wins:gd.wins,wr:(gd.wins+gd.losses)?Math.round((gd.wins/(gd.wins+gd.losses))*1000)/10:0}))
       .sort((a,b)=>b.n-a.n);
     return{id,name:strat?.name||strategyLabel(id,strategies),description:strat?.description||null,
-      n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
+      n:d.n,wins:d.wins,wr:(d.wins+d.losses)?Math.round((d.wins/(d.wins+d.losses))*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
       offPlanRate:d.n?Math.round((d.offPlan/d.n)*1000)/10:0,gradeBreakdownWithinStrategy};
   }).sort((a,b)=>b.n-a.n);
   const comboMap={};
   done.filter(t=>t.strategyIds.length>1).forEach(t=>{
     const key=t.strategyIds.slice().sort().join('+');
-    if(!comboMap[key])comboMap[key]={wins:0,n:0,pnl:0,ids:t.strategyIds};
+    if(!comboMap[key])comboMap[key]={wins:0,losses:0,n:0,pnl:0,ids:t.strategyIds};
     const c=comboMap[key];
-    c.n++;if(t.outcome==='WIN')c.wins++;c.pnl+=t.pnl;
+    c.n++;if(t.outcome==='WIN')c.wins++;if(t.outcome==='LOSS')c.losses++;c.pnl+=t.pnl;
   });
   const combinationBreakdown=Object.entries(comboMap).map(([key,d])=>({
     key,name:d.ids.map(id=>strategyLabel(id,strategies)).join(' + '),
-    n:d.n,wins:d.wins,wr:d.n?Math.round((d.wins/d.n)*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
+    n:d.n,wins:d.wins,wr:(d.wins+d.losses)?Math.round((d.wins/(d.wins+d.losses))*1000)/10:0,pnl:Math.round(d.pnl*100)/100,
   })).sort((a,b)=>b.n-a.n);
   // Recent trades (last 15 with notes and grades — gives AI context on recent behavior)
   const recentTrades=[...done].sort((a,b)=>b.timestamp-a.timestamp).slice(0,15).map(t=>({
@@ -2299,8 +2324,9 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   // Discipline — off-plan vs on-plan
   const offPlan=done.filter(t=>t.offPlan);
   const onPlan=done.filter(t=>!t.offPlan);
-  const offPlanWr=offPlan.length?Math.round((offPlan.filter(t=>t.outcome==='WIN').length/offPlan.length)*1000)/10:0;
-  const onPlanWr=onPlan.length?Math.round((onPlan.filter(t=>t.outcome==='WIN').length/onPlan.length)*1000)/10:0;
+  const wrOf=list=>{const w=list.filter(t=>t.outcome==='WIN').length;const l=list.filter(t=>t.outcome==='LOSS').length;return(w+l)?Math.round((w/(w+l))*1000)/10:0;};
+  const offPlanWr=wrOf(offPlan);
+  const onPlanWr=wrOf(onPlan);
   const offPlanPnl=Math.round(offPlan.reduce((s,t)=>s+t.pnl,0)*100)/100;
   // Zone analysis quality
   const linkedIds=new Set(modeTrades.map(t=>t.analysisId).filter(Boolean));
@@ -2318,8 +2344,8 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
     if(streakType==='LOSS'&&streakLen>=3)afterLossStreak.push(t);
     if(t.outcome===streakType)streakLen++;else{streakType=t.outcome;streakLen=1;}
   });
-  const afterWinWr=afterWinStreak.length?Math.round((afterWinStreak.filter(t=>t.outcome==='WIN').length/afterWinStreak.length)*1000)/10:null;
-  const afterLossWr=afterLossStreak.length?Math.round((afterLossStreak.filter(t=>t.outcome==='WIN').length/afterLossStreak.length)*1000)/10:null;
+  const afterWinWr=afterWinStreak.length?wrOf(afterWinStreak):null;
+  const afterLossWr=afterLossStreak.length?wrOf(afterLossStreak):null;
   // Current streak
   const recency=[...done].sort((a,b)=>b.timestamp-a.timestamp);
   let curStreak=0,curType=null;
@@ -2330,11 +2356,11 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   // Withdrawal summary (Real only)
   const modeWds=mode==='REAL'?(wds||[]):[];
   return{
-    account:{mode,startingBalance:startBal,currentBalance:curBal,totalPnl,edge:Math.round(edge*1000)/10,tradeCount:done.length,winCount:wins,lossCount:done.length-wins,
+    account:{mode,startingBalance:startBal,currentBalance:curBal,totalPnl,edge:Math.round(edge*1000)/10,tradeCount:done.length,winCount:wins,lossCount:losses,
       withdrawals:mode==='REAL'?{count:modeWds.length,totalAmount:Math.round(modeWds.reduce((s,w)=>s+w.amount,0)*100)/100}:null},
-    performance:{allTime:{wr,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10,n:done.length,pnl:totalPnl,wins,losses:done.length-wins},
-      last7Days:{wr:last7.wr,ciLower:last7.ci?Math.round(last7.ci.lower*1000)/10:null,ciUpper:last7.ci?Math.round(last7.ci.upper*1000)/10:null,n:last7.total,pnl:last7.realPnl,wins:last7.wins,losses:last7.total-last7.wins},
-      last30Days:{wr:last30.wr,ciLower:last30.ci?Math.round(last30.ci.lower*1000)/10:null,ciUpper:last30.ci?Math.round(last30.ci.upper*1000)/10:null,n:last30.total,pnl:last30.realPnl,wins:last30.wins,losses:last30.total-last30.wins}},
+    performance:{allTime:{wr,ciLower:Math.round(ci.lower*1000)/10,ciUpper:Math.round(ci.upper*1000)/10,n:done.length,pnl:totalPnl,wins,losses},
+      last7Days:{wr:last7.wr,ciLower:last7.ci?Math.round(last7.ci.lower*1000)/10:null,ciUpper:last7.ci?Math.round(last7.ci.upper*1000)/10:null,n:last7.total,pnl:last7.realPnl,wins:last7.wins,losses:last7.losses},
+      last30Days:{wr:last30.wr,ciLower:last30.ci?Math.round(last30.ci.lower*1000)/10:null,ciUpper:last30.ci?Math.round(last30.ci.upper*1000)/10:null,n:last30.total,pnl:last30.realPnl,wins:last30.wins,losses:last30.losses}},
     configuration:{activeStyle:styleName(tradeStyle),moneyMgmtStyle:style,riskMode:getRiskModeForMode(settings,mode),riskPercent:getRiskPercentForMode(settings,mode),riskAmount:getRiskAmountForMode(settings,mode),
       sessionsPerDay:settings?.sessionsPerDay??2,brokerMin:settings?.brokerMin??10,
       strictLocking:isStrictForMode(settings,mode),
@@ -3339,6 +3365,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
+  const losses=done.filter(t=>t.outcome==='LOSS').length;
   // Today-only counts — the full modeTrades/done may span multiple days.
   // Computed straight from the system clock (tod()), never from ss.date —
   // ss is session STATE, not a date source. Falling back to it (as this used
@@ -3348,10 +3375,11 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const todayDate=tod();
   const todayDone=modeTrades.filter(t=>t.date===todayDate&&t.outcome!=='PENDING');
   const todayWins=todayDone.filter(t=>t.outcome==='WIN').length;
+  const todayLosses=todayDone.filter(t=>t.outcome==='LOSS').length;
   const todayPnl=todayDone.reduce((s,t)=>s+t.pnl,0);
-  const todayWr=todayDone.length?((todayWins/todayDone.length)*100):0;
+  const todayWr=(todayWins+todayLosses)?((todayWins/(todayWins+todayLosses))*100):0;
   const todayByTime=[...todayDone].sort((a,b)=>a.timestamp-b.timestamp);
-  const wr=done.length?((wins/done.length)*100):0;
+  const wr=(wins+losses)?((wins/(wins+losses))*100):0;
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const startBal=getStartingBalanceForMode(settings,mode);
   const growth=startBal?((bal-startBal)/startBal)*100:0;
@@ -3489,7 +3517,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                     <div style={{fontSize:10,color:'var(--text-muted)'}}>trades</div>
                   </div>
                   <div>
-                    <div style={{fontSize:20,fontWeight:700,lineHeight:1.2}}><span style={{color:'var(--text-success)'}}>{todayWins}W</span><span style={{color:'var(--text-muted)'}}> · </span><span style={{color:'var(--text-danger)'}}>{todayDone.length-todayWins}L</span></div>
+                    <div style={{fontSize:20,fontWeight:700,lineHeight:1.2}}><span style={{color:'var(--text-success)'}}>{todayWins}W</span><span style={{color:'var(--text-muted)'}}> · </span><span style={{color:'var(--text-danger)'}}>{todayLosses}L</span></div>
                     <div style={{fontSize:10,color:'var(--text-muted)'}}>win / loss</div>
                   </div>
                   <div>
@@ -3503,7 +3531,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                 </div>
                 <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
                   {todayByTime.map((t,i)=>(
-                    <span key={t.id||i} title={`${i+1}. ${t.outcome}`} style={{width:8,height:8,borderRadius:'50%',background:t.outcome==='WIN'?'var(--fill-success)':'var(--fill-danger)',flexShrink:0}}/>
+                    <span key={t.id||i} title={`${i+1}. ${t.outcome}`} style={{width:8,height:8,borderRadius:'50%',background:t.outcome==='WIN'?'var(--fill-success)':t.outcome==='LOSS'?'var(--fill-danger)':'var(--fill-warning)',flexShrink:0}}/>
                   ))}
                 </div>
                 <div style={{fontSize:10,color:'var(--text-muted)',marginTop:6}}>Today's trade sequence</div>
@@ -3586,9 +3614,9 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
         {active&&music&&<MusicPlayerPanel music={music}/>}
 
         {/* Stat tiles */}
-        <div className="col-span-6 lg:col-span-3"><Metric label="Win rate" value={fp(wr)} sub={`${wins}W / ${done.length-wins}L · ${done.length} trades`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':done.length?'var(--text-danger)':'var(--text-primary)'}/></div>
+        <div className="col-span-6 lg:col-span-3"><Metric label="Win rate" value={fp(wr)} sub={`${wins}W / ${losses}L · ${done.length} trades`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':done.length?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3"><Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/></div>
-        <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':'losses'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
+        <div className="col-span-6 lg:col-span-3"><Metric label="Streak" value={done.length?`${streak} ${sType==='WIN'?'wins':sType==='LOSS'?'losses':'draws'}`:'—'} color={sType==='WIN'?'var(--text-success)':sType==='LOSS'?'var(--text-danger)':'var(--text-primary)'}/></div>
         <div className="col-span-6 lg:col-span-3">
           {isEscalatingStyle(mmStyle)
             ?<Metric label={plStakeLabel(active,mmStyle)||'Next stake'} value={f$(amDisplayStake)} sub={amReasoning} color={isPlRecoveryStake(active,mmStyle)?'var(--text-warning)':'var(--text-primary)'}/>
@@ -3610,7 +3638,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                 </span>
               </div>
               <div style={{textAlign:'right'}}>
-                <div style={{fontSize:13,fontWeight:600,color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'}}>{t.outcome==='PENDING'?'Pending':(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
+                <div style={{fontSize:13,fontWeight:600,color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':t.outcome==='DRAW'?'var(--text-warning)':'var(--text-muted)'}}>{t.outcome==='PENDING'?'Pending':t.outcome==='DRAW'?'Draw':(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
                 <div style={{fontSize:11,color:'var(--text-muted)'}}>{new Date(t.timestamp).toLocaleDateString()}</div>
               </div>
             </div>
@@ -3854,8 +3882,8 @@ function TradeDetailView({trade,onZoom,strategies}){
     ['Strategy',(trade.strategyIds||[]).map(id=>strategyLabel(id,strategies)).join(' + ')||'Zone (S&D)',null],
     ['Trade grade',trade.zoneGrade,null],
     ['Stake',f$(trade.stake),null],
-    ['Outcome',trade.outcome,trade.outcome==='WIN'?'var(--text-success)':trade.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'],
-    ['P&L',trade.outcome==='PENDING'?'—':(trade.pnl>=0?'+':'')+f$(trade.pnl),trade.outcome==='PENDING'?null:trade.pnl>=0?'var(--text-success)':'var(--text-danger)'],
+    ['Outcome',trade.outcome,trade.outcome==='WIN'?'var(--text-success)':trade.outcome==='LOSS'?'var(--text-danger)':trade.outcome==='DRAW'?'var(--text-warning)':'var(--text-muted)'],
+    ['P&L',trade.outcome==='PENDING'?'—':trade.outcome==='DRAW'?'—':(trade.pnl>=0?'+':'')+f$(trade.pnl),trade.outcome==='PENDING'||trade.outcome==='DRAW'?null:trade.pnl>=0?'var(--text-success)':'var(--text-danger)'],
     ['Payout %',trade.outcome==='WIN'?`${trade.payoutPct||Math.round(PAYOUT*100)}%`:null,null],
     ['Account mode',trade.accountMode==='REAL'?'Real':'Demo',null],
     ['Session',trade.sessionNum,null],
@@ -4163,7 +4191,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     const sess=t.date===ss.date && ss.sessions.find(s=>s.num===t.sessionNum && s.accountMode===tMode);
     if(sess){
       const isW=outcome==='WIN';
-      let us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isW?0:1),conLoss:isW?0:sess.conLoss+1,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isW?-1:1),sPnl:sess.sPnl+pnl};
+      const isL=outcome==='LOSS';
+      // Same isL/isW-only convention as addManual's session update below —
+      // a draw counts as neither a win nor a loss, and resets both streak
+      // counters same as a non-WIN/LOSS outcome already does there.
+      let us={...sess,wins:sess.wins+(isW?1:0),losses:sess.losses+(isL?1:0),conLoss:isL?sess.conLoss+1:0,conWin:isW?sess.conWin+1:0,netLoss:sess.netLoss+(isL?1:isW?-1:0),sPnl:sess.sPnl+pnl};
       const tStyle=getMoneyMgmtStyleForMode(settings,tMode);
       if(isEscalatingStyle(tStyle)){
         // t's prior pnl was 0 (it was PENDING), so trades still reflects
@@ -4369,9 +4401,11 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const filteredCompleted=sorted.filter(t=>t.outcome!=='PENDING');
   const filteredPendingCount=sorted.length-filteredCompleted.length;
   const filteredWins=filteredCompleted.filter(t=>t.outcome==='WIN').length;
-  const filteredLosses=filteredCompleted.length-filteredWins;
-  const filteredWr=filteredCompleted.length?filteredWins/filteredCompleted.length:0;
-  const filteredCI=wilsonInterval(filteredWins,filteredCompleted.length);
+  const filteredLosses=filteredCompleted.filter(t=>t.outcome==='LOSS').length;
+  const filteredDraws=filteredCompleted.filter(t=>t.outcome==='DRAW').length;
+  const filteredDecided=filteredWins+filteredLosses; // draws excluded from win-rate denominator
+  const filteredWr=filteredDecided?filteredWins/filteredDecided:0;
+  const filteredCI=wilsonInterval(filteredWins,filteredDecided);
   const filteredPnl=filteredCompleted.reduce((a,t)=>a+t.pnl,0);
 
   return(
@@ -4458,7 +4492,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
       <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
         <button style={btn()} onClick={()=>{setManual(v=>!v);setOffPlanOverride(false);smf(m=>({...m,accountMode:journalTab}));}} disabled={(tabDailyLocked||tabStrictLocked)&&!manual}>{manual?'Cancel':'+ Manual entry'}</button>
-        {['ALL','PENDING','WIN','LOSS'].map(f=>(
+        {['ALL','PENDING','WIN','LOSS','DRAW'].map(f=>(
           <button key={f} style={{...btn(filt===f?'pri':'def'),padding:'6px 10px'}} onClick={()=>setFilt(f)}>{f}</button>
         ))}
       </div>
@@ -4494,7 +4528,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               <span style={{fontSize:16,fontWeight:700,color:filteredWr>=0.5?'var(--text-success)':'var(--text-primary)'}}>{(filteredWr*100).toFixed(1)}%</span>
               <span style={{fontSize:11,color:'var(--text-muted)',marginLeft:6}}>(95% CI: {Math.round(filteredCI.lower*100)}%-{Math.round(filteredCI.upper*100)}%, n={filteredCompleted.length})</span>
             </div>
-            <div style={{fontSize:12,color:'var(--text-secondary)'}}>{filteredWins}W / {filteredLosses}L</div>
+            <div style={{fontSize:12,color:'var(--text-secondary)'}}>{filteredWins}W / {filteredLosses}L{filteredDraws>0?` / ${filteredDraws}D`:''}</div>
             <div style={{fontSize:12,fontWeight:600,color:filteredPnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(filteredPnl>=0?'+':'')+f$(filteredPnl)}</div>
             <div style={{fontSize:11,color:'var(--text-muted)'}}>{filteredCompleted.length} completed{filteredPendingCount>0?`, ${filteredPendingCount} pending`:''}</div>
           </div>
@@ -4606,7 +4640,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           <div style={{marginTop:10}}>
             <label style={lbl}>Outcome</label>
             <div style={{display:'flex',gap:8}}>
-              {['PENDING','WIN','LOSS'].map(o=><button key={o} style={{...btn(mf.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':'pri'):'def'),flex:1}} onClick={()=>smf(m=>({...m,outcome:o}))}>{o}</button>)}
+              {['PENDING','WIN','LOSS','DRAW'].map(o=><button key={o} style={{...btn(mf.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':o==='DRAW'?'warn':'pri'):'def'),flex:1}} onClick={()=>smf(m=>({...m,outcome:o}))}>{o}</button>)}
             </div>
           </div>
           {mf.outcome==='WIN'&&(
@@ -4665,7 +4699,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
               {t.strategyIds?.length>0&&<span style={{fontSize:11,color:'var(--text-muted)',background:'var(--surface-0)',borderRadius:4,padding:'1px 5px'}}>{t.strategyIds.length>1?`Combo: ${t.strategyIds.map(id=>strategyLabel(id,strategies)).join(' + ')}`:strategyLabel(t.strategyIds[0],strategies)}</span>}
             </div>
             <div style={{textAlign:'right'}}>
-              <div style={{fontSize:13,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':'var(--text-muted)'}}>{t.outcome==='PENDING'?`${f$(t.stake)} pending`:(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
+              <div style={{fontSize:13,fontFamily:'var(--font-mono)',color:t.outcome==='WIN'?'var(--text-success)':t.outcome==='LOSS'?'var(--text-danger)':t.outcome==='DRAW'?'var(--text-warning)':'var(--text-muted)'}}>{t.outcome==='PENDING'?`${f$(t.stake)} pending`:t.outcome==='DRAW'?'Draw':(t.pnl>=0?'+':'')+f$(t.pnl)}</div>
               <div style={{fontSize:11,color:'var(--text-muted)'}}>{new Date(t.timestamp).toLocaleString()}</div>
             </div>
           </div>
@@ -4684,6 +4718,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
                 setOutcome(t.id,'WIN',payoutPct);
               }}>Win ✓</button>
               <button style={{...btn('dan'),flex:1}} onClick={e=>{e.stopPropagation();setOutcome(t.id,'LOSS');}}>Loss ✗</button>
+              <button style={{...btn('warn'),flex:1}} onClick={e=>{e.stopPropagation();setOutcome(t.id,'DRAW');}}>Draw ═</button>
             </div>
           )}
           {t.notes&&<div style={{fontSize:12,color:'var(--text-secondary)',marginTop:6,fontStyle:'italic'}}>{t.notes}</div>}
@@ -4931,7 +4966,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
               <div style={{marginTop:10}}>
                 <label style={lbl}>Outcome</label>
                 <div style={{display:'flex',gap:8}}>
-                  {['PENDING','WIN','LOSS'].map(o=><button key={o} type="button" style={{...btn(editDraft.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':'pri'):'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,outcome:o}))}>{o}</button>)}
+                  {['PENDING','WIN','LOSS','DRAW'].map(o=><button key={o} type="button" style={{...btn(editDraft.outcome===o?(o==='WIN'?'suc':o==='LOSS'?'dan':o==='DRAW'?'warn':'pri'):'def'),flex:1}} onClick={()=>setEditDraft(d=>({...d,outcome:o}))}>{o}</button>)}
                 </div>
               </div>
               {editDraft.outcome==='WIN'&&(
@@ -5138,9 +5173,10 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
       let state={...sess,trades:0,wins:0,losses:0,sPnl:0,...(isPL?{plStreak:0,plNextStake:baseStake,plStreakFirstProfit:null,plRecoveryPhase:false}:{amStreak:0,amNextStake:baseStake})};
       for(const t of sessionTradesCorrected){
         const isW=t.outcome==='WIN';
+        const isL=t.outcome==='LOSS';
         const sp=state.sPnl+(t.pnl||0);
         const balAfter=(sess.startBalance??0)+sp;
-        state={...state,trades:state.trades+1,wins:state.wins+(isW?1:0),losses:state.losses+(isW?0:1),sPnl:sp,
+        state={...state,trades:state.trades+1,wins:state.wins+(isW?1:0),losses:state.losses+(isL?1:0),sPnl:sp,
           ...advanceEscalatingStake(style,state,t.outcome,t.pnl||0,balAfter,settings,mode)};
       }
       let rebuilt=state;
@@ -5319,7 +5355,8 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
                 <td style={{padding:'6px'}}><input type="number" min="1" max="100" step="1" style={inp} placeholder={String(Math.round(PAYOUT*100))} value={draftPayoutOverride} onChange={e=>setDraftPayoutOverride(e.target.value)}/></td>
                 <td style={{padding:'6px'}}>
                   <button style={btn('suc')} onClick={()=>commitRow('WIN')} disabled={saving}>W</button>{' '}
-                  <button style={btn('dan')} onClick={()=>commitRow('LOSS')} disabled={saving}>L</button>
+                  <button style={btn('dan')} onClick={()=>commitRow('LOSS')} disabled={saving}>L</button>{' '}
+                  <button style={btn('warn')} onClick={()=>commitRow('DRAW')} disabled={saving}>D</button>
                 </td>
                 <td style={{padding:'6px',fontSize:12}}>
                   <span style={{color:'var(--text-success)'}}>{f$(bal+calcPnl(draftStake,'WIN',draftPayoutPct))}</span>
@@ -5375,6 +5412,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
             <div style={{display:'flex',gap:8,marginTop:10}}>
               <button style={{...btn('suc'),flex:1,minHeight:44}} onClick={()=>commitRow('WIN')} disabled={saving}>Win</button>
               <button style={{...btn('dan'),flex:1,minHeight:44}} onClick={()=>commitRow('LOSS')} disabled={saving}>Loss</button>
+              <button style={{...btn('warn'),flex:1,minHeight:44}} onClick={()=>commitRow('DRAW')} disabled={saving}>Draw</button>
             </div>
           </div>
         )}
@@ -5403,7 +5441,8 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   const amReasoning=mmIsEscalating?escalatingStakeReasoning(activeAmSession,bal,settings,mode,mmStyle):null;
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
-  const actualWr=done.length?wins/done.length:0.65;
+  const losses=done.filter(t=>t.outcome==='LOSS').length;
+  const actualWr=(wins+losses)?wins/(wins+losses):0.65;
   const[wrOverride,setWrOverride]=useState(null);
   const wr=(wrOverride!=null?wrOverride:Math.round(actualWr*100))/100;
   const totalWd=wds.reduce((s,w)=>s+w.amount,0);
@@ -5664,7 +5703,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
           <Metric
             label="Win rate"
             value={cur.total?fp(cur.wr):'—'}
-            sub={cur.total?<WinRateCI wins={cur.wins} total={cur.total}/>:'No completed trades yet'}
+            sub={cur.total?<WinRateCI wins={cur.wins} total={cur.wins+cur.losses}/>:'No completed trades yet'}
             color={cur.total?(cur.wr>=65?'var(--text-success)':cur.wr>=52.6?'var(--text-accent)':'var(--text-danger)'):undefined}
           />
         </div>
@@ -5714,14 +5753,14 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
           <div style={{fontSize:13,color:'var(--text-secondary)'}}>
             On-plan win rate: {cur.onPlanDoneCount?fp(cur.onPlanWr):'—'}
             {cur.onPlanDoneCount>0&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
-              <WinRateCI wins={cur.onPlanWins} total={cur.onPlanDoneCount}/>
+              <WinRateCI wins={cur.onPlanWins} total={cur.onPlanWins+cur.onPlanLosses}/>
               {cur.onPlanDoneCount<20&&<div>Small sample — interpret cautiously.</div>}
             </div>}
           </div>
           <div style={{fontSize:13,color:'var(--text-secondary)'}}>
             Off-plan win rate: {cur.offPlanDoneCount?fp(cur.offPlanWr):'—'}
             {cur.offPlanDoneCount>0&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
-              <WinRateCI wins={cur.offPlanWins} total={cur.offPlanDoneCount}/>
+              <WinRateCI wins={cur.offPlanWins} total={cur.offPlanWins+cur.offPlanLosses}/>
               {cur.offPlanDoneCount<20&&<div>Small sample — interpret cautiously.</div>}
             </div>}
           </div>
@@ -5754,14 +5793,18 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
   const[range,setRange]=useState({preset:'ALL',start:null,end:null});
   const scoped=tradesInRange(trades,scope,range);
   const done=scoped.filter(t=>t.outcome!=='PENDING');
-  const total=done.length,wins=done.filter(t=>t.outcome==='WIN').length;
-  const wr=total?(wins/total)*100:0;
+  // wr (win rate) is always wins ÷ (wins+losses) — draws are pushes,
+  // excluded from the rate entirely; `total`/`.length` denominators below
+  // stay as-is where they're a genuine trade COUNT, not a rate.
+  const wrOf=list=>{const w=list.filter(t=>t.outcome==='WIN').length,l=list.filter(t=>t.outcome==='LOSS').length;return(w+l)?(w/(w+l))*100:0;};
+  const total=done.length,wins=done.filter(t=>t.outcome==='WIN').length,losses=done.filter(t=>t.outcome==='LOSS').length;
+  const wr=wrOf(done);
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const ev=total?pnl/total:0;
   const analyzed=done.filter(t=>t.isAnalyzed),manual=done.filter(t=>!t.isAnalyzed);
-  const aWr=analyzed.length?(analyzed.filter(t=>t.outcome==='WIN').length/analyzed.length)*100:0;
-  const mWr=manual.length?(manual.filter(t=>t.outcome==='WIN').length/manual.length)*100:0;
-  const grades=['A+','A','B','C','INVALID','UNGRADED'].map(g=>{const gt=done.filter(t=>t.zoneGrade===g),gw=gt.filter(t=>t.outcome==='WIN').length;return{g,total:gt.length,wins:gw,wr:gt.length?(gw/gt.length)*100:0};}).filter(x=>x.total>0);
+  const aWr=wrOf(analyzed);
+  const mWr=wrOf(manual);
+  const grades=['A+','A','B','C','INVALID','UNGRADED'].map(g=>{const gt=done.filter(t=>t.zoneGrade===g),gw=gt.filter(t=>t.outcome==='WIN').length,gl=gt.filter(t=>t.outcome==='LOSS').length;return{g,total:gt.length,wins:gw,losses:gl,wr:wrOf(gt)};}).filter(x=>x.total>0);
   // Strategy is a full breakdown dimension, equal standing to grade/pair, and
   // works for any number of user-defined strategies, not just the two
   // builtins — grouped by whichever strategyId's actually present in the
@@ -5777,18 +5820,18 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
   const soloDone=done.filter(t=>t.strategyIds.length===1);
   const comboDone=done.filter(t=>t.strategyIds.length>1);
   const strategyBreakdown=[...new Set(soloDone.map(t=>t.strategyIds[0]))].map(id=>{
-    const st=soloDone.filter(t=>t.strategyIds[0]===id),sw=st.filter(t=>t.outcome==='WIN').length;
+    const st=soloDone.filter(t=>t.strategyIds[0]===id),sw=st.filter(t=>t.outcome==='WIN').length,sl=st.filter(t=>t.outcome==='LOSS').length;
     const name=strategyLabel(id,strategyList)||'(unknown)';
-    return{id,name,total:st.length,wins:sw,wr:st.length?(sw/st.length)*100:0,pnl:st.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(sw,st.length)};
+    return{id,name,total:st.length,wins:sw,losses:sl,wr:wrOf(st),pnl:st.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(sw,sw+sl)};
   }).filter(x=>x.total>0);
   const comboKey=t=>t.strategyIds.slice().sort().join('+');
   const combinationBreakdown=[...new Set(comboDone.map(comboKey))].map(key=>{
-    const ct=comboDone.filter(t=>comboKey(t)===key),cw=ct.filter(t=>t.outcome==='WIN').length;
+    const ct=comboDone.filter(t=>comboKey(t)===key),cw=ct.filter(t=>t.outcome==='WIN').length,cl=ct.filter(t=>t.outcome==='LOSS').length;
     const label=key.split('+').map(id=>strategyLabel(id,strategyList)||'(unknown)').join(' + ');
-    return{key,label,total:ct.length,wins:cw,wr:ct.length?(cw/ct.length)*100:0,pnl:ct.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(cw,ct.length)};
+    return{key,label,total:ct.length,wins:cw,losses:cl,wr:wrOf(ct),pnl:ct.reduce((a,t)=>a+t.pnl,0),...wilsonInterval(cw,cw+cl)};
   }).sort((a,b)=>b.total-a.total);
-  const pairsMap={};done.forEach(t=>{if(!pairsMap[t.pair])pairsMap[t.pair]={wins:0,total:0};pairsMap[t.pair].total++;if(t.outcome==='WIN')pairsMap[t.pair].wins++;});
-  const pairs=Object.entries(pairsMap).map(([p,d])=>({p,wr:(d.wins/d.total)*100,...d})).sort((a,b)=>b.total-a.total).slice(0,6);
+  const pairsMap={};done.forEach(t=>{if(!pairsMap[t.pair])pairsMap[t.pair]={wins:0,losses:0,total:0};pairsMap[t.pair].total++;if(t.outcome==='WIN')pairsMap[t.pair].wins++;if(t.outcome==='LOSS')pairsMap[t.pair].losses++;});
+  const pairs=Object.entries(pairsMap).map(([p,d])=>({p,wr:(d.wins+d.losses)?(d.wins/(d.wins+d.losses))*100:0,...d})).sort((a,b)=>b.total-a.total).slice(0,6);
   const be=(100/(100+PAYOUT*100));
   const pnlTrend=done.slice().sort((a,b)=>a.timestamp-b.timestamp).reduce((acc,t)=>{const prev=acc.at(-1)?.v||0;acc.push({t:t.timestamp,v:prev+t.pnl});return acc;},[]);
   const gradeBars=grades.map(x=>({label:x.g,value:Math.round(x.wr),color:x.wr>=65?'var(--fill-success)':x.wr>=52.6?'var(--fill-accent)':'var(--fill-danger)'}));
@@ -5798,10 +5841,11 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
   const modeStats=ACCOUNT_MODES.map(mode=>{
     const modeTrades=doneAll.filter(t=>getTradeMode(t)===mode);
     const modeWins=modeTrades.filter(t=>t.outcome==='WIN').length;
+    const modeLosses=modeTrades.filter(t=>t.outcome==='LOSS').length;
     const modePnl=modeTrades.reduce((s,t)=>s+t.pnl,0);
     const startBalance=getStartingBalanceForMode(settings,mode);
     const growth=startBalance?((startBalance+modePnl-startBalance)/startBalance)*100:0;
-    return {mode, trades:modeTrades, wins:modeWins, wr:modeTrades.length?(modeWins/modeTrades.length)*100:0, pnl:modePnl, growth};
+    return {mode, trades:modeTrades, wins:modeWins, losses:modeLosses, wr:(modeWins+modeLosses)?(modeWins/(modeWins+modeLosses))*100:0, pnl:modePnl, growth};
   });
 
   return(
@@ -5841,8 +5885,8 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
       {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds} range={range}/>:<>
 
       <div className="grid-2">
-        <Metric label="Total trades" value={total} sub={`${wins}W / ${total-wins}L`}/>
-        <Metric label="Win rate" value={fp(wr)} sub={total?<>Break-even: {fp(be*100)}<br/><WinRateCI wins={wins} total={total}/></>:`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
+        <Metric label="Total trades" value={total} sub={`${wins}W / ${losses}L`}/>
+        <Metric label="Win rate" value={fp(wr)} sub={total?<>Break-even: {fp(be*100)}<br/><WinRateCI wins={wins} total={wins+losses}/></>:`Break-even: ${fp(be*100)}`} color={wr>=65?'var(--text-success)':wr>=52.6?'var(--text-accent)':'var(--text-danger)'}/>
         <Metric label="Expected value/trade" value={(ev>=0?'+':'')+f$(ev)} color={ev>=0?'var(--text-success)':'var(--text-danger)'}/>
         <Metric label="Total P&L" value={(pnl>=0?'+':'')+f$(pnl)} color={pnl>=0?'var(--text-success)':'var(--text-danger)'}/>
       </div>
@@ -5857,7 +5901,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
               <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:10}}>{stat.trades.length} completed trades</div>
               <div style={{display:'grid',gap:6}}>
                 <div style={{fontSize:20,fontWeight:600,fontFamily:'var(--font-mono)',color:stat.wr>=65?'var(--text-success)':stat.wr>=52.6?'var(--text-accent)':'var(--text-danger)'}}>{fp(stat.wr)}</div>
-                <div style={{fontSize:12,color:'var(--text-secondary)'}}>{stat.wins}W / {stat.trades.length-stat.wins}L</div>
+                <div style={{fontSize:12,color:'var(--text-secondary)'}}>{stat.wins}W / {stat.losses}L</div>
                 <div style={{fontSize:12,color:stat.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(stat.pnl>=0?'+':'')+f$(stat.pnl)} P&L</div>
                 <div style={{fontSize:12,color:'var(--text-secondary)'}}>{stat.growth>=0?'+':''}{fp(stat.growth)} growth</div>
               </div>
@@ -5903,7 +5947,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
                 <div style={{height:'100%',background:x.wr>=65?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,x.wr)}%`}}/>
               </div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.total}/></div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.wins+x.losses}/></div>
             </div>
           ))}
         </div>
@@ -5923,7 +5967,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
                 <div style={{height:'100%',background:x.wr>=65?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,x.wr)}%`}}/>
               </div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.total}/></div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.wins+x.losses}/></div>
               <div style={{fontSize:12,marginTop:4,color:x.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(x.pnl>=0?'+':'')+f$(x.pnl)} P&L</div>
             </div>
           ))}
@@ -5943,7 +5987,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
                 <div style={{height:'100%',background:x.wr>=65?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,x.wr)}%`}}/>
               </div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.total}/></div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}><WinRateCI wins={x.wins} total={x.wins+x.losses}/></div>
               <div style={{fontSize:12,marginTop:4,color:x.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{(x.pnl>=0?'+':'')+f$(x.pnl)} P&L</div>
             </div>
           ))}
@@ -6042,7 +6086,7 @@ function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
         <div style={{position:'absolute',zIndex:30,top:'100%',left:0,marginTop:2,width:180,padding:'8px 10px',borderRadius:'var(--radius)',background:'var(--surface-1)',border:'1px solid var(--border)',boxShadow:'0 4px 16px rgba(0,0,0,0.3)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.6}}>
           <div style={{fontWeight:600,color:'var(--text-primary)',marginBottom:2}}>{dateKey}</div>
           <div>P&amp;L: <span style={{color:dayStats.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{dayStats.pnl>=0?'+':''}{f$(dayStats.pnl)}</span></div>
-          <div>{dayStats.wins}W / {dayStats.total-dayStats.wins}L ({dayStats.total} trades)</div>
+          <div>{dayStats.wins}W / {dayStats.losses}L ({dayStats.total} trades)</div>
           <div>Ending balance: {f$(dayStats.endingBalance)}</div>
           {dayStats.withdrawn>0&&<div>Withdrawn: {f$(dayStats.withdrawn)}</div>}
           <div style={{marginTop:4,color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>onOpen(dateKey)}>View trades →</div>
@@ -6168,6 +6212,7 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
   const bestDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl>=monthDayStats[b].pctPnl?a:b):null;
   const worstDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl<=monthDayStats[b].pctPnl?a:b):null;
   const wins=tradingDays.reduce((s,d)=>s+d.wins,0);
+  const losses=tradingDays.reduce((s,d)=>s+d.losses,0);
   const totalTrades=tradingDays.reduce((s,d)=>s+d.total,0);
   // Max drawdown — peak-to-trough of the running ENDING balance across the
   // month's trading days, in the same chronological order as the sparkline.
@@ -6234,8 +6279,8 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
 
       <div className="grid-3">
         <Metric label="Month P&L" value={`${monthPnl>=0?'+':''}${f$(monthPnl)}`} sub={`${monthPnlPct>=0?'+':''}${monthPnlPct.toFixed(1)}%`} color={monthPnl>=0?'var(--text-success)':'var(--text-danger)'}/>
-        <Metric label="Total trades" value={totalTrades} sub={`${wins}W / ${totalTrades-wins}L`}/>
-        <Metric label="Win rate" value={totalTrades?`${Math.round((wins/totalTrades)*100)}%`:'—'} sub={totalTrades?<WinRateCI wins={wins} total={totalTrades}/>:'No trades this month'}/>
+        <Metric label="Total trades" value={totalTrades} sub={`${wins}W / ${losses}L`}/>
+        <Metric label="Win rate" value={(wins+losses)?`${Math.round((wins/(wins+losses))*100)}%`:'—'} sub={(wins+losses)?<WinRateCI wins={wins} total={wins+losses}/>:'No trades this month'}/>
         <Metric label="Max drawdown" value={`${maxDd.toFixed(1)}%`} color={maxDd>10?'var(--text-danger)':'var(--text-primary)'}/>
         <Metric label="Best day" value={bestDay?`+${monthDayStats[bestDay].pctPnl.toFixed(1)}%`:'—'} sub={bestDay} color="var(--text-success)"/>
         <Metric label="Worst day" value={worstDay?`${monthDayStats[worstDay].pctPnl.toFixed(1)}%`:'—'} sub={worstDay} color="var(--text-danger)"/>
@@ -6952,7 +6997,8 @@ function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,a
   // (balance/target/trades) already cover exploring "what if I were on the
   // other mode" without needing a dedicated switch.
   const calcDone=(trades||[]).filter(t=>getTradeMode(t)===mode&&t.outcome!=='PENDING');
-  const calcWinRate=calcDone.length?(calcDone.filter(t=>t.outcome==='WIN').length/calcDone.length)*100:65;
+  const calcWins=calcDone.filter(t=>t.outcome==='WIN').length,calcLosses=calcDone.filter(t=>t.outcome==='LOSS').length;
+  const calcWinRate=(calcWins+calcLosses)?(calcWins/(calcWins+calcLosses))*100:65;
   const calcStyle=f[`moneyMgmtStyle${modeKey}`]||'FIXED';
   const calcIsAM=isEscalatingStyle(calcStyle); // name kept for minimal diff — now covers both escalating styles
   const calcLiveProfitTargetPct=()=>calcStyle==='PROFIT_LOCK'?getPlProfitTargetPctForMode(settings,mode):getAmProfitTargetPctForMode(settings,mode);
