@@ -1,0 +1,9 @@
+{
+  "tool": "jest",
+  "gate": null,
+  "additionalTools": ["@testing-library/react"],
+  "e2eTool": "none",
+  "testDir": "src",
+  "filePattern": "*.test.js",
+  "packageManager": "npm"
+}

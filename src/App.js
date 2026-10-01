@@ -3958,6 +3958,121 @@ function applyTextWithUndo(ref,text){
   return false;
 }
 
+function getPageNumbers(currentPage, totalPages){
+  if(totalPages<=5){
+    return Array.from({length:totalPages},(_,i)=>i+1);
+  }
+  if(currentPage<=3){
+    return[1,2,3,4,'ellipsis',totalPages];
+  }
+  if(currentPage>=totalPages-2){
+    return[1,'ellipsis',totalPages-3,totalPages-2,totalPages-1,totalPages];
+  }
+  return[1,'ellipsis',currentPage-1,currentPage,currentPage+1,'ellipsis',totalPages];
+}
+
+function PaginationBar({currentPage,totalPages,pageSize,totalItems,startItem,endItem,onPageChange,onPageSizeChange}){
+  if(!totalItems)return null;
+  const pageNumbers=getPageNumbers(currentPage,totalPages);
+
+  return(
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12,marginTop:16,padding:'12px 16px',background:'var(--surface-1)',border:'1px solid var(--border)',borderRadius:'var(--radius)',boxShadow:'var(--shadow-card)'}}>
+      <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <span style={{fontSize:12,color:'var(--text-muted)',fontWeight:500}}>
+          Showing {startItem} to {endItem} of {totalItems} trade{totalItems===1?'':'s'}
+        </span>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <span style={{fontSize:11,color:'var(--text-muted)'}}>Per page:</span>
+          {[10,25,50].map(sz=>(
+            <button
+              key={sz}
+              type="button"
+              style={{
+                ...btn(),
+                padding:'3px 8px',
+                fontSize:11,
+                fontWeight:600,
+                borderRadius:4,
+                ...(pageSize===sz?{background:'var(--fill-accent)',color:'#fff',boxShadow:'0 1px 2px rgba(0,0,0,0.3)'}:{background:'var(--surface-2)',color:'var(--text-secondary)'})
+              }}
+              onClick={()=>onPageSizeChange(sz)}
+            >
+              {sz}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <nav aria-label="Journal pagination" style={{display:'flex',alignItems:'center',gap:4}}>
+        <button
+          type="button"
+          aria-label="Previous page"
+          disabled={currentPage<=1}
+          style={{
+            ...btn(),
+            padding:'4px 8px',
+            fontSize:12,
+            opacity:currentPage<=1?0.4:1,
+            cursor:currentPage<=1?'not-allowed':'pointer'
+          }}
+          onClick={()=>onPageChange(Math.max(1,currentPage-1))}
+        >
+          <ChevronLeft size={14}/>
+          <span>Prev</span>
+        </button>
+
+        {pageNumbers.map((p,i)=>{
+          if(p==='ellipsis'){
+            return(
+              <span key={`ellipsis-${i}`} style={{padding:'0 4px',fontSize:12,color:'var(--text-muted)',userSelect:'none'}}>
+                …
+              </span>
+            );
+          }
+          const isCur=currentPage===p;
+          return(
+            <button
+              key={p}
+              type="button"
+              aria-label={`Page ${p}`}
+              aria-current={isCur?'page':undefined}
+              style={{
+                ...btn(),
+                minWidth:28,
+                padding:'4px 6px',
+                fontSize:12,
+                fontWeight:600,
+                borderRadius:4,
+                ...(isCur?{background:'var(--fill-accent)',color:'#fff'}:{background:'var(--surface-2)',color:'var(--text-primary)'})
+              }}
+              onClick={()=>onPageChange(p)}
+            >
+              {p}
+            </button>
+          );
+        })}
+
+        <button
+          type="button"
+          aria-label="Next page"
+          disabled={currentPage>=totalPages}
+          style={{
+            ...btn(),
+            padding:'4px 8px',
+            fontSize:12,
+            opacity:currentPage>=totalPages?0.4:1,
+            cursor:currentPage>=totalPages?'not-allowed':'pointer'
+          }}
+          onClick={()=>onPageChange(Math.min(totalPages,currentPage+1))}
+        >
+          <span>Next</span>
+          <ChevronRight size={14}/>
+        </button>
+      </nav>
+    </div>
+  );
+}
+
 // ── Journal ───────────────────────────────────────────────────────────────────
 export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies,addStrategy}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
@@ -3981,8 +4096,21 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       return d;
     }catch{return null;}
   });
+  const[pageSize,setPageSize]=useState(()=>{
+    try{
+      const s=Number(localStorage.getItem('gm_journal_page_size'));
+      return[10,25,50].includes(s)?s:25;
+    }catch{return 25;}
+  });
+  const[currentPage,setCurrentPage]=useState(1);
+
   const[manual,setManual]=useState(false);
   const[journalTab,setJournalTab]=useState(mode||'DEMO');
+
+  // Changing any journal filter resets pagination back to page 1
+  useEffect(()=>{
+    setCurrentPage(1);
+  },[filt,stratFilt,gradeFilt,range,dateFilt,journalTab]);
   const[addingStrat,setAddingStrat]=useState(false);
   const[newStratName,setNewStratName]=useState('');
   const[newStratDesc,setNewStratDesc]=useState('');
@@ -4395,6 +4523,19 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   const rangeFiltered=dateFiltered.filter(t=>t.timestamp>=rangeStart&&t.timestamp<rangeEnd);
   const sorted=[...rangeFiltered].sort((a,b)=>b.timestamp-a.timestamp);
 
+  const totalPages=Math.max(1,Math.ceil(sorted.length/pageSize));
+  // Automatically clamp current page if items are deleted or list shrinks
+  useEffect(()=>{
+    if(currentPage>totalPages){
+      setCurrentPage(totalPages);
+    }
+  },[currentPage,totalPages]);
+
+  const safeCurrentPage=Math.min(currentPage,totalPages);
+  const paginatedTrades=sorted.slice((safeCurrentPage-1)*pageSize,safeCurrentPage*pageSize);
+  const startItem=sorted.length===0?0:(safeCurrentPage-1)*pageSize+1;
+  const endItem=Math.min(safeCurrentPage*pageSize,sorted.length);
+
   // Live summary for whatever's currently filtered — derived straight from
   // `sorted`, so it always matches the list below with zero extra state and
   // updates for free on any filter change (outcome, strategy, grade, tab).
@@ -4466,7 +4607,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 
       <div style={{display:'flex',gap:8,marginBottom:12}}>
         {ACCOUNT_MODES.map(m=>(
-          <button key={m} style={{...btn(journalTab===m?'pri':'def'),flex:1}} onClick={()=>setJournalTab(m)}>{m==='REAL'?'Real':'Demo'}</button>
+          <button key={m} style={{...btn(journalTab===m?'pri':'def'),flex:1}} onClick={()=>{setJournalTab(m);setCurrentPage(1);}}>{m==='REAL'?'Real':'Demo'}</button>
         ))}
       </div>
 
@@ -4493,20 +4634,20 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
         <button style={btn()} onClick={()=>{setManual(v=>!v);setOffPlanOverride(false);smf(m=>({...m,accountMode:journalTab}));}} disabled={(tabDailyLocked||tabStrictLocked)&&!manual}>{manual?'Cancel':'+ Manual entry'}</button>
         {['ALL','PENDING','WIN','LOSS','DRAW'].map(f=>(
-          <button key={f} style={{...btn(filt===f?'pri':'def'),padding:'6px 10px'}} onClick={()=>setFilt(f)}>{f}</button>
+          <button key={f} style={{...btn(filt===f?'pri':'def'),padding:'6px 10px'}} onClick={()=>{setFilt(f);setCurrentPage(1);}}>{f}</button>
         ))}
       </div>
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Strategy:</span>
         {[{id:'ALL',label:'All'},...activeStrategies.map(s=>({id:s.id,label:s.name}))].map(f=>(
-          <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setStratFilt(f.id)}>{f.label}</button>
+          <button key={f.id} style={{...btn(stratFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>{setStratFilt(f.id);setCurrentPage(1);}}>{f.label}</button>
         ))}
         {/* matches solo AND combo trades that include this strategy — .includes(), not === */}
       </div>
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Grade:</span>
         {[{id:'ALL',label:'All Grades'},{id:'A+',label:'A+'},{id:'A',label:'A'},{id:'B',label:'B'},{id:'C',label:'C'},{id:'UNGRADED',label:'Ungraded'}].map(f=>(
-          <button key={f.id} style={{...btn(gradeFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>setGradeFilt(f.id)}>{f.label}</button>
+          <button key={f.id} style={{...btn(gradeFilt===f.id?'pri':'def'),padding:'6px 10px'}} onClick={()=>{setGradeFilt(f.id);setCurrentPage(1);}}>{f.label}</button>
         ))}
       </div>
       {/* Same picker Analytics uses (presets left, custom dual-month
@@ -4514,7 +4655,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
           of only being able to see them aggregated in Analytics. */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <span style={{fontSize:11,color:'var(--text-muted)'}}>Period:</span>
-        <DateRangePicker range={range} setRange={setRange}/>
+        <DateRangePicker range={range} setRange={r=>{setRange(r);setCurrentPage(1);}}/>
       </div>
 
       <div style={{...card,marginBottom:12}}>
@@ -4686,7 +4827,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         </div>
       )}
 
-      {sorted.map(t=>(
+      {paginatedTrades.map(t=>(
         <div key={t.id} style={{...card,cursor:'pointer'}} role="button" tabIndex={0} onClick={()=>setSelectedTrade(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setSelectedTrade(t);}}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:t.outcome==='PENDING'?8:0}}>
             <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
@@ -4725,7 +4866,24 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         </div>
       ))}
 
-      <TradeDetailModal trade={selectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
+      {sorted.length>0&&(
+        <PaginationBar
+          currentPage={safeCurrentPage}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalItems={sorted.length}
+          startItem={startItem}
+          endItem={endItem}
+          onPageChange={setCurrentPage}
+          onPageSizeChange={sz=>{
+            setPageSize(sz);
+            try{localStorage.setItem('gm_journal_page_size',String(sz));}catch{}
+            setCurrentPage(1);
+          }}
+        />
+      )}
+
+      <TradeDetailModal trade={selectedTrade} tradesList={sorted} onNavigate={setSelectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
 
       {preview&&(
         <div
@@ -4764,7 +4922,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
 // Log entirely just to paste a screenshot. `trade` is the selected trade or
 // null; renders nothing when null, same as the old `{selectedTrade&&(...)}`
 // guard did inline.
-function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategies,settings}){
+function TradeDetailModal({trade,tradesList=[],onNavigate,onClose,onSaved,saveTrades,deleteTrade,strategies,settings}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[pairOptions,setPairOptions]=useState(initialPairOptions);
   // Opening a trade always lands on the read-only Detail view first —
@@ -4779,6 +4937,58 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
   const[polishingTrade,setPolishingTrade]=useState(false);
   const[tradeSuggestion,setTradeSuggestion]=useState(null);
   const tradeNotesRef=useRef(null);
+  const modalBodyRef=useRef(null);
+  const savedTradeRef=useRef(null);
+
+  const tradesListRef=useRef(tradesList);
+  tradesListRef.current=tradesList;
+  const tradeRef=useRef(trade);
+  tradeRef.current=trade;
+  const editingTradeRef=useRef(editingTrade);
+  editingTradeRef.current=editingTrade;
+  const editDraftRef=useRef(editDraft);
+  editDraftRef.current=editDraft;
+  const onNavigateRef=useRef(onNavigate);
+  onNavigateRef.current=onNavigate;
+  const previewRef=useRef(preview);
+  previewRef.current=preview;
+  const confirmingDeleteRef=useRef(confirmingDelete);
+  confirmingDeleteRef.current=confirmingDelete;
+
+  const currentIndex=(tradesList||[]).findIndex(t=>t.id===trade?.id);
+  const hasPrev=currentIndex>0;
+  const hasNext=currentIndex>=0&&currentIndex<(tradesList||[]).length-1;
+
+  function isDraftDirty(currentTrade,draft){
+    if(!currentTrade||!draft)return false;
+    if((draft.notes||'')!==(currentTrade.notes||''))return true;
+    if((draft.pair||'').trim()!==(currentTrade.pair||'').trim())return true;
+    if(draft.dir!==(currentTrade.direction||'BUY'))return true;
+    if(draft.outcome!==(currentTrade.outcome||'PENDING'))return true;
+    if(draft.grade!==(currentTrade.zoneGrade||'UNGRADED'))return true;
+    if(String(draft.stake??'')!==String(currentTrade.stake??''))return true;
+    const origPayout=currentTrade.payoutPct?String(currentTrade.payoutPct):'';
+    if(String(draft.payoutPct??'')!==origPayout)return true;
+    const origStrats=currentTrade.strategyIds?.length?currentTrade.strategyIds:['zone-sd'];
+    const curStrats=draft.strategyIds||[];
+    if(origStrats.length!==curStrats.length||!origStrats.every(s=>curStrats.includes(s)))return true;
+    const origScreenshotsLen=(currentTrade.screenshots||[]).length;
+    const curScreenshotsLen=(draft.screenshots||[]).length;
+    if(origScreenshotsLen!==curScreenshotsLen)return true;
+    return false;
+  }
+
+  function handleNavigate(targetTrade){
+    if(!targetTrade||!onNavigate)return;
+    if(editingTrade&&isDraftDirty(trade,editDraft)){
+      const discard=window.confirm('You have unsaved edits. Discard and navigate?');
+      if(!discard)return;
+    }
+    if(modalBodyRef.current){
+      modalBodyRef.current.scrollTop=0;
+    }
+    onNavigate(targetTrade);
+  }
 
   function addPairOption(value){
     persistPairOption(value,setPairOptions);
@@ -4798,6 +5008,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
       const updated={...trade,notes:editDraft.notes,screenshots,pair,strategyIds:editDraft.strategyIds,
         direction:editDraft.dir,zoneGrade:editDraft.grade,stake:validStake,outcome:editDraft.outcome,pnl,
         payoutPct:payoutPct||null};
+      savedTradeRef.current={id:trade.id,index:currentIndex};
       await saveTrades(prev=>prev.map(t=>t.id===trade.id?updated:t));
       // `trade` is owned by the caller (Journal/QuickLog's selectedTrade),
       // not this component — without handing the fresh object back up, the
@@ -4808,6 +5019,7 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
       setSavedFlash(true);
       setTimeout(()=>setSavedFlash(false),1800);
     }catch(e){
+      savedTradeRef.current=null;
       setEditErr(e.message||'Could not save edits. Try again.');
     }finally{
       setSavingEdit(false);
@@ -4879,7 +5091,76 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
       setConfirmingDelete(false);
       setTradeSuggestion(null);
       setEditingTrade(false);
+      if(modalBodyRef.current)modalBodyRef.current.scrollTop=0;
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[trade?.id]);
+
+  useEffect(()=>{
+    if(!savedTradeRef.current||!trade)return;
+    if(savedTradeRef.current.id===trade.id){
+      const savedIndex=savedTradeRef.current.index;
+      const stillInList=(tradesList||[]).some(t=>t.id===trade.id);
+      if(!stillInList){
+        savedTradeRef.current=null;
+        if((tradesList||[]).length>0&&onNavigate){
+          const targetTrade=savedIndex<tradesList.length?tradesList[savedIndex]:tradesList[tradesList.length-1];
+          onNavigate(targetTrade);
+        }else{
+          onClose();
+        }
+      }else{
+        savedTradeRef.current=null;
+      }
+    }
+  },[tradesList,trade,onNavigate,onClose]);
+
+  useEffect(()=>{
+    if(!trade)return;
+    function handleKeyDown(e){
+      if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;
+      if(previewRef.current||confirmingDeleteRef.current)return;
+
+      const activeEl=document.activeElement;
+      if(activeEl){
+        const tag=activeEl.tagName;
+        if(['INPUT','TEXTAREA','SELECT'].includes(tag))return;
+        if(activeEl.isContentEditable)return;
+      }
+
+      const list=tradesListRef.current||[];
+      const current=tradeRef.current;
+      if(!current||!list.length)return;
+      const idx=list.findIndex(t=>t.id===current.id);
+      if(idx===-1)return;
+
+      if(e.key==='ArrowLeft'){
+        if(idx>0){
+          e.preventDefault();
+          const target=list[idx-1];
+          if(editingTradeRef.current&&isDraftDirty(current,editDraftRef.current)){
+            const discard=window.confirm('You have unsaved edits. Discard and navigate?');
+            if(!discard)return;
+          }
+          if(modalBodyRef.current)modalBodyRef.current.scrollTop=0;
+          onNavigateRef.current?.(target);
+        }
+      }else if(e.key==='ArrowRight'){
+        if(idx<list.length-1){
+          e.preventDefault();
+          const target=list[idx+1];
+          if(editingTradeRef.current&&isDraftDirty(current,editDraftRef.current)){
+            const discard=window.confirm('You have unsaved edits. Discard and navigate?');
+            if(!discard)return;
+          }
+          if(modalBodyRef.current)modalBodyRef.current.scrollTop=0;
+          onNavigateRef.current?.(target);
+        }
+      }
+    }
+
+    window.addEventListener('keydown',handleKeyDown);
+    return()=>window.removeEventListener('keydown',handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[trade?.id]);
 
@@ -4904,14 +5185,43 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
   return(
     <>
       <div role="dialog" aria-modal="true" aria-label={editingTrade?'Edit trade':'Trade detail'} style={{position:'fixed',inset:0,background:'rgba(2,6,23,0.78)',display:'flex',alignItems:'center',justifyContent:'center',padding:16,zIndex:1000}} onClick={onClose}>
-        <div style={{...card,width:'100%',maxWidth:820,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div ref={modalBodyRef} style={{...card,width:'100%',maxWidth:820,maxHeight:'90vh',overflowY:'auto',border:'1px solid var(--border-strong)',boxShadow:'0 18px 50px rgba(0,0,0,0.35)'}} onClick={e=>e.stopPropagation()}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16,flexWrap:'wrap',gap:12}}>
             <div>
               <div style={{fontSize:18,fontWeight:500,color:'var(--text-primary)'}}>{editingTrade?'Edit trade':'Trade detail'}</div>
               <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span>{trade.pair} · {trade.direction}</span>
               </div>
             </div>
+
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <button
+                type="button"
+                aria-label="Previous trade"
+                title="Previous trade (Left Arrow)"
+                disabled={!hasPrev}
+                style={{...btn(),padding:'5px 10px',opacity:!hasPrev?0.45:1,cursor:!hasPrev?'not-allowed':'pointer'}}
+                onClick={()=>hasPrev&&handleNavigate(tradesList[currentIndex-1])}
+              >
+                <i className="ti ti-chevron-left" aria-hidden="true" style={{marginRight:2}}/>Prev
+              </button>
+
+              <span style={{fontSize:12,color:'var(--text-secondary)',padding:'0 4px',whiteSpace:'nowrap',userSelect:'none'}}>
+                {currentIndex===-1?'Outside active filter':`Trade ${currentIndex+1} of ${tradesList.length}`}
+              </span>
+
+              <button
+                type="button"
+                aria-label="Next trade"
+                title="Next trade (Right Arrow)"
+                disabled={!hasNext}
+                style={{...btn(),padding:'5px 10px',opacity:!hasNext?0.45:1,cursor:!hasNext?'not-allowed':'pointer'}}
+                onClick={()=>hasNext&&handleNavigate(tradesList[currentIndex+1])}
+              >
+                Next<i className="ti ti-chevron-right" aria-hidden="true" style={{marginLeft:2}}/>
+              </button>
+            </div>
+
             <div style={{display:'flex',gap:8}}>
               {!editingTrade&&<button style={btn('pri')} onClick={()=>setEditingTrade(true)}><i className="ti ti-pencil" aria-hidden="true" style={{marginRight:5}}/>Edit</button>}
               <button style={btn()} onClick={()=>editingTrade?setEditingTrade(false):onClose()}>{editingTrade?'Back':'Close'}</button>
@@ -5043,7 +5353,18 @@ function TradeDetailModal({trade,onClose,onSaved,saveTrades,deleteTrade,strategi
           body="This permanently removes the entry, its notes, and its screenshots. This cannot be undone."
           confirmLabel="Delete entry"
           onCancel={()=>setConfirmingDelete(false)}
-          onConfirm={()=>{deleteTrade(trade);setConfirmingDelete(false);onClose();}}
+          onConfirm={async()=>{
+            const currentId=trade.id;
+            const remaining=(tradesList||[]).filter(t=>t.id!==currentId);
+            await deleteTrade(trade);
+            setConfirmingDelete(false);
+            if(remaining.length>0&&onNavigate&&currentIndex!==-1){
+              const nextTrade=currentIndex<remaining.length?remaining[currentIndex]:remaining[remaining.length-1];
+              onNavigate(nextTrade);
+            }else{
+              onClose();
+            }
+          }}
         />
       )}
 
@@ -5417,7 +5738,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
           </div>
         )}
       </div>
-      <TradeDetailModal trade={selectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
+      <TradeDetailModal trade={selectedTrade} tradesList={sessionTrades} onNavigate={setSelectedTrade} onClose={()=>setSelectedTrade(null)} onSaved={setSelectedTrade} saveTrades={saveTrades} deleteTrade={deleteTrade} strategies={strategies} settings={settings}/>
     </div>
   );
 }

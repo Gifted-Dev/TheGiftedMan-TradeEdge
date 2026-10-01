@@ -642,3 +642,582 @@ describe("Dashboard's Today count", () => {
     expect(screen.getByText('Ready for session 1')).toBeInTheDocument();
   });
 });
+
+describe('Modal sequential trade navigation', () => {
+  const baseSettings = { riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 };
+  const baseSS = { date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } };
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
+  });
+
+  const createTrade = (id, pair, overrides = {}) => ({
+    id,
+    timestamp: Date.now() - 60000 + (overrides.offset || 0),
+    date: '2026-07-01',
+    sessionNum: 1,
+    pair,
+    direction: 'BUY',
+    zoneType: 'Demand',
+    zoneGrade: 'A',
+    stake: 2,
+    outcome: 'WIN',
+    pnl: 1.84,
+    source: 'MANUAL',
+    analysisId: null,
+    screenshots: [],
+    notes: `Notes for ${id}`,
+    isAnalyzed: false,
+    accountMode: 'DEMO',
+    strategyIds: ['zone-sd'],
+    ...overrides,
+  });
+
+  test('navigates to next and previous trades with position counter and boundary disabled states (AC-1, AC-2, AC-4)', async () => {
+    // Journal sorts by timestamp descending (b.timestamp - a.timestamp)
+    // T1: offset 300, T2: offset 200, T3: offset 100 -> sorted order: [T1, T2, T3]
+    const trades = [
+      createTrade('trade-1', 'EUR/USD OTC', { offset: 300 }),
+      createTrade('trade-2', 'GBP/USD OTC', { offset: 200 }),
+      createTrade('trade-3', 'USD/JPY OTC', { offset: 100 }),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Open first trade
+    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    expect(await screen.findByText('Trade 1 of 3')).toBeInTheDocument();
+    expect(screen.getAllByText('EUR/USD OTC').length).toBeGreaterThan(0);
+
+    const prevBtn = screen.getByRole('button', { name: /previous trade/i });
+    const nextBtn = screen.getByRole('button', { name: /next trade/i });
+
+    // Boundary at first item: Prev disabled, Next enabled
+    expect(prevBtn).toBeDisabled();
+    expect(nextBtn).not.toBeDisabled();
+
+    // Click Next -> moves to trade 2
+    fireEvent.click(nextBtn);
+    expect(await screen.findByText('Trade 2 of 3')).toBeInTheDocument();
+    expect(screen.getAllByText('GBP/USD OTC').length).toBeGreaterThan(0);
+    expect(prevBtn).not.toBeDisabled();
+    expect(nextBtn).not.toBeDisabled();
+
+    // Click Next again -> moves to trade 3
+    fireEvent.click(nextBtn);
+    expect(await screen.findByText('Trade 3 of 3')).toBeInTheDocument();
+    expect(screen.getAllByText('USD/JPY OTC').length).toBeGreaterThan(0);
+    // Boundary at last item: Prev enabled, Next disabled
+    expect(prevBtn).not.toBeDisabled();
+    expect(nextBtn).toBeDisabled();
+
+    // Click Previous -> moves back to trade 2
+    fireEvent.click(prevBtn);
+    expect(await screen.findByText('Trade 2 of 3')).toBeInTheDocument();
+    expect(screen.getAllByText('GBP/USD OTC').length).toBeGreaterThan(0);
+  });
+
+  test('keyboard arrow shortcuts navigate between trades and ignore input focus (AC-3)', async () => {
+    const trades = [
+      createTrade('trade-1', 'EUR/USD OTC', { offset: 200 }),
+      createTrade('trade-2', 'GBP/USD OTC', { offset: 100 }),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    expect(await screen.findByText('Trade 1 of 2')).toBeInTheDocument();
+
+    // Press ArrowRight on window
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(await screen.findByText('Trade 2 of 2')).toBeInTheDocument();
+    expect(screen.getAllByText('GBP/USD OTC').length).toBeGreaterThan(0);
+
+    // Press ArrowLeft on window
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    expect(await screen.findByText('Trade 1 of 2')).toBeInTheDocument();
+    expect(screen.getAllByText('EUR/USD OTC').length).toBeGreaterThan(0);
+
+    // Enter edit mode
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const notesInput = await screen.findByLabelText('Journal notes');
+    notesInput.focus();
+
+    // Press ArrowRight while textarea is focused -> should NOT navigate
+    fireEvent.keyDown(notesInput, { key: 'ArrowRight' });
+    expect(screen.getByText('Trade 1 of 2')).toBeInTheDocument();
+    expect(screen.getByLabelText('Journal notes')).toBeInTheDocument();
+  });
+
+  test('prompts before discarding unsaved edits during navigation (AC-5)', async () => {
+    const confirmSpy = jest.spyOn(window, 'confirm');
+    const trades = [
+      createTrade('trade-1', 'EUR/USD OTC', { offset: 200 }),
+      createTrade('trade-2', 'GBP/USD OTC', { offset: 100 }),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+
+    const notesInput = await screen.findByLabelText('Journal notes');
+    fireEvent.change(notesInput, { target: { value: 'Draft with unsaved modifications' } });
+
+    // Cancel prompt: user stays on current trade
+    confirmSpy.mockReturnValueOnce(false);
+    const nextBtn = screen.getByRole('button', { name: /next trade/i });
+    fireEvent.click(nextBtn);
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('unsaved edits'));
+    expect(screen.getByText('Trade 1 of 2')).toBeInTheDocument();
+    expect(notesInput.value).toBe('Draft with unsaved modifications');
+
+    // Confirm prompt: navigation proceeds and draft is discarded
+    confirmSpy.mockReturnValueOnce(true);
+    fireEvent.click(nextBtn);
+
+    expect(await screen.findByText('Trade 2 of 2')).toBeInTheDocument();
+    expect(screen.getAllByText('GBP/USD OTC').length).toBeGreaterThan(0);
+
+    confirmSpy.mockRestore();
+  });
+
+  test('auto-advances to adjacent trade upon deletion (AC-6)', async () => {
+    const deleteTrade = jest.fn();
+    const trades = [
+      createTrade('trade-1', 'EUR/USD OTC', { offset: 300 }),
+      createTrade('trade-2', 'GBP/USD OTC', { offset: 200 }),
+      createTrade('trade-3', 'USD/JPY OTC', { offset: 100 }),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={deleteTrade}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Open trade 2 (middle trade)
+    fireEvent.click(screen.getByText('GBP/USD OTC'));
+    expect(await screen.findByText('Trade 2 of 3')).toBeInTheDocument();
+
+    // Click Edit -> Delete
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    // ConfirmDialog pops up
+    const confirmDeleteBtn = screen.getByRole('button', { name: /delete entry/i });
+    fireEvent.click(confirmDeleteBtn);
+
+    expect(deleteTrade).toHaveBeenCalledWith(expect.objectContaining({ id: 'trade-2' }));
+    // Advances to trade 3 (the next trade)
+    expect(await screen.findByText('USD/JPY OTC')).toBeInTheDocument();
+  });
+
+  test('navigates strictly within active journal filter (AC-7)', async () => {
+    const trades = [
+      createTrade('trade-1', 'WIN-A', { outcome: 'WIN', offset: 400 }),
+      createTrade('trade-2', 'LOSS-B', { outcome: 'LOSS', offset: 300 }),
+      createTrade('trade-3', 'WIN-C', { outcome: 'WIN', offset: 200 }),
+      createTrade('trade-4', 'LOSS-D', { outcome: 'LOSS', offset: 100 }),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Filter to WIN trades only
+    fireEvent.click(screen.getByRole('button', { name: /^win$/i }));
+
+    // Open WIN-A
+    fireEvent.click(screen.getByText('WIN-A'));
+    expect(await screen.findByText('Trade 1 of 2')).toBeInTheDocument();
+
+    // Next should advance to WIN-C (skipping LOSS-B)
+    fireEvent.click(screen.getByRole('button', { name: /next trade/i }));
+    expect(await screen.findByText('Trade 2 of 2')).toBeInTheDocument();
+    expect(screen.getAllByText('WIN-C').length).toBeGreaterThan(0);
+  });
+});
+
+describe('Journal list pagination and page sizing', () => {
+  const baseSettings = { riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 };
+  const baseSS = { date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } };
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  const createTrade = (id, pair, offset, overrides = {}) => ({
+    id,
+    timestamp: Date.now() - 60000 + offset,
+    date: '2026-07-01',
+    sessionNum: 1,
+    pair,
+    direction: 'BUY',
+    zoneType: 'Demand',
+    zoneGrade: 'A',
+    stake: 2,
+    outcome: 'WIN',
+    pnl: 1.84,
+    source: 'MANUAL',
+    analysisId: null,
+    screenshots: [],
+    notes: `Notes for ${id}`,
+    isAnalyzed: false,
+    accountMode: 'DEMO',
+    strategyIds: ['zone-sd'],
+    ...overrides,
+  });
+
+  test('renders default page size of 25 trades with dynamic range counter (AC-1, AC-2)', () => {
+    const trades = Array.from({ length: 30 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Initial load: 25 items rendered, counter reflects 1 to 25 of 30
+    expect(screen.getByText('Showing 1 to 25 of 30 trades')).toBeInTheDocument();
+    // Trade 30 is the most recent (largest offset), so it appears on page 1
+    expect(screen.getByText('PAIR-30')).toBeInTheDocument();
+    // Trade 5 has lowest offset in this slice and is trade index 26, so it is on page 2
+    expect(screen.queryByText('PAIR-05')).not.toBeInTheDocument();
+  });
+
+  test('selects page size and persists choice across sessions (AC-2, AC-3)', () => {
+    const trades = Array.from({ length: 30 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    const { unmount } = render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Click 10 per page
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+    expect(screen.getByText('Showing 1 to 10 of 30 trades')).toBeInTheDocument();
+    expect(localStorage.getItem('gm_journal_page_size')).toBe('10');
+    unmount();
+
+    // Reload with stored size of 10
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+    expect(screen.getByText('Showing 1 to 10 of 30 trades')).toBeInTheDocument();
+  });
+
+  test('navigates via Next, Previous, and direct page buttons with boundary states (AC-4)', () => {
+    const trades = Array.from({ length: 30 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Page size 10 yields 3 pages
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+    const prevBtn = screen.getByRole('button', { name: /previous page/i });
+    const nextBtn = screen.getByRole('button', { name: /next page/i });
+
+    // Page 1: Previous disabled, Next enabled
+    expect(prevBtn).toBeDisabled();
+    expect(nextBtn).not.toBeDisabled();
+
+    // Move to page 2
+    fireEvent.click(nextBtn);
+    expect(screen.getByText('Showing 11 to 20 of 30 trades')).toBeInTheDocument();
+    expect(prevBtn).not.toBeDisabled();
+    expect(nextBtn).not.toBeDisabled();
+
+    // Direct jump to page 3
+    fireEvent.click(screen.getByRole('button', { name: 'Page 3' }));
+    expect(screen.getByText('Showing 21 to 30 of 30 trades')).toBeInTheDocument();
+    expect(prevBtn).not.toBeDisabled();
+    expect(nextBtn).toBeDisabled();
+
+    // Step back via Previous
+    fireEvent.click(prevBtn);
+    expect(screen.getByText('Showing 11 to 20 of 30 trades')).toBeInTheDocument();
+
+    // Direct jump back to page 1
+    fireEvent.click(screen.getByRole('button', { name: 'Page 1' }));
+    expect(screen.getByText('Showing 1 to 10 of 30 trades')).toBeInTheDocument();
+    expect(prevBtn).toBeDisabled();
+  });
+
+  test('resets active page to 1 when changing filters or tab (AC-5)', () => {
+    const trades = [
+      ...Array.from({ length: 15 }, (_, i) => createTrade(`win-${i + 1}`, `WIN-${i + 1}`, (i + 1) * 10, { outcome: 'WIN' })),
+      ...Array.from({ length: 15 }, (_, i) => createTrade(`loss-${i + 1}`, `LOSS-${i + 1}`, (i + 16) * 10, { outcome: 'LOSS' })),
+    ];
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Page size 10
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+    // Go to page 2 (trades 11 to 20 of 30)
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(screen.getByText('Showing 11 to 20 of 30 trades')).toBeInTheDocument();
+
+    // Filter to WIN only -> resets page to 1
+    const winBtn = screen.getByRole('button', { name: 'WIN' });
+    fireEvent.click(winBtn);
+    expect(screen.getByText('Showing 1 to 10 of 15 trades')).toBeInTheDocument();
+
+    // Go to page 2 (trades 11 to 15 of 15)
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(screen.getByText('Showing 11 to 15 of 15 trades')).toBeInTheDocument();
+
+    // Switch tab to Real -> resets page to 1
+    fireEvent.click(screen.getByRole('button', { name: 'Real' }));
+    expect(screen.queryByText(/Showing 11 to 15/i)).not.toBeInTheDocument();
+  });
+
+  test('clamps current page when list shrinks below active page (AC-6)', () => {
+    const trades = Array.from({ length: 30 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    const { rerender } = render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Page size 10 -> go to page 3 (trades 21 to 30)
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Page 3' }));
+    expect(screen.getByText('Showing 21 to 30 of 30 trades')).toBeInTheDocument();
+
+    // Simulate trades being deleted so only 15 remain (totalPages is now 2)
+    const reducedTrades = trades.slice(0, 15);
+    rerender(
+      <Journal
+        settings={baseSettings}
+        trades={reducedTrades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    // Current page clamps down to page 2
+    expect(screen.getByText('Showing 11 to 15 of 15 trades')).toBeInTheDocument();
+  });
+
+  test('condenses numbered page buttons with ellipsis when pages exceed 5 (AC-7)', () => {
+    // 70 trades with page size 10 = 7 pages
+    const trades = Array.from({ length: 70 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+
+    // On page 1: 1, 2, 3, 4, ellipsis, 7
+    expect(screen.getByRole('button', { name: 'Page 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 2' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 4' })).toBeInTheDocument();
+    expect(screen.getByText('…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 7' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Page 5' })).not.toBeInTheDocument();
+
+    // Move to page 4: 1, ellipsis, 3, 4, 5, ellipsis, 7
+    fireEvent.click(screen.getByRole('button', { name: 'Page 4' }));
+    expect(screen.getByRole('button', { name: 'Page 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 3' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 4' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 5' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Page 7' })).toBeInTheDocument();
+    expect(screen.getAllByText('…').length).toBe(2);
+  });
+
+  test('preserves full list for modal sequential navigation across page boundaries (AC-8)', async () => {
+    // 25 trades with page size 10 (page 1 has items 1 to 10)
+    const trades = Array.from({ length: 25 }, (_, i) =>
+      createTrade(`trade-${i + 1}`, `PAIR-${String(i + 1).padStart(2, '0')}`, (i + 1) * 10)
+    );
+
+    render(
+      <Journal
+        settings={baseSettings}
+        trades={trades}
+        saveTrades={jest.fn()}
+        deleteTrade={jest.fn()}
+        ss={baseSS}
+        saveSS={jest.fn()}
+        pa={null}
+        setPA={jest.fn()}
+        bal={1000}
+        strategies={STRATEGIES}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '10' }));
+
+    // Item 10 is the last trade rendered on page 1 (PAIR-16)
+    // Sorted descending by timestamp: T25 -> item 1, T16 -> item 10, T15 -> item 11 (on page 2)
+    fireEvent.click(screen.getByText('PAIR-16'));
+    expect(await screen.findByText('Trade 10 of 25')).toBeInTheDocument();
+
+    // Click Next inside modal -> navigates to item 11 (PAIR-15) even though it is on page 2 in the list
+    const modalNextBtn = screen.getByRole('button', { name: /next trade/i });
+    fireEvent.click(modalNextBtn);
+
+    expect(await screen.findByText('Trade 11 of 25')).toBeInTheDocument();
+    expect(screen.getAllByText('PAIR-15').length).toBeGreaterThan(0);
+  });
+});
+
+
