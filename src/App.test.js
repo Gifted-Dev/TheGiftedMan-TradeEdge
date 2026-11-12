@@ -3,6 +3,12 @@ import { Analytics, Analyzer, Journal, Dashboard, getToday } from './App';
 
 // The two reserved builtins, standing in for a loaded `strategies` list —
 // matches what App's bootstrap seeds per user (see ensureBuiltinStrategies).
+// Journal persists filters, drafts and the last strategy in browser storage; without
+// this reset one test's leftovers change what the next test sees.
+beforeEach(() => {
+  try { window.localStorage.clear(); window.sessionStorage.clear(); } catch {}
+});
+
 const STRATEGIES = [
   { id: 'zone-sd', name: 'Zone (S&D)', isBuiltin: true, archived: false },
   { id: 'trend-pattern', name: 'Trend/Pattern', isBuiltin: true, archived: false },
@@ -24,9 +30,9 @@ describe('getToday (midnight rollover)', () => {
 
 test('shows separate demo and real win-rate analytics for completed trades', () => {
   const trades = [
-    { id: 'demo-win', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A', stake: 2, outcome: 'WIN', pnl: 1.84, source: 'ANALYZER', analysisId: null, screenshots: [], notes: '', isAnalyzed: true, accountMode: 'DEMO' },
-    { id: 'demo-loss', timestamp: Date.now() + 1, date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC', direction: 'SELL', zoneType: 'Supply', zoneGrade: 'B', stake: 2, outcome: 'LOSS', pnl: -2, source: 'MANUAL', analysisId: null, screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO' },
-    { id: 'real-win', timestamp: Date.now() + 2, date: '2026-07-01', sessionNum: 2, pair: 'USD/JPY OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A', stake: 2, outcome: 'WIN', pnl: 1.84, source: 'ANALYZER', analysisId: null, screenshots: [], notes: '', isAnalyzed: true, accountMode: 'REAL' },
+    { id: 'demo-win', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A', stake: 2, outcome: 'WIN', pnl: 1.84, source: 'ANALYZER', analysisId: null, screenshots: [], notes: '', isAnalyzed: true, accountMode: 'DEMO', strategyIds: ['zone-sd'] },
+    { id: 'demo-loss', timestamp: Date.now() + 1, date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC', direction: 'SELL', zoneType: 'Supply', zoneGrade: 'B', stake: 2, outcome: 'LOSS', pnl: -2, source: 'MANUAL', analysisId: null, screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyIds: ['zone-sd'] },
+    { id: 'real-win', timestamp: Date.now() + 2, date: '2026-07-01', sessionNum: 2, pair: 'USD/JPY OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A', stake: 2, outcome: 'WIN', pnl: 1.84, source: 'ANALYZER', analysisId: null, screenshots: [], notes: '', isAnalyzed: true, accountMode: 'REAL', strategyIds: ['zone-sd'] },
   ];
 
   render(<Analytics trades={trades} settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }} bal={100} />);
@@ -42,7 +48,7 @@ test('Discipline Impact reports off-plan counts, P&L, and the direct balance-sub
   const trade = (id, outcome, pnl, offPlan) => ({
     id, timestamp: now, date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD', direction: 'BUY',
     zoneType: '', zoneGrade: 'A', stake: 2, outcome, pnl, source: 'MANUAL',
-    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', offPlan,
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', offPlan, strategyIds: ['zone-sd'],
   });
   const trades = [
     trade('on1', 'WIN', 1.84, false),
@@ -66,7 +72,7 @@ test('Analytics breaks performance down by strategy, equally alongside grade and
   const trade = (id, strategyId, outcome, pnl) => ({
     id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1, pair: 'EUR/USD OTC',
     direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2, outcome, pnl, source: 'MANUAL',
-    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyId,
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyIds: [strategyId],
   });
   const trades = [
     trade('z1', 'zone-sd', 'WIN', 1.84),
@@ -120,7 +126,7 @@ describe('Journal interactions', () => {
       />
     );
 
-    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    fireEvent.click(await screen.findByText('EUR/USD OTC'));
 
     expect(await screen.findByText('Trade detail')).toBeInTheDocument();
     expect(screen.getAllByText(/This is a long note/i).length).toBeGreaterThan(0);
@@ -147,7 +153,7 @@ test('filters the journal by strategy, combinable with the outcome filter', () =
     id, timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: `${id}-PAIR`, direction: 'BUY', zoneType: '', zoneGrade: 'A', stake: 2,
     outcome, pnl: outcome === 'WIN' ? 1.84 : outcome === 'LOSS' ? -2 : 0, source: 'MANUAL',
-    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyId,
+    screenshots: [], notes: '', isAnalyzed: false, accountMode: 'DEMO', strategyIds: [strategyId],
   });
   const trades = [
     trade('zone-win', 'zone-sd', 'WIN'),
@@ -188,13 +194,22 @@ test('filters the journal by strategy, combinable with the outcome filter', () =
 });
 
 test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L', async () => {
+  // A prior test's remembered strategy / draft would pre-select Zone and make the click below toggle it OFF.
+  try { window.localStorage.removeItem('gm_last_strategy_ids'); } catch {}
+  try { window.sessionStorage.removeItem('gm_draft_mf'); } catch {}
+  // An already active session, so saving does not auto start one through Supabase (not available in tests).
+  const activeSession = {
+    id: 's1', num: 1, accountMode: 'DEMO', trades: 0, wins: 0, losses: 0,
+    conLoss: 0, conWin: 0, netLoss: 0, sPnl: 0, isActive: true, isLocked: false,
+    strictAtStart: false, startTime: Date.now(),
+  };
   const saveTrades = jest.fn();
   render(
     <Journal
       settings={{ riskPercent: 1, tradeStyle: 1, sessionsPerDay: 3, milestones: [], startingBalanceDemo: 20, startingBalanceReal: 20 }}
       trades={[]}
       saveTrades={saveTrades}
-      ss={{ date: '2026-07-01', sessions: [], perMode: { DEMO: {}, REAL: {} } }}
+      ss={{ date: '2026-07-01', sessions: [activeSession], perMode: { DEMO: {}, REAL: {} } }}
       saveSS={jest.fn()}
       pa={null}
       setPA={jest.fn()}
@@ -204,7 +219,9 @@ test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L'
   );
 
   fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
-  fireEvent.change(screen.getByRole('combobox', { name: /strategy/i }), { target: { value: 'zone-sd' } }); // strategy is required before saving
+  // The journal filter row has same named buttons; the form's is the last in the DOM.
+  const zoneButtons = screen.getAllByRole('button', { name: 'Zone (S&D)' });
+  fireEvent.click(zoneButtons[zoneButtons.length - 1]); // at least one strategy is required before saving
   // "WIN" also matches the ALL/PENDING/WIN/LOSS filter row — the outcome
   // button is the one rendered inside the manual-entry form, later in the DOM.
   const winButtons = screen.getAllByRole('button', { name: /^win$/i });
@@ -219,7 +236,7 @@ test('a custom payout % overrides the default 92% when calculating a WIN\'s P&L'
   const [saved] = updater([]);
   expect(saved.stake).toBe(10);
   expect(saved.pnl).toBe(8); // 10 * 0.80, not the default 10 * 0.92 = 9.2
-  expect(saved.strategyId).toBe('zone-sd');
+  expect(saved.strategyIds).toEqual(['zone-sd']);
   expect(saved.payoutPct).toBe(80);
 });
 
@@ -229,7 +246,7 @@ test('manual entry refuses to save without an explicit strategy selection', asyn
   // Clear both the "remembered last strategy" AND the in-progress-draft
   // recovery — a prior test's draft would otherwise carry its strategy
   // choice into this "fresh, no selection yet" scenario.
-  try { window.localStorage.removeItem('gm_last_strategy_id'); } catch {}
+  try { window.localStorage.removeItem('gm_last_strategy_ids'); } catch {}
   try { window.sessionStorage.removeItem('gm_draft_mf'); } catch {}
 
   render(
@@ -247,10 +264,10 @@ test('manual entry refuses to save without an explicit strategy selection', asyn
   );
 
   fireEvent.click(screen.getByRole('button', { name: /\+ manual entry/i }));
-  expect(screen.getByText(/required — pick whichever was actually used/i)).toBeInTheDocument();
+  expect(screen.getByText(/required — select all strategies that genuinely applied/i)).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: /save entry/i }));
 
-  expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Select a strategy'));
+  expect(alertSpy).toHaveBeenCalledWith(expect.stringContaining('Select at least one strategy'));
   expect(saveTrades).not.toHaveBeenCalled();
 
   alertSpy.mockRestore();
@@ -418,7 +435,7 @@ test('shows a large preview when a journal screenshot is clicked', async () => {
     />
   );
 
-  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByText('EUR/USD OTC'));
   fireEvent.click(await screen.findByAltText('Screenshot 1'));
 
   expect(await screen.findByRole('dialog', { name: /image preview/i })).toBeInTheDocument();
@@ -459,7 +476,7 @@ test('lets you edit notes for a saved journal entry', async () => {
     />
   );
 
-  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByText('EUR/USD OTC'));
   fireEvent.click(await screen.findByRole('button', { name: /^edit$/i })); // Detail view opens read-only by default
   fireEvent.change(await screen.findByLabelText('Journal notes'), { target: { value: 'Updated notes' } });
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
@@ -475,7 +492,7 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
     id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
     stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
-    screenshots: [], notes: '', isAnalyzed: true, strategyId: 'zone-sd',
+    screenshots: [], notes: '', isAnalyzed: true, strategyIds: ['zone-sd'],
   }];
 
   render(
@@ -492,11 +509,12 @@ test('lets you fix a wrong pair and change the strategy on a saved journal entry
     />
   );
 
-  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByText('EUR/USD OTC'));
   fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
   const pairInput = await screen.findByDisplayValue('EUR/USD OTC');
   fireEvent.change(pairInput, { target: { value: 'GBP/USD OTC' } });
-  fireEvent.change(screen.getByRole('combobox', { name: /strategy/i }), { target: { value: 'trend-pattern' } });
+  const trendButtons = screen.getAllByRole('button', { name: 'Trend/Pattern' });
+  fireEvent.click(trendButtons[trendButtons.length - 1]);
   fireEvent.click(screen.getByRole('button', { name: /save edits/i }));
 
   // Saving returns to the read-only Detail view, which renders the pair in
@@ -511,7 +529,7 @@ test('lets you correct the direction and outcome on a saved journal entry, recal
     id: 'trade-1', timestamp: Date.now(), date: '2026-07-01', sessionNum: 1,
     pair: 'EUR/USD OTC', direction: 'BUY', zoneType: 'Demand', zoneGrade: 'A',
     stake: 2, outcome: 'PENDING', pnl: 0, source: 'ANALYZER', analysisId: null,
-    screenshots: [], notes: '', isAnalyzed: true, strategyId: 'zone-sd',
+    screenshots: [], notes: '', isAnalyzed: true, strategyIds: ['zone-sd'],
   }];
 
   render(
@@ -527,7 +545,7 @@ test('lets you correct the direction and outcome on a saved journal entry, recal
     />
   );
 
-  fireEvent.click(screen.getByText('EUR/USD OTC'));
+  fireEvent.click(await screen.findByText('EUR/USD OTC'));
   fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
   fireEvent.click(await screen.findByRole('button', { name: /^sell$/i }));
   // "WIN" also matches the ALL/PENDING/WIN/LOSS filter row — the outcome
@@ -699,7 +717,7 @@ describe('Modal sequential trade navigation', () => {
     );
 
     // Open first trade
-    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    fireEvent.click(await screen.findByText('EUR/USD OTC'));
     expect(await screen.findByText('Trade 1 of 3')).toBeInTheDocument();
     expect(screen.getAllByText('EUR/USD OTC').length).toBeGreaterThan(0);
 
@@ -752,7 +770,7 @@ describe('Modal sequential trade navigation', () => {
       />
     );
 
-    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    fireEvent.click(await screen.findByText('EUR/USD OTC'));
     expect(await screen.findByText('Trade 1 of 2')).toBeInTheDocument();
 
     // Press ArrowRight on window
@@ -798,7 +816,7 @@ describe('Modal sequential trade navigation', () => {
       />
     );
 
-    fireEvent.click(screen.getByText('EUR/USD OTC'));
+    fireEvent.click(await screen.findByText('EUR/USD OTC'));
     fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
 
     const notesInput = await screen.findByLabelText('Journal notes');
