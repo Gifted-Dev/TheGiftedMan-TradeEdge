@@ -21,7 +21,11 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | H | Cooldown email notifications | API | existing |
 | 1 | Modal sequential trade navigation | Slice 1 | done |
 | 2 | Journal list pagination & page sizing | Slice 1 | done |
-| 3 | Journal search & quick pair filter | Slice 1 | planned |
+| 3 | Journal search & quick pair filter | Slice 1 | in-progress |
+| 4 | Masaniello money management style | Slice 2 | in-progress |
+| 5 | Masaniello daily goals & session counter | Slice 2 | planned |
+| 6 | Masaniello settings recommender | Slice 2 | planned |
+| 7 | Settings page reorganization | Slice 3 | done |
 
 ## Existing features
 
@@ -85,10 +89,58 @@ Paginate the trade card list into configurable page sizes so large journal histo
 - [x] Test it: `/test journal list pagination`
 Spec [0002](../specs/0002-journal-list-pagination/index.md) · code in `src/App.js`
 
-### 3. Journal search & quick pair filter · needs a decision
+### 3. Journal search & quick pair filter · in-progress
 Fast keyword search on notes and quick pair filter dropdown to find specific trades without manual scrolling.
 **Done when:** entering text in the search input filters trades by pair or note keywords instantly, and selecting a pair narrows the list to trades on that asset.
-- [ ] Design it (spec): `/architect journal search & quick pair filter`
+- [x] Design it (spec): `/architect journal search & quick pair filter`
+- [ ] Build it: `/develop journal search & quick pair filter`
+   - [ ] Search thread: helpers, `search` state, filter step, input row, page reset (AC-1, AC-4, AC-5)
+   - [ ] Pair filter: derived options with counts, select, stale pair reset (AC-2, AC-3, AC-4, AC-5, AC-6)
+   - [ ] Clear button and empty state (AC-7, AC-8)
+- [ ] Verify it: `/check verify journal search & quick pair filter`
+- [ ] Test it: `/test journal search & quick pair filter`
+Spec [0003](../specs/0003-journal-search-and-pair-filter.md) · code in `src/App.js`
+
+## Slice 2: Masaniello money management (Wealth Warriors style)
+
+### 4. Masaniello money management style · in-progress
+Add a fourth Money Management Style where you pick how many wins you need (K) out of a total number of trades (N), and every stake is sized so that hitting K wins reaches the session target. It works next to Fixed Risk %, Anti-Martingale, and Profit Lock.
+**Done when:** you can select Masaniello per mode, set initial capital, total trades, win trades, and payout %, and see the minimum capital, required win rate, capital final, account gain, win profit, stop loss, and max loss limit. During a session each trade shows its computed stake, return, and running balance; the session ends itself once K wins or N minus K plus 1 losses are reached; and events won and lost are tracked.
+- [x] Design it (spec): `/architect masaniello money management style`
+- [x] Build it: `/develop masaniello money management style`
+   - [x] Thin thread: pure engine, style option, whitelists, snapshot, dispatchers, one cycle end to end (AC-1, AC-5, AC-6, AC-8, AC-9, AC-12, AC-20)
+   - [x] Integration: escalating call sites, replay and corrections, logging guards (AC-9, AC-11, AC-14 to AC-19)
+   - [x] Surfaces: Quick Log rows, settings validation and summary, start gate, events won and lost (AC-2, AC-3, AC-4, AC-7, AC-10)
+   - [x] Daily lock and assistant knowledge for four styles (AC-11, AC-13)
+- [ ] Verify it: `/check verify masaniello money management style`
+- [x] Test it: `/test masaniello money management style`
+Spec [0004](../specs/0004-masaniello-money-management-style/index.md) · code in `src/App.js`
+
+### 5. Masaniello daily goals & session counter · needs a decision
+Track how many Masaniello sessions you have run today and how many more you need to hit a daily profit goal, with the alert and auto options from the tool.
+**Done when:** you can set a daily profit target (% or $) and see sessions required, projected account gain, and capital final. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback.
+- [ ] Design it (spec): `/architect masaniello daily goals & session counter`
+
+### 6. Masaniello settings recommender · needs a decision
+Suggest the wins and total trades setting that fits you, based on your overall win rate from the journal and your current account balance.
+**Done when:** with Masaniello selected, you see a recommended K of N (plus a short reason), using only configurations whose minimum capital fits your balance and whose required win rate sits safely below your real win rate. One click applies it, and too little trade history shows a clear "not enough data" state instead of a guess.
+- [ ] Design it (spec): `/architect masaniello settings recommender`
+
+## Slice 3: Settings clarity
+
+### 7. Settings page reorganization · done
+The Settings page grew into one long stack of cards with repeated controls and long explainer text. Regroup it into clear sections so you can find a setting fast and see each setting only once.
+**Done when:** Settings is split into a small set of named sections (for example Account, Money management, Session rules, Strategies, AI, Danger zone) you can jump between; every setting appears in exactly one place (no duplicate or two way synced selectors, no repeated mode notes); long help text is short and sits beside the field it explains; the active account mode is clear; one Save behavior is obvious; and every setting that works today still works.
+- [x] Design it (spec): `/architect settings page reorganization`
+- [x] Build it: `/develop settings page reorganization`
+   - [x] Thin thread: sticky mode badge, six tabs, one Save bar with dirty and Discard, one real save end to end (AC-1, AC-2, AC-4, AC-5, AC-6, AC-12)
+   - [x] Draft only saving: remove instant writes, restore settings on failed save, calculator and strategy inputs out of the draft, reset with balances (AC-4, AC-5, AC-6, AC-14)
+   - [x] Regroup: one money style picker, Masaniello hides base stake cards, Session rules and Alerts regrouped (AC-3, AC-8, AC-9)
+   - [x] Help text and Masaniello hint: short lines, detail in InfoTip, repeated notes removed (AC-2, AC-10, AC-11)
+   - [x] Leave guard, ARIA tabs and phone width pass (AC-7, AC-13)
+- [ ] Verify it: `/check verify settings page reorganization`
+- [x] Test it: `/test settings page reorganization`
+Spec [0005](../specs/0005-settings-page-reorganization/index.md) · code in `src/App.js` (`Cfg`, `MasanielloSettings`)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
