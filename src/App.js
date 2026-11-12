@@ -8358,7 +8358,7 @@ function Login({onBack}){
     e.preventDefault();
     setBusy(true);setErr(null);setMsg(null);
     if(mode==='reset'){
-      const{error}=await supabase.auth.resetPasswordForEmail(email);
+      const{error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo:window.location.origin});
       setBusy(false);
       if(error)setErr(error.message);else setMsg('Password reset email sent — check your inbox.');
       return;
@@ -8429,6 +8429,38 @@ function Login({onBack}){
   );
 }
 
+// ── Set new password (shown after the reset email link: PASSWORD_RECOVERY) ──
+function ResetPassword({onDone}){
+  const[password,setPassword]=useState('');
+  const[err,setErr]=useState(null);
+  const[busy,setBusy]=useState(false);
+  async function submit(e){
+    e.preventDefault();
+    setBusy(true);setErr(null);
+    const{error}=await supabase.auth.updateUser({password});
+    setBusy(false);
+    if(error)setErr(error.message);else onDone();
+  }
+  return(
+    <div className="login-wrap">
+      <div className="login-card">
+        <div className="login-header">
+          <div className="login-title">TheGiftedMan Trading Tool</div>
+          <div className="login-subtitle">Set a new password</div>
+        </div>
+        <form onSubmit={submit} className="login-form">
+          <div className="login-field">
+            <label className="login-label">New password</label>
+            <input className="login-input" type="password" required minLength={6} placeholder="Min 6 characters" value={password} onChange={e=>setPassword(e.target.value)}/>
+          </div>
+          {err&&<div className="login-error">{err}</div>}
+          <button className="login-btn" type="submit" disabled={busy}>{busy?'Please wait...':'Update password'}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Email confirmation landing (/auth/confirmed) ────────────────────────────
 // Supabase's confirmation link redirects here (via emailRedirectTo at signUp
 // time + this path added to the project's Redirect URLs allow-list — see
@@ -8491,6 +8523,7 @@ function EmailConfirmed({onLogin}){
 export default function App(){
   const[authUser,setAuthUser]=useState(null);
   const[authLoading,setAuthLoading]=useState(true);
+  const[recovering,setRecovering]=useState(false);
   const[loading,setLoading]=useState(true);
   const[settings,setSettings]=useState(null);
   const[trades,setTrades]=useState([]);
@@ -8532,6 +8565,7 @@ export default function App(){
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{setAuthUser(session?.user||null);setAuthLoading(false);}).catch(()=>setAuthLoading(false));
     const{data:sub}=supabase.auth.onAuthStateChange((_e,session)=>{
+      if(_e==='PASSWORD_RECOVERY')setRecovering(true);
       const next=session?.user||null;
       setAuthUser(prev=>prev?.id===next?.id?prev:next);
     });
@@ -8925,6 +8959,7 @@ export default function App(){
   if(window.location.pathname==='/auth/confirmed'){
     return<EmailConfirmed onLogin={()=>{window.history.replaceState({},'','/');setPage('login');}}/>;
   }
+  if(recovering&&authUser)return<ResetPassword onDone={()=>setRecovering(false)}/>;
   if(!authUser)return page==='login'?<Login onBack={()=>setPage('landing')}/>:<Landing onLogin={()=>setPage('login')}/>;
   if(loading)return<Loading/>;
   if(!settings?.setupComplete)return<Setup onDone={saveSettings}/>;
