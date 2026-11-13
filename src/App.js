@@ -291,6 +291,15 @@ function toSettingsRow(userId,s){
       msCapitalDemo:s.msCapitalDemo??null,msCapitalReal:s.msCapitalReal??null,msTotalTradesDemo:s.msTotalTradesDemo,msTotalTradesReal:s.msTotalTradesReal,
       msWinTradesDemo:s.msWinTradesDemo,msWinTradesReal:s.msWinTradesReal,msPayoutPctDemo:s.msPayoutPctDemo,msPayoutPctReal:s.msPayoutPctReal,
       msStopLossPctDemo:s.msStopLossPctDemo,msStopLossPctReal:s.msStopLossPctReal,
+      msTargetValueDemo:s.msTargetValueDemo??null,msTargetValueReal:s.msTargetValueReal??null,
+      msTargetUnitDemo:s.msTargetUnitDemo,msTargetUnitReal:s.msTargetUnitReal,
+      msTargetDollarsDemo:s.msTargetDollarsDemo??null,msTargetDollarsReal:s.msTargetDollarsReal??null,
+      msTargetSetAtDemo:s.msTargetSetAtDemo??null,msTargetSetAtReal:s.msTargetSetAtReal??null,
+      msAutoCopyBalanceDemo:s.msAutoCopyBalanceDemo,msAutoCopyBalanceReal:s.msAutoCopyBalanceReal,
+      msAlertSessionEndDemo:s.msAlertSessionEndDemo,msAlertSessionEndReal:s.msAlertSessionEndReal,
+      msAlertTargetReachedDemo:s.msAlertTargetReachedDemo,msAlertTargetReachedReal:s.msAlertTargetReachedReal,
+      msAlertStopLossDemo:s.msAlertStopLossDemo,msAlertStopLossReal:s.msAlertStopLossReal,
+      msStopLossEndsDemo:s.msStopLossEndsDemo,msStopLossEndsReal:s.msStopLossEndsReal,
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
@@ -1065,8 +1074,9 @@ function isDailyCircuitBroken(trades,mode){
 // loss was a mismatch. ss.sessions is already today-only, same assumption
 // every other today-scoped read in this file makes — no extra date filter.
 const MAX_AM_PL_LOSS_TARGET_SESSIONS = 2;
-function amPlLossTargetSessionCount(ss,mode){
-  return(ss?.sessions||[]).filter(s=>s.accountMode===mode&&(s.endReason==='AM_LOSS_TARGET'||s.endReason==='PL_LOSS_TARGET'||s.endReason==='MS_LOSS_LIMIT')).length;
+export function amPlLossTargetSessionCount(ss,mode){
+  // Masaniello loss limits do not count (spec 0006 AC-12).
+  return(ss?.sessions||[]).filter(s=>s.accountMode===mode&&(s.endReason==='AM_LOSS_TARGET'||s.endReason==='PL_LOSS_TARGET')).length;
 }
 function isAmPlDailyLocked(ss,mode){
   return amPlLossTargetSessionCount(ss,mode)>=MAX_AM_PL_LOSS_TARGET_SESSIONS;
@@ -1554,7 +1564,7 @@ function plStakeCaption(session, style) {
 // calling both unconditionally and taking whichever fires is safe — at
 // most one of the two can ever return non-null for a given session.
 function checkEscalatingSessionEnd(session, mode, settings, now = Date.now()) {
-  return checkAntiMartingaleSessionEnd(session, mode, settings, now) ?? checkProfitLockSessionEnd(session, mode, settings, now) ?? checkMasanielloSessionEnd(session);
+  return checkAntiMartingaleSessionEnd(session, mode, settings, now) ?? checkProfitLockSessionEnd(session, mode, settings, now) ?? checkMasanielloSessionEnd(session, settings, mode);
 }
 // Advances whichever engine is active, and returns the update pre-keyed to
 // the right session fields (amStreak/amNextStake vs plStreak/plNextStake)
@@ -1627,10 +1637,17 @@ export function advanceMasaniello(session, outcome) {
   if (msWins >= session.msK || msLosses >= session.msN - session.msK + 1) return { msWins, msLosses };
   return { msWins: msWins + (outcome === 'WIN' ? 1 : 0), msLosses: msLosses + (outcome === 'LOSS' ? 1 : 0) };
 }
-export function checkMasanielloSessionEnd(session) {
+// Dollar line where a cycle's loss counts as hitting Stop Loss (current Stop Loss %, not snapshotted).
+export function msStopLossHit(session, settings, mode) {
+  const pct = parseFloat(settings?.[`msStopLossPct${msModeKey(mode)}`]);
+  const line = (session.msCapital || 0) * (Number.isFinite(pct) ? pct : 100) / 100;
+  return line > 0 && -(session.sPnl || 0) >= line - 1e-9;
+}
+export function checkMasanielloSessionEnd(session, settings, mode) {
   if (!session?.isActive || session.msN == null) return null;
   if ((session.msWins || 0) >= session.msK) return 'MS_TARGET';
   if ((session.msLosses || 0) >= session.msN - session.msK + 1) return 'MS_LOSS_LIMIT';
+  if (getMsStopLossEndsForMode(settings, mode) && msStopLossHit(session, settings, mode)) return 'MS_STOP_LOSS';
   return null;
 }
 // Recount from the session's resolved trades (corrections, deletes, replay).
@@ -1661,9 +1678,179 @@ function getMsPayoutPctForMode(settings, mode) {
   return Number.isFinite(v) && v >= 1 && v <= 100 ? v : PAYOUT * 100;
 }
 // null/unset means "use the balance at the moment the cycle starts".
-function getMsCapitalForMode(settings, mode, balance) {
+// Auto copy balance (spec 0006 AC-11) ignores msCapital and always follows it.
+export function getMsCapitalForMode(settings, mode, balance) {
+  if (getMsAutoCopyBalanceForMode(settings, mode)) return balance;
   const v = parseFloat(settings?.[`msCapital${mode === 'REAL' ? 'Real' : 'Demo'}`]);
   return Number.isFinite(v) && v > 0 ? v : balance;
+}
+// ── Masaniello profit target (spec 0006) ─────────────────────────────────
+const msModeKey = mode => (mode === 'REAL' ? 'Real' : 'Demo');
+export function getMsTargetDollarsForMode(settings, mode) {
+  const v = settings?.[`msTargetDollars${msModeKey(mode)}`];
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+}
+export function getMsTargetSetAtForMode(settings, mode) {
+  const v = settings?.[`msTargetSetAt${msModeKey(mode)}`];
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+export function getMsAutoCopyBalanceForMode(settings, mode) {
+  return settings?.[`msAutoCopyBalance${msModeKey(mode)}`] === true;
+}
+export function getMsAlertSessionEndForMode(settings, mode) {
+  return settings?.[`msAlertSessionEnd${msModeKey(mode)}`] !== false;
+}
+export function getMsAlertTargetReachedForMode(settings, mode) {
+  return settings?.[`msAlertTargetReached${msModeKey(mode)}`] !== false;
+}
+export function getMsStopLossEndsForMode(settings, mode) {
+  return settings?.[`msStopLossEnds${msModeKey(mode)}`] === true;
+}
+export function getMsAlertStopLossForMode(settings, mode) {
+  return settings?.[`msAlertStopLoss${msModeKey(mode)}`] === true;
+}
+export const MS_MAX_TARGET_SESSIONS = 100;
+// How many winning cycles reach the remaining target (best case: every cycle
+// reaches K wins at the planned payout). Returns {sessions, projectedProfit,
+// projectedGainPct} or {reason: 'reached' | 'below_min' | 'too_many'}.
+export function msSessionsToTarget(targetDollars, profitSoFar, capital, followBalance, balance, N, K, payoutPct) {
+  const remaining = Math.max(0, targetDollars - (profitSoFar || 0));
+  if (remaining <= 1e-9) return { reason: 'reached' };
+  const capitalUsed = followBalance ? balance : capital;
+  const { minCapital } = msPlanSummary(capitalUsed, N, K, payoutPct, balance);
+  if (!(capitalUsed >= minCapital)) return { reason: 'below_min', minCapital };
+  const g = 1 / msTable(N, K, payoutPct)[N][K] - 1;
+  const gain = cum => (balance > 0 ? (cum / balance) * 100 : null);
+  if (followBalance) {
+    let B = balance, cum = 0;
+    for (let i = 1; i <= MS_MAX_TARGET_SESSIONS; i++) {
+      const profit = B * g;
+      cum += profit; B += profit;
+      if (cum >= remaining - 1e-9) return { sessions: i, projectedProfit: cum, projectedGainPct: gain(cum) };
+    }
+    return { reason: 'too_many' };
+  }
+  const per = capitalUsed * g;
+  const S = Math.ceil(remaining / per - 1e-9);
+  if (!(S >= 1) || S > MS_MAX_TARGET_SESSIONS) return { reason: 'too_many' };
+  return { sessions: S, projectedProfit: S * per, projectedGainPct: gain(S * per) };
+}
+// Counted sessions and profit toward the target, derived from stored sessions
+// (spec 0006 AC-7). Counting stops at the first session that reaches the target.
+export function msTargetProgress(sessions, targetDollars, setAt) {
+  const out = { count: 0, profit: 0, reached: false };
+  if (!(targetDollars > 0)) return out;
+  const eligible = (sessions || [])
+    .filter(s => s.msN != null && !s.isActive && s.endTime != null && (setAt == null || s.endTime >= setAt))
+    .sort((a, b) => a.endTime - b.endTime || (a.startTime || 0) - (b.startTime || 0));
+  for (const s of eligible) {
+    out.count += 1;
+    out.profit += s.sPnl || 0;
+    if (out.profit >= targetDollars - 1e-9) { out.reached = true; break; }
+  }
+  return out;
+}
+// One read of earlier-day Masaniello sessions since the target was set.
+export async function loadMsTargetHistory(userId, mode, setAt) {
+  const { data, error } = await supabase.from('sessions').select('*')
+    .eq('user_id', userId).eq('account_mode', mode).eq('is_active', false)
+    .gte('end_time', new Date(setAt).toISOString());
+  if (error) throw error;
+  return (data || []).map(fromSessionRow).filter(s => s.msN != null);
+}
+// Merge history with today's live sessions by id; live wins.
+export function msMergeSessions(history, live) {
+  const byId = new Map((history || []).map(s => [s.id, s]));
+  for (const s of live || []) byId.set(s.id, s);
+  return [...byId.values()];
+}
+// Progress for one mode from its history entry ({status, sessions}) plus live
+// sessions of the day. status is 'ok' | 'loading' | 'error'. null = no target.
+export function msModeProgress(settings, mode, histEntry, liveSessions) {
+  const target = getMsTargetDollarsForMode(settings, mode);
+  if (target == null) return null;
+  const live = (liveSessions || []).filter(s => s.accountMode === mode);
+  const merged = msMergeSessions(histEntry?.sessions, live);
+  return { target, status: histEntry?.status || 'loading', ...msTargetProgress(merged, target, getMsTargetSetAtForMode(settings, mode)) };
+}
+// Decides which alerts to play for one snapshot of today's sessions (spec 0006
+// AC-13 to AC-15). Returns [{title, body, tag}], one chime each. It MUTATES the
+// state it is given (st.alerted, st.stopLossAlerted: Sets; st.prevReached: object)
+// so each alert fires once; the caller keeps st between calls.
+// histFor(mode) gives that mode's {status, sessions} history entry.
+export function msAlertEvents({ prevSessions, sessions, settings, histFor, st }) {
+  const first = prevSessions === null;
+  const label = m => (m === 'REAL' ? 'Real' : 'Demo');
+  const events = [];
+  const justEnded = first ? [] : sessions.filter(s => {
+    if (s.isActive || !s.endTime || st.alerted.has(s.id)) return false;
+    const before = prevSessions.find(p => p.id === s.id);
+    return !before || before.isActive;
+  });
+  // Target reached flips. The previous value is seeded only once that mode's history has resolved.
+  const flipped = {};
+  for (const m of ['DEMO', 'REAL']) {
+    const prog = msModeProgress(settings, m, histFor(m), sessions);
+    if (!prog || prog.status !== 'ok') continue;
+    const key = `${m}:${getMsTargetSetAtForMode(settings, m)}`;
+    const was = st.prevReached[key];
+    st.prevReached[key] = prog.reached;
+    if (was === false && prog.reached && getMsAlertTargetReachedForMode(settings, m)) {
+      flipped[m] = true;
+      events.push({ title: 'Profit target reached', body: `${label(m)} Masaniello profit target reached.`, tag: `ms-target-${m}` });
+    }
+  }
+  justEnded.forEach(s => {
+    st.alerted.add(s.id);
+    if (s.msN != null) {
+      if (flipped[s.accountMode] || !getMsAlertSessionEndForMode(settings, s.accountMode)) return;
+      const what = s.endReason === 'MS_TARGET' ? 'won' : s.endReason === 'MS_LOSS_LIMIT' ? 'lost' : s.endReason === 'MS_STOP_LOSS' ? 'stopped by Stop Loss' : 'ended';
+      events.push({ title: `Masaniello cycle ${what}`, body: `${label(s.accountMode)} Masaniello cycle ${what}.`, tag: `ms-end-${s.id}` });
+      return;
+    }
+    events.push({ title: 'Session locked', body: `${label(s.accountMode)} session ended — ${s.lockReason || 'locked'}.`, tag: `session-lock-${s.id}` });
+  });
+  // Stop Loss line: active cycles only, once per cycle. Not used while Stop Loss ends the cycle.
+  sessions.forEach(s => {
+    if (!s.isActive || s.msN == null || st.stopLossAlerted.has(s.id)) return;
+    if (getMsStopLossEndsForMode(settings, s.accountMode) || !msStopLossHit(s, settings, s.accountMode)) return;
+    st.stopLossAlerted.add(s.id);
+    if (first || !getMsAlertStopLossForMode(settings, s.accountMode)) return;
+    events.push({ title: 'Masaniello stop loss', body: `${label(s.accountMode)} cycle loss reached the Stop Loss line.`, tag: `ms-stop-${s.id}` });
+  });
+  return events;
+}
+// Dashboard counter text for a Masaniello mode (spec 0006 AC-8); null when the
+// mode is not on Masaniello so the caller keeps the existing label.
+export function msCounterLabel(settings, mode, balance, histEntry, liveSessions) {
+  if (getMoneyMgmtStyleForMode(settings, mode) !== 'MASANIELLO') return null;
+  const live = (liveSessions || []).filter(s => s.accountMode === mode);
+  const prog = msModeProgress(settings, mode, histEntry, liveSessions);
+  if (!prog) return `Session ${live.length}`;
+  const active = live.some(s => s.isActive && s.msN != null);
+  const x = prog.count + (active ? 1 : 0);
+  if (prog.reached) return `Target reached · ${prog.count} session${prog.count === 1 ? '' : 's'}`;
+  if (prog.status !== 'ok') return `Session ${x}`;
+  const N = getMsTotalTradesForMode(settings, mode), K = getMsWinTradesForMode(settings, mode), payout = getMsPayoutPctForMode(settings, mode);
+  const follow = getMsAutoCopyBalanceForMode(settings, mode) || !(parseFloat(settings?.[`msCapital${msModeKey(mode)}`]) > 0);
+  const r = msSessionsToTarget(prog.target, prog.profit, getMsCapitalForMode(settings, mode, balance), follow, balance, N, K, payout);
+  if (r.reason === 'below_min') return `Session ${x} · capital below min`;
+  if (r.reason === 'too_many') return `Session ${x}/${MS_MAX_TARGET_SESSIONS}+`;
+  if (r.reason === 'reached') return `Target reached · ${prog.count} session${prog.count === 1 ? '' : 's'}`;
+  return `Session ${x}/${prog.count + r.sessions}`;
+}
+// Plain-language answer line for the target (spec 0006 AC-3, AC-6).
+// Returns {text, note, gain} — never blank, never a wrong number.
+export function msTargetAnswer({ targetDollars, progress, capital, followBalance, balance, N, K, payout }) {
+  if (!(targetDollars > 0)) return { text: 'Set a profit target to see how many sessions it takes.' };
+  const r = msSessionsToTarget(targetDollars, progress?.profit || 0, capital, followBalance, balance, N, K, payout);
+  if (r.reason === 'reached') return { text: `Target reached: +$${(progress?.profit || 0).toFixed(2)} in ${progress?.count || 0} session${progress?.count === 1 ? '' : 's'}.` };
+  if (r.reason === 'below_min') return { text: followBalance ? `Balance is below the $${r.minCapital.toFixed(2)} minimum for ${K} of ${N}.` : `Raise Capital to at least $${r.minCapital.toFixed(2)} first.` };
+  if (r.reason === 'too_many') return { text: `More than ${MS_MAX_TARGET_SESSIONS} sessions at this plan. Lower the target or change N and K.` };
+  return {
+    text: `About ${r.sessions} session${r.sessions === 1 ? '' : 's'} to reach $${targetDollars.toFixed(2)}`,
+    gain: r.projectedGainPct, note: 'Assumes every cycle reaches K wins',
+  };
 }
 // AC-4 / AC-17 start gate; null means OK to start.
 function msStartBlockReason(settings, mode, balance) {
@@ -3708,7 +3895,7 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                 <Lock size={17} style={{color:'var(--text-danger)'}}/>
               </div>
               <div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:4}}>Day locked</div>
-              <div style={{fontSize:12,color:'var(--text-muted)'}}>{isAmPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock/Masaniello locked until tomorrow.`:`${MAX_DL} losses recorded today. Trading resumes tomorrow.`}</div>
+              <div style={{fontSize:12,color:'var(--text-muted)'}}>{isAmPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock locked until tomorrow.`:`${MAX_DL} losses recorded today. Trading resumes tomorrow.`}</div>
             </div>
           ):active?(
             <div style={{flex:1}}>
@@ -4738,7 +4925,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
             <button style={{...btn('suc'),flex:1}} onClick={()=>recordPA()} disabled={dailyLocked||strictLocked}>Create journal entry</button>
             <button style={btn()} onClick={()=>setPA(null)}>Discard</button>
           </div>
-          {dailyLocked&&<div style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>{amPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock/Masaniello locked until tomorrow.`:'Daily loss limit reached — resume tomorrow.'}</div>}
+          {dailyLocked&&<div style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>{amPlLockCause?`2 loss-target sessions today for ${mode==='REAL'?'Real':'Demo'} — Anti-Martingale/Profit Lock locked until tomorrow.`:'Daily loss limit reached — resume tomorrow.'}</div>}
           {!dailyLocked&&strictLocked&&(
             <div style={{marginTop:8}}>
               <div style={{fontSize:12,color:'var(--text-danger)',marginBottom:6}}>{lk.reason} — Strict Session Locking is on for this session.</div>
@@ -5725,6 +5912,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
     :sessionForMode?.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached'
     :sessionForMode?.endReason==='MS_TARGET'?`target reached: ${sessionForMode.msK} wins`
     :sessionForMode?.endReason==='MS_LOSS_LIMIT'?`loss limit reached: ${sessionForMode.msN-sessionForMode.msK+1} losses`
+    :sessionForMode?.endReason==='MS_STOP_LOSS'?'stopped by Stop Loss'
     :sessionForMode?.endReason==='MS_MANUAL'?'ended manually'
     :'max trades reached for this session';
 
@@ -7418,8 +7606,28 @@ const MM_TOOLTIPS={
 };
 // Masaniello input validation (spec 0004 AC-2). Values in `f` are the raw
 // input strings; an errored field is never saved (see Cfg's save()).
-export function msFieldErrors(f,modeKey){
+// Profit target in dollars from the typed value and unit; null when blank.
+// `%` is a share of the mode balance at the moment of saving (spec 0006 AC-2).
+export function msTargetToDollars(value,unit,bal){
+  if(value==null||value==='')return null;
+  const v=Number(value);
+  return unit==='%'?Math.round(v/100*bal*100)/100:v;
+}
+// `saved` (settings) is optional: an unchanged saved % target keeps its stored
+// dollars, so the balance based checks are skipped for it (spec 0006 AC-2).
+export function msFieldErrors(f,modeKey,bal,saved){
   const e={},raw=k=>f?.[`${k}${modeKey}`];
+  const tv=raw('msTargetValue'),tu=raw('msTargetUnit')==='%'?'%':'$';
+  if(!(tv==null||tv==='')){
+    const v=Number(tv);
+    const unchanged=saved&&saved[`msTargetValue${modeKey}`]===v&&(saved[`msTargetUnit${modeKey}`]??'$')===tu&&saved[`msTargetDollars${modeKey}`]!=null;
+    if(!Number.isFinite(v))e.msTargetValue='Enter a number';
+    else if(tu==='$'){if(!(v>=0.01&&v<=1000000))e.msTargetValue='Dollar amount from 0.01 to 1,000,000';}
+    else if(!(v>=0.1&&v<=1000))e.msTargetValue='Percent from 0.1 to 1000';
+    else if(unchanged){/* stored dollars stay */}
+    else if(!(bal>0))e.msTargetValue='Needs a balance above 0 to turn a percent into dollars';
+    else if(msTargetToDollars(v,'%',bal)<0.01)e.msTargetValue='That percent is under $0.01 on your balance';
+  }
   const isBlank=v=>v==null||v==='';
   const N=isBlank(raw('msTotalTrades'))?10:Number(raw('msTotalTrades'));
   if(!msIntInRange(N,3,20))e.msTotalTrades='Whole number from 3 to 20';
@@ -7434,8 +7642,10 @@ export function msFieldErrors(f,modeKey){
   if(!isBlank(c)&&!(Number.isFinite(Number(c))&&Number(c)>0))e.msCapital='Positive dollar amount, or empty to use your balance';
   return e;
 }
-function MasanielloSettings({f,set,modeKey,bal,sessions}){
-  const errs=msFieldErrors(f,modeKey);
+function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
+  const errs=msFieldErrors(f,modeKey,bal,settings);
+  const mode=modeKey==='Real'?'REAL':'DEMO';
+  const autoCopy=f[`msAutoCopyBalance${modeKey}`]===true;
   const field=(k,label,props)=>(
     <div>
       <label style={lbl} htmlFor={`${k}${modeKey}`}>{label}</label>
@@ -7444,14 +7654,35 @@ function MasanielloSettings({f,set,modeKey,bal,sessions}){
       {errs[k]&&<div id={`${k}${modeKey}-err`} style={{fontSize:11,color:'var(--text-danger)',marginTop:2}}>{errs[k]}</div>}
     </div>
   );
+  const toggle=(k,label,hint)=>(
+    <label style={{display:'flex',alignItems:'center',gap:8,fontSize:12,color:'var(--text-secondary)',cursor:'pointer'}}>
+      <input type="checkbox" checked={f[`${k}${modeKey}`]===true} onChange={e=>set(`${k}${modeKey}`,e.target.checked)}/>
+      <span>{label}{hint&&<InfoTip text={hint}/>}</span>
+    </label>
+  );
   const valid=!Object.keys(errs).length;
   const num=(k,d)=>{const v=f[`${k}${modeKey}`];return v==null||v===''?d:Number(v);};
-  const capital=num('msCapital',bal);
+  const followBalance=autoCopy||f[`msCapital${modeKey}`]==null||f[`msCapital${modeKey}`]==='';
+  const capital=autoCopy?bal:num('msCapital',bal);
   const N=num('msTotalTrades',10),K=num('msWinTrades',6),payout=num('msPayoutPct',92),stopLossPct=num('msStopLossPct',100);
   const plan=valid&&capital>0?msPlanSummary(capital,N,K,payout,bal,stopLossPct):null;
-  const mode=modeKey==='Real'?'REAL':'DEMO';
   const won=sessions.filter(s=>s.accountMode===mode&&s.endReason==='MS_TARGET').length;
-  const lost=sessions.filter(s=>s.accountMode===mode&&s.endReason==='MS_LOSS_LIMIT').length;
+  const lost=sessions.filter(s=>s.accountMode===mode&&(s.endReason==='MS_LOSS_LIMIT'||s.endReason==='MS_STOP_LOSS')).length;
+  const stopEnds=f[`msStopLossEnds${modeKey}`]===true;
+  // Target: a draft that differs from the saved one restarts the count on save.
+  const unit=f[`msTargetUnit${modeKey}`]==='%'?'%':'$';
+  const tv=f[`msTargetValue${modeKey}`];
+  const hasTarget=!(tv==null||tv==='');
+  const savedValue=settings?.[`msTargetValue${modeKey}`],savedUnit=settings?.[`msTargetUnit${modeKey}`]==='%'?'%':'$';
+  const unchanged=hasTarget&&savedValue!=null&&Number(tv)===Number(savedValue)&&unit===savedUnit&&getMsTargetDollarsForMode(settings,mode)!=null;
+  const targetDollars=!hasTarget||errs.msTargetValue?null:unchanged?getMsTargetDollarsForMode(settings,mode):msTargetToDollars(tv,unit,bal);
+  const saved=msModeProgress(settings,mode,msHist?.[`${mode}:${getMsTargetSetAtForMode(settings,mode)}`],sessions);
+  const progress=unchanged&&saved?saved:{count:0,profit:0};
+  // A saved target counts earlier sessions too, so no count while that read is pending or failed (AC-6).
+  const histPending=unchanged&&saved&&saved.status!=='ok';
+  const answer=errs.msTargetValue||!valid?null:histPending
+    ?{text:saved.status==='error'?'Could not read your earlier sessions, so the session count is hidden.':'Reading your earlier sessions…'}
+    :msTargetAnswer({targetDollars,progress,capital,followBalance,balance:bal,N,K,payout});
   return(
     <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
       <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
@@ -7459,11 +7690,37 @@ function MasanielloSettings({f,set,modeKey,bal,sessions}){
         <InfoTip text="Pick how many wins you need (K) out of a total number of trades (N). Every stake is sized so reaching K wins lands the cycle on its target. The cycle ends itself on K wins or on N minus K plus 1 losses, which loses the cycle's capital. Changes apply from the next cycle."/>
       </div>
       <div className="grid-2">
-        {field('msCapital','Capital ($)',{min:'0.01',step:'0.01',placeholder:`${bal.toFixed(2)} (current balance)`})}
+        {field('msCapital','Capital ($)',{min:'0.01',step:'0.01',placeholder:autoCopy?'Following your balance':`${bal.toFixed(2)} (current balance)`,disabled:autoCopy})}
         {field('msTotalTrades','Total trades (N)',{min:'3',max:'20',step:'1',placeholder:'10'})}
         {field('msWinTrades','Win trades (K)',{min:'1',step:'1',placeholder:'6'})}
         {field('msPayoutPct','Payout %',{min:'1',max:'100',step:'1',placeholder:'92'})}
         {field('msStopLossPct','Stop Loss %',{min:'1',max:'100',step:'1',placeholder:'100'})}
+      </div>
+      {autoCopy&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Following your balance</div>}
+      <div style={{marginTop:12}}>
+        {toggle('msStopLossEnds','Stop Loss ends cycle','Off: Stop Loss % is display and alert only. On: the cycle ends when its loss reaches the Stop Loss line.')}
+        {stopEnds&&plan&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`Cycle ends at a loss of ${f$(plan.stopLoss)}`}</div>}
+      </div>
+      <div style={{marginTop:12}}>
+        {toggle('msAutoCopyBalance','Auto copy balance','Each new cycle takes your current balance as its capital and ignores the Capital field.')}
+      </div>
+      <div style={{marginTop:12}}>
+        <label style={lbl} htmlFor={`msTargetValue${modeKey}`}>Profit target</label>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <input id={`msTargetValue${modeKey}`} style={errs.msTargetValue?{...inp,borderColor:'var(--border-danger)'}:inp} type="number" min="0" step="0.01" placeholder="No target"
+            value={tv??''} onChange={e=>set(`msTargetValue${modeKey}`,e.target.value)} aria-invalid={!!errs.msTargetValue} aria-describedby={errs.msTargetValue?`msTargetValue${modeKey}-err`:undefined}/>
+          {['$','%'].map(u=>(
+            <button key={u} type="button" aria-pressed={unit===u} style={{...btn(unit===u?'pri':'def'),minWidth:36}} onClick={()=>{if(hasTarget)set(`msTargetUnit${modeKey}`,u);}}>{u}</button>
+          ))}
+        </div>
+        {errs.msTargetValue&&<div id={`msTargetValue${modeKey}-err`} style={{fontSize:11,color:'var(--text-danger)',marginTop:2}}>{errs.msTargetValue}</div>}
+        {unit==='%'&&hasTarget&&!errs.msTargetValue&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`= ${f$(targetDollars)}`}{unchanged?'':' (set when you save)'}</div>}
+        {answer&&(
+          <div style={{marginTop:6}} aria-live="polite">
+            <div style={{fontSize:13,color:'var(--text-primary)'}}>{answer.text}{answer.gain!=null&&` · Projected account gain +${fp(answer.gain)}`}</div>
+            {answer.note&&<div style={{fontSize:11,color:'var(--text-muted)'}}>{answer.note}</div>}
+          </div>
+        )}
       </div>
       {plan&&(
         <div style={{marginTop:12}}>
@@ -7479,6 +7736,12 @@ function MasanielloSettings({f,set,modeKey,bal,sessions}){
           <p style={{fontSize:11,color:'var(--text-muted)'}}>Assumes every trade pays the planned payout.</p>
         </div>
       )}
+      <div style={{marginTop:12,display:'grid',gap:6}}>
+        <label style={lbl}>Alerts</label>
+        {toggle('msAlertSessionEnd','Cycle end alert')}
+        {toggle('msAlertTargetReached','Target reached alert')}
+        {toggle('msAlertStopLoss','Stop loss alert','Alerts once per cycle when its loss reaches the Stop Loss line. Only used while Stop Loss ends cycle is off.')}
+      </div>
       <div style={{marginTop:12}}>
         <label style={lbl}>Today's events</label>
         <div className="grid-2">
@@ -7532,9 +7795,16 @@ const settingsEq=(a,b)=>{
     plBreakevenRecoveryDemo:settings?.plBreakevenRecoveryDemo ?? false,plBreakevenRecoveryReal:settings?.plBreakevenRecoveryReal ?? false,
     mbEnabledDemo:settings?.mbEnabledDemo ?? false,mbEnabledReal:settings?.mbEnabledReal ?? false,
     mbDemotionBufferPctDemo:settings?.mbDemotionBufferPctDemo ?? MB_DEMOTION_BUFFER_PCT_DEFAULT,mbDemotionBufferPctReal:settings?.mbDemotionBufferPctReal ?? MB_DEMOTION_BUFFER_PCT_DEFAULT,
+    msTargetValueDemo:settings?.msTargetValueDemo ?? '',msTargetValueReal:settings?.msTargetValueReal ?? '',
+    msTargetUnitDemo:settings?.msTargetUnitDemo ?? '$',msTargetUnitReal:settings?.msTargetUnitReal ?? '$',
+    msAutoCopyBalanceDemo:settings?.msAutoCopyBalanceDemo ?? false,msAutoCopyBalanceReal:settings?.msAutoCopyBalanceReal ?? false,
+    msAlertSessionEndDemo:settings?.msAlertSessionEndDemo ?? true,msAlertSessionEndReal:settings?.msAlertSessionEndReal ?? true,
+    msAlertTargetReachedDemo:settings?.msAlertTargetReachedDemo ?? true,msAlertTargetReachedReal:settings?.msAlertTargetReachedReal ?? true,
+    msAlertStopLossDemo:settings?.msAlertStopLossDemo ?? false,msAlertStopLossReal:settings?.msAlertStopLossReal ?? false,
+    msStopLossEndsDemo:settings?.msStopLossEndsDemo ?? false,msStopLossEndsReal:settings?.msStopLossEndsReal ?? false,
   });}
 
-export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange}){
+export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange,msHist}){
   // `f` holds every Demo/Real field at once (storage stays per-mode); the
   // sidebar mode only picks which slice renders. Never re-seeded from props.
   const modeKey=mode==='REAL'?'Real':'Demo';
@@ -7579,12 +7849,34 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
   function msCleaned(v){
     const out={...v};
     for(const mk of['Demo','Real']){
-      const errs=msFieldErrors(v,mk);
+      const bal=balForMode(settings,trades,wds,mk==='Real'?'REAL':'DEMO');
+      const errs=msFieldErrors(v,mk,bal,settings);
       for(const k of['msCapital','msTotalTrades','msWinTrades','msPayoutPct','msStopLossPct']){
         const key=`${k}${mk}`;
         if(errs[k])out[key]=settings?.[key]??null;
         else if(v[key]===''||v[key]==null)out[key]=k==='msCapital'?null:v[key];
         else out[key]=Number(v[key]);
+      }
+      // Profit target (spec 0006 AC-2, AC-10). An errored target keeps its last
+      // saved values. Dollars are recomputed only when the value or unit changed;
+      // msTargetSetAt moves only when the stored dollar goal changes.
+      const tk=n=>`${n}${mk}`;
+      const unit=v[tk('msTargetUnit')]==='%'?'%':'$';
+      out[tk('msTargetUnit')]=unit;
+      if(errs.msTargetValue){
+        out[tk('msTargetValue')]=settings?.[tk('msTargetValue')]??null;
+        out[tk('msTargetUnit')]=settings?.[tk('msTargetUnit')]??'$';
+        out[tk('msTargetDollars')]=settings?.[tk('msTargetDollars')]??null;
+        out[tk('msTargetSetAt')]=settings?.[tk('msTargetSetAt')]??null;
+      }else if(v[tk('msTargetValue')]===''||v[tk('msTargetValue')]==null){
+        out[tk('msTargetValue')]=null;out[tk('msTargetDollars')]=null;out[tk('msTargetSetAt')]=null;
+      }else{
+        const val=Number(v[tk('msTargetValue')]);
+        const sameInput=settings?.[tk('msTargetValue')]===val&&(settings?.[tk('msTargetUnit')]??'$')===unit&&settings?.[tk('msTargetDollars')]!=null;
+        const dollars=sameInput?settings[tk('msTargetDollars')]:msTargetToDollars(val,unit,bal);
+        out[tk('msTargetValue')]=val;
+        out[tk('msTargetDollars')]=dollars;
+        out[tk('msTargetSetAt')]=dollars===settings?.[tk('msTargetDollars')]&&settings?.[tk('msTargetSetAt')]!=null?settings[tk('msTargetSetAt')]:Date.now();
       }
     }
     return out;
@@ -7690,8 +7982,9 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
   }
 
   // Save bar text. Masaniello skipped fields show whether clean or dirty (AC-11).
-  const msBad=['Demo','Real'].filter(m=>Object.keys(msFieldErrors(f,m)).length);
-  const msBadN=msBad.reduce((n,m)=>n+Object.keys(msFieldErrors(f,m)).length,0);
+  const msErrCount=m=>Object.keys(msFieldErrors(f,m,balForMode(settings,trades,wds,m==='Real'?'REAL':'DEMO'),settings)).length;
+  const msBad=['Demo','Real'].filter(m=>msErrCount(m));
+  const msBadN=msBad.reduce((n,m)=>n+msErrCount(m),0);
   const styleKey=`moneyMgmtStyle${modeKey}`;
   const hint={fontSize:11,color:'var(--text-muted)',marginTop:4};
 
@@ -7893,7 +8186,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
             </div>
           )}
           {isMasaniello&&(
-            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode)} sessions={ss?.sessions||[]}/>
+            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode)} sessions={ss?.sessions||[]} settings={settings} msHist={msHist}/>
           )}
 
           {!isMasaniello&&(
@@ -8762,6 +9055,42 @@ export default function App(){
 
   const bal=settings?balForMode(settings,trades,wds,mode):0;
   const todaySS=settings?getToday(ss):null;
+
+  // Earlier-day Masaniello sessions for each mode that has a profit target
+  // (spec 0006). Cached under `${mode}:${setAt}`; a changed target gets a new
+  // setAt, so it reloads. Pending or failed reads leave the counter on "Session x".
+  const[msHist,setMsHist]=useState({});
+  const msHistRequested=useRef(new Set());
+  const msUserRef=useRef(null);
+  const msToday=todaySS?.date;
+  useEffect(()=>{
+    // A different user in the same tab starts from nothing (history cache and alert state).
+    const uid=authUser?.id??null;
+    if(msUserRef.current!==uid){
+      if(msUserRef.current!==null){
+        setMsHist({});msHistRequested.current=new Set();
+        alertedRef.current=new Set();stopLossAlertedRef.current=new Set();
+        prevSessionsForAlertRef.current=null;prevReachedRef.current={};
+      }
+      msUserRef.current=uid;
+    }
+    if(!settings||!uid)return;
+    for(const m of['DEMO','REAL']){
+      const setAt=getMsTargetSetAtForMode(settings,m);
+      if(getMsTargetDollarsForMode(settings,m)==null||setAt==null)continue;
+      const key=`${m}:${setAt}`;
+      // Re-read when the day changes: after midnight today's live list starts
+      // empty, so sessions ended since the last read must come from storage.
+      const reqKey=`${key}:${msToday}`;
+      if(msHistRequested.current.has(reqKey))continue;
+      msHistRequested.current.add(reqKey);
+      setMsHist(p=>p[key]?{...p,[key]:{...p[key],status:'loading'}}:p);
+      loadMsTargetHistory(uid,m,setAt)
+        .then(sessions=>setMsHist(p=>({...p,[key]:{status:'ok',sessions}})))
+        .catch(e=>{console.error('Masaniello history read failed',e);setMsHist(p=>({...p,[key]:{status:'error',sessions:[]}}));});
+    }
+  },[settings,authUser?.id,msToday]); // eslint-disable-line react-hooks/exhaustive-deps
+  const msCounter=m=>msCounterLabel(settings,m,balForMode(settings,trades,wds,m),msHist[`${m}:${getMsTargetSetAtForMode(settings,m)}`],todaySS?.sessions);
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
   // Lives here (not inside Dashboard) so the <audio> element is never
@@ -8919,28 +9248,29 @@ export default function App(){
   // on file. If the tab is in the background at that moment, also fires an OS
   // desktop notification (visible even when this tab isn't focused/active),
   // since an in-page toast can't be seen in a tab that isn't on screen.
+  // Spec 0006: the first run only seeds the previous state (no alerts for
+  // sessions already ended at load). Masaniello sessions have their own branch:
+  // cycle end, target reached, stop loss, each gated by its per mode toggle.
   const alertedRef=useRef(new Set());
-  const prevSessionsForAlertRef=useRef([]);
+  const stopLossAlertedRef=useRef(new Set());
+  const prevSessionsForAlertRef=useRef(null);
+  const prevReachedRef=useRef({});
   useEffect(()=>{
     if(!todaySS)return;
     const prev=prevSessionsForAlertRef.current;
-    const justEnded=todaySS.sessions.filter(s=>{
-      if(s.isActive||!s.endTime||alertedRef.current.has(s.id))return false;
-      const before=prev.find(p=>p.id===s.id);
-      return !before||before.isActive;
-    });
     prevSessionsForAlertRef.current=todaySS.sessions;
-    justEnded.forEach(s=>{
-      alertedRef.current.add(s.id);
-      if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);
+    const events=msAlertEvents({prevSessions:prev,sessions:todaySS.sessions,settings,
+      histFor:m=>msHist[`${m}:${getMsTargetSetAtForMode(settings,m)}`],
+      st:{alerted:alertedRef.current,stopLossAlerted:stopLossAlertedRef.current,prevReached:prevReachedRef.current}});
+    const chime=()=>{if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);};
+    const notify=(title,body,tag)=>{
       if(document.hidden&&settings?.desktopAlertOn!==false&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
-        try{
-          new Notification('Session locked',{body:`${s.accountMode==='REAL'?'Real':'Demo'} session ended — ${s.lockReason||'locked'}.`,tag:`session-lock-${s.id}`});
-        }catch{}
+        try{new Notification(title,{body,tag});}catch{}
       }
-    });
+    };
+    events.forEach(e=>{chime();notify(e.title,e.body,e.tag);});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[todaySS]);
+  },[todaySS,msHist,settings]);
 
   if(authLoading)return<Loading/>;
   if(!isSupabaseConfigured)return(
@@ -9038,7 +9368,7 @@ export default function App(){
                 <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-3">
                   {todaySS.perMode?.[mode]?.isDailyLocked
                     ?<><Lock size={12} style={{color:'var(--text-danger)'}}/><span style={{color:'var(--text-danger)'}}>Day locked</span></>
-                    :<>Session {todaySS.sessions.filter(s=>s.accountMode===mode).length}/{settings.sessionsPerDay}</>}
+                    :<>{msCounter(mode)??`Session ${todaySS.sessions.filter(s=>s.accountMode===mode).length}/${settings.sessionsPerDay}`}</>}
                 </div>
               )}
             </div>
@@ -9135,7 +9465,7 @@ export default function App(){
                       <div className="mt-1.5 flex items-center gap-1.5 text-xs text-ink-3">
                         {todaySS.perMode?.[mode]?.isDailyLocked
                           ?<><Lock size={12} style={{color:'var(--text-danger)'}}/><span style={{color:'var(--text-danger)'}}>Day locked</span></>
-                          :<>Session {todaySS.sessions.filter(s=>s.accountMode===mode).length}/{settings.sessionsPerDay}</>}
+                          :<>{msCounter(mode)??`Session ${todaySS.sessions.filter(s=>s.accountMode===mode).length}/${settings.sessionsPerDay}`}</>}
                       </div>
                     )}
                   </div>
@@ -9154,7 +9484,7 @@ export default function App(){
             {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} mode={mode} nav={setView}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
             {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
-            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving}/>}
+            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving} msHist={msHist}/>}
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}
