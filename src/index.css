@@ -1313,3 +1313,16 @@ button:active:not(:disabled) { transform: scale(0.98); }
   background: rgba(98, 112, 243, 0.4);
   color: white;
 }
+
+/* Capital tab (spec 0007): visible focus ring on calculator controls and jump chips */
+.cc-ctl:focus-visible, .cc-chip:focus-visible, .cc-link:focus-visible { outline: 2px solid var(--text-accent) !important; outline-offset: 2px; }
+
+/* Capital tab: jump bar sticks flush to the top of the scroll area. Chrome sticks
+   inside the scroller's padding, so cancel main's padding (p-4 / sm:p-6 / lg:p-8). */
+.cc-bar { position: sticky; top: -16px; z-index: 5; background: var(--bg); padding: 6px 0 10px; margin-top: -6px; display: flex; gap: 8px; overflow-x: auto; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+@media (min-width: 640px) { .cc-bar { top: -24px; } }
+@media (min-width: 1024px) { .cc-bar { top: -32px; } }
+/* Calculator inputs: 4 columns, then 2, then 1 on phones, so rows never leave orphans */
+.cc-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 12px; }
+@media (max-width: 900px) { .cc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .cc-grid { grid-template-columns: 1fr; } }
