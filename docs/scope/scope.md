@@ -23,7 +23,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 2 | Journal list pagination & page sizing | Slice 1 | done |
 | 3 | Journal search & quick pair filter | Slice 1 | in-progress |
 | 4 | Masaniello money management style | Slice 2 | in-progress |
-| 5 | Masaniello daily goals & session counter | Slice 2 | planned |
+| 5 | Masaniello profit target & session counter | Slice 2 | in-progress |
 | 6 | Masaniello settings recommender | Slice 2 | planned |
 | 7 | Settings page reorganization | Slice 3 | done |
 
@@ -116,10 +116,20 @@ Add a fourth Money Management Style where you pick how many wins you need (K) ou
 - [x] Test it: `/test masaniello money management style`
 Spec [0004](../specs/0004-masaniello-money-management-style/index.md) · code in `src/App.js`
 
-### 5. Masaniello daily goals & session counter · needs a decision
-Track how many Masaniello sessions you have run today and how many more you need to hit a daily profit goal, with the alert and auto options from the tool.
-**Done when:** you can set a daily profit target (% or $) and see sessions required, projected account gain, and capital final. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback.
-- [ ] Design it (spec): `/architect masaniello daily goals & session counter`
+### 5. Masaniello profit target & session counter · in-progress
+Add a profit target to the Masaniello settings so you can see how many sessions it takes to reach it, and track how many sessions you have run toward it, with the alert and auto options from the tool. Masaniello is not held to the standard Sessions per day setting (2 or 3): the number of sessions comes from the target and the plan. UX comes first: one clear target field, a plain answer line ("About 4 sessions to reach $200"), and no extra screens.
+**Done when:** with Masaniello selected, you can set a profit target (% or $) in the Masaniello settings panel and see sessions required, projected account gain, and capital final, updating live as you change capital, total trades, win trades, or payout. Sessions required is not capped by Sessions per day, and the Session x/y counter for Masaniello shows progress toward the target instead of the standard cap. An empty or unreachable target shows a clear message, not a blank or a wrong number. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback.
+- [x] Design it (spec): `/architect masaniello profit target & session counter`
+- [x] Build it: `/develop masaniello profit target & session counter`
+   - [x] Thin thread: pure engine, target field, save, answer line (AC-1 to AC-6, AC-10)
+   - [x] Counter: history read and Dashboard Session x/y (AC-7 to AC-9)
+   - [x] Auto copy balance toggle (AC-11)
+   - [x] Alerts: cycle end, target reached, stop loss (AC-13 to AC-15)
+   - [x] Remove the Masaniello daily lock (AC-12)
+   - [x] Stop Loss ends cycle toggle, `MS_STOP_LOSS` (AC-16, AC-17)
+- [ ] Verify it: `/check verify masaniello profit target & session counter`
+- [x] Test it: `/test masaniello profit target & session counter`
+Spec [0006](../specs/0006-masaniello-profit-target-session-counter.md) · code in `src/App.js`
 
 ### 6. Masaniello settings recommender · needs a decision
 Suggest the wins and total trades setting that fits you, based on your overall win rate from the journal and your current account balance.
