@@ -1792,9 +1792,12 @@ export function msAlertEvents({ prevSessions, sessions, settings, histFor, st })
   for (const m of ['DEMO', 'REAL']) {
     const prog = msModeProgress(settings, m, histFor(m), sessions);
     if (!prog || prog.status !== 'ok') continue;
-    const key = `${m}:${getMsTargetSetAtForMode(settings, m)}`;
-    const was = st.prevReached[key];
-    st.prevReached[key] = prog.reached;
+    // One latch per mode, tied to the goal it saw. An edited goal changes the key, so it is
+    // seeded silently and only a session end can flip it (also covers editing back to an old goal).
+    const key = `${getMsTargetSetAtForMode(settings, m)}:${getMsTargetDollarsForMode(settings, m)}`;
+    const prev = st.prevReached[m];
+    const was = prev && prev.key === key ? prev.reached : undefined;
+    st.prevReached[m] = { key, reached: prog.reached };
     if (was === false && prog.reached && getMsAlertTargetReachedForMode(settings, m)) {
       flipped[m] = true;
       events.push({ title: 'Profit target reached', body: `${label(m)} Masaniello profit target reached.`, tag: `ms-target-${m}` });
@@ -8001,19 +8004,26 @@ function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
   const won=sessions.filter(s=>s.accountMode===mode&&s.endReason==='MS_TARGET').length;
   const lost=sessions.filter(s=>s.accountMode===mode&&(s.endReason==='MS_LOSS_LIMIT'||s.endReason==='MS_STOP_LOSS')).length;
   const stopEnds=f[`msStopLossEnds${modeKey}`]===true;
-  // Target: a draft that differs from the saved one restarts the count on save.
+  // Target: editing a saved target keeps the count; only clearing it and setting a new one restarts.
   const unit=f[`msTargetUnit${modeKey}`]==='%'?'%':'$';
   const tv=f[`msTargetValue${modeKey}`];
   const hasTarget=!(tv==null||tv==='');
   const savedValue=settings?.[`msTargetValue${modeKey}`],savedUnit=settings?.[`msTargetUnit${modeKey}`]==='%'?'%':'$';
   const unchanged=hasTarget&&savedValue!=null&&Number(tv)===Number(savedValue)&&unit===savedUnit&&getMsTargetDollarsForMode(settings,mode)!=null;
   const targetDollars=!hasTarget||errs.msTargetValue?null:unchanged?getMsTargetDollarsForMode(settings,mode):msTargetToDollars(tv,unit,bal);
-  const saved=msModeProgress(settings,mode,msHist?.[`${mode}:${getMsTargetSetAtForMode(settings,mode)}`],sessions);
-  const progress=unchanged&&saved?saved:{count:0,profit:0};
+  // Editing a saved target keeps its start time, so the draft counts from the saved
+  // start with the draft dollars. A first target (no start time yet) counts from zero.
+  const setAt=getMsTargetSetAtForMode(settings,mode);
+  const histEntry=msHist?.[`${mode}:${setAt}`];
+  const counting=hasTarget&&!errs.msTargetValue&&setAt!=null&&getMsTargetDollarsForMode(settings,mode)!=null;
+  const histStatus=histEntry?.status||'loading';
+  const progress=counting&&targetDollars>0
+    ?msTargetProgress(msMergeSessions(histEntry?.sessions,sessions.filter(s=>s.accountMode===mode)),targetDollars,setAt)
+    :{count:0,profit:0};
   // A saved target counts earlier sessions too, so no count while that read is pending or failed (AC-6).
-  const histPending=unchanged&&saved&&saved.status!=='ok';
+  const histPending=counting&&histStatus!=='ok';
   const answer=errs.msTargetValue||!valid?null:histPending
-    ?{text:saved.status==='error'?'Could not read your earlier sessions, so the session count is hidden.':'Reading your earlier sessions…'}
+    ?{text:histStatus==='error'?'Could not read your earlier sessions, so the session count is hidden.':'Reading your earlier sessions…'}
     :msTargetAnswer({targetDollars,progress,capital,followBalance,balance:bal,N,K,payout});
   return(
     <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
@@ -8047,6 +8057,7 @@ function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
         </div>
         {errs.msTargetValue&&<div id={`msTargetValue${modeKey}-err`} style={{fontSize:11,color:'var(--text-danger)',marginTop:2}}>{errs.msTargetValue}</div>}
         {unit==='%'&&hasTarget&&!errs.msTargetValue&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`= ${f$(targetDollars)}`}{unchanged?'':' (set when you save)'}</div>}
+        {counting&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`Counting sessions since ${new Date(setAt).toLocaleDateString()}. Clear the target and save to start a new count.`}</div>}
         {answer&&(
           <div style={{marginTop:6}} aria-live="polite">
             <div style={{fontSize:13,color:'var(--text-primary)'}}>{answer.text}{answer.gain!=null&&` · Projected account gain +${fp(answer.gain)}`}</div>
@@ -8191,7 +8202,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
       }
       // Profit target (spec 0006 AC-2, AC-10). An errored target keeps its last
       // saved values. Dollars are recomputed only when the value or unit changed;
-      // msTargetSetAt moves only when the stored dollar goal changes.
+      // msTargetSetAt is set when a target is first set and kept while it is edited; clearing resets it.
       const tk=n=>`${n}${mk}`;
       const unit=v[tk('msTargetUnit')]==='%'?'%':'$';
       out[tk('msTargetUnit')]=unit;
@@ -8208,7 +8219,8 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
         const dollars=sameInput?settings[tk('msTargetDollars')]:msTargetToDollars(val,unit,bal);
         out[tk('msTargetValue')]=val;
         out[tk('msTargetDollars')]=dollars;
-        out[tk('msTargetSetAt')]=dollars===settings?.[tk('msTargetDollars')]&&settings?.[tk('msTargetSetAt')]!=null?settings[tk('msTargetSetAt')]:Date.now();
+        // Editing an existing target keeps the start time so sessions already done still count.
+        out[tk('msTargetSetAt')]=settings?.[tk('msTargetSetAt')]!=null?settings[tk('msTargetSetAt')]:Date.now();
       }
     }
     return out;
@@ -9389,8 +9401,8 @@ export default function App(){
   const todaySS=settings?getToday(ss):null;
 
   // Earlier-day Masaniello sessions for each mode that has a profit target
-  // (spec 0006). Cached under `${mode}:${setAt}`; a changed target gets a new
-  // setAt, so it reloads. Pending or failed reads leave the counter on "Session x".
+  // (spec 0006). Cached under `${mode}:${setAt}`; editing a target keeps its
+  // setAt, so no re-read (progress is recomputed from the cached sessions). Pending or failed reads leave the counter on "Session x".
   const[msHist,setMsHist]=useState({});
   const msHistRequested=useRef(new Set());
   const msUserRef=useRef(null);
