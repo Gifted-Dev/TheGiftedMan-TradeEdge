@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, Fragment } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo, Fragment } from "react";
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import {
   Activity,
@@ -2887,10 +2887,10 @@ function InfoTip({text}){
     </details>
   );
 }
-function Metric({label,value,sub,color,animate,format}){
+function Metric({label,value,sub,color,animate,format,labelColor}){
   return(
     <div className="card-lift" style={{background:'var(--surface-1)',borderRadius:'var(--radius)',padding:'14px 16px',border:'1px solid var(--border)',overflow:'hidden',boxShadow:'var(--shadow-card), var(--highlight-top)'}}>
-      <div style={{fontSize:10,fontWeight:600,color:'var(--text-muted)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.1em'}}>{label}</div>
+      <div style={{fontSize:10,fontWeight:600,color:labelColor||'var(--text-muted)',marginBottom:6,textTransform:'uppercase',letterSpacing:'0.1em'}}>{label}</div>
       <div style={{fontSize:24,fontWeight:700,color:color||'var(--text-primary)',lineHeight:1.15,letterSpacing:'-0.02em'}}>
         {animate!=null?<AnimatedNumber value={animate} format={format}/>:value}
       </div>
@@ -6110,29 +6110,338 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   );
 }
 
-// ── Money Management ──────────────────────────────────────────────────────────
-// Milestones and the growth projector follow the global Demo/Real toggle, so
-// growth can be envisioned on Demo too. Withdrawal logging stays Real-only —
-// Demo has no concept of a withdrawal.
+// ── Compound calculator (spec 0007) ──────────────────────────────────────────
+// Pure engine (exported for tests) + CompoundCalculator. Inputs are scratch
+// values saved in this browser only (localStorage, per mode). Nothing here
+// reads or writes Settings, saveWds, trades or Supabase.
+const CC_FIELDS={
+  capital:{kind:'dec',min:0,exMin:true,max:1e9,msg:'Above 0, up to 1,000,000,000.'},
+  gain:{kind:'pct',min:0,exMin:true,max:100,msg:'Above 0, up to 100.'},
+  days:{kind:'int',min:1,max:365,msg:'Whole number, 1 to 365.'},
+  wdPct:{kind:'pct',min:0,max:100,msg:'From 0 to 100.'},
+  dpw:{kind:'int',min:1,max:7,msg:'Whole number, 1 to 7.'},
+  dpm:{kind:'int',min:1,max:31,msg:'Whole number, 1 to 31.'},
+};
+const CC_FREQS=['None','Daily','Weekly','Monthly'];
+const CC_FROM=['Profit','Balance'];
+const CC_DEFAULTS={currency:'$',days:'30',wdFreq:'None',wdPct:'50',wdFrom:'Profit',dpw:'7',dpm:'30'};
+
+// One field's text -> {value} or {error}. Strict: digits with one optional
+// point; commas only as English thousands separators; one trailing % on
+// percent fields. No sign, no exponent, no decimal comma.
+export function parseCompoundField(k,text){
+  if(k==='currency'){
+    const s=String(text??'').trim();
+    const n=Array.from(s).length;
+    return n>=1&&n<=3?{value:s}:{error:'Use 1 to 3 characters.'};
+  }
+  const f=CC_FIELDS[k];
+  let t=String(text??'').trim();
+  if(f.kind==='pct')t=t.replace(/%$/,'').trim();
+  if(!t)return{error:'Enter a value.'};
+  const bad={error:f.msg};
+  if(f.kind!=='int'&&t.includes(',')){
+    if(!/^\d{1,3}(,\d{3})+(\.\d*)?$/.test(t))return bad;
+    t=t.replace(/,/g,'');
+  }
+  if(!(f.kind==='int'?/^\d+$/.test(t):/^(\d+\.?\d*|\.\d+)$/.test(t)))return bad;
+  const v=Number(t);
+  if(!Number.isFinite(v)||(f.exMin?v<=f.min:v<f.min)||v>f.max)return bad;
+  return{value:v};
+}
+
+// raw = the current text of every input. Only visible fields are validated.
+export function validateCompoundInputs(raw){
+  const errors={},values={};
+  const need=['currency','capital','gain','days'];
+  if(raw.wdFreq!=='None'){
+    need.push('wdPct');
+    if(raw.wdFreq==='Weekly')need.push('dpw');
+    if(raw.wdFreq==='Monthly')need.push('dpm');
+  }
+  need.forEach(k=>{const r=parseCompoundField(k,raw[k]);if(r.error)errors[k]=r.error;else values[k]=r.value;});
+  if(!CC_FREQS.includes(raw.wdFreq))errors.wdFreq='Pick a frequency.';
+  return{
+    ok:!Object.keys(errors).length,
+    errors,
+    values:{
+      currency:values.currency,capital:values.capital,gainPct:values.gain,days:values.days,
+      wdFreq:raw.wdFreq,wdFrom:raw.wdFrom==='Balance'?'Balance':'Profit',
+      wdPct:values.wdPct??0,dpw:values.dpw??7,dpm:values.dpm??30,
+    },
+  };
+}
+
+// The sheet's rules. Full precision, rounded only when shown.
+export function buildCompoundSchedule({capital,gainPct,days,wdPct,wdFrom,wdFreq,dpw,dpm}){
+  const cycle=wdFreq==='Daily'?1:wdFreq==='Weekly'?dpw:wdFreq==='Monthly'?dpm:0;
+  const rows=[];
+  let start=capital,withdrawn=0,cycleProfit=0;
+  for(let day=1;day<=days;day++){
+    const profit=start*gainPct/100;
+    cycleProfit+=profit;
+    let withdrawal=0;
+    if(cycle&&day%cycle===0){
+      withdrawal=(wdFrom==='Balance'?start+profit:cycleProfit)*wdPct/100;
+      cycleProfit=0;
+    }
+    const end=start+profit-withdrawal;
+    withdrawn+=withdrawal;
+    rows.push({day,start,profit,withdrawal,end,withdrawn});
+    start=end;
+  }
+  return rows;
+}
+
+// Geometric mean of the trading days' percent gains, rounded to 2 decimals.
+// null when there are no finished trading days with an opening balance above 0.
+export function avgDailyGainPct(trades,wds,mode,startBal){
+  const days=Object.values(buildDayStats(trades,wds,mode,startBal)).filter(d=>d.total>0&&d.startBalance>0);
+  if(!days.length)return null;
+  let sum=0;
+  for(const d of days){
+    const g=1+d.pctPnl/100;
+    if(g<=0)return -100;
+    sum+=Math.log(g);
+  }
+  return Math.round((Math.exp(sum/days.length)-1)*10000)/100||0;
+}
+
+function ccFmt(n,dec=2){
+  return n>=1e15?n.toExponential(3):n.toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+}
+const ccMoney=(n,cur)=>cur+ccFmt(n);
+
+const ccKey=m=>`gm_compound_calc_${m}`;
+function ccLoad(mode){
+  try{
+    const o=JSON.parse(localStorage.getItem(ccKey(mode)));
+    if(!o||typeof o!=='object'||Array.isArray(o))return{};
+    const out={};
+    ['currency','capital','gain','days','wdPct','dpw','dpm'].forEach(k=>{
+      const v=o[k];
+      if(k==='currency'?typeof v!=='string':typeof v!=='number')return;
+      const r=parseCompoundField(k,k==='currency'?v:String(v));
+      if(r.value!==undefined)out[k]=r.value;
+    });
+    if(CC_FROM.includes(o.wdFrom))out.wdFrom=o.wdFrom;
+    if(CC_FREQS.includes(o.wdFreq))out.wdFreq=o.wdFreq;
+    return out;
+  }catch(e){return{};}
+}
+function ccSave(mode,obj){
+  try{localStorage.setItem(ccKey(mode),JSON.stringify(obj));}catch(e){/* storage blocked: still works unsaved */}
+}
+
+// The viewBox follows the real width (1 unit = 1 px) so text keeps its size at
+// any screen width, instead of scaling up with a fixed viewBox.
+function CompoundChart({rows,cur}){
+  const ref=useRef(null);
+  const[W,setW]=useState(360);
+  useEffect(()=>{
+    const el=ref.current;
+    if(!el)return;
+    const upd=()=>{const w=Math.round(el.getBoundingClientRect().width);if(w>0)setW(w);};
+    upd();
+    if(typeof ResizeObserver==='undefined')return;
+    const ro=new ResizeObserver(upd);
+    ro.observe(el);
+    return()=>ro.disconnect();
+  },[]);
+  const H=190,L=12,R=12,T=26,B=26,n=rows.length;
+  const ys=rows.map(r=>r.end);
+  const lo=Math.min(...ys),hi=Math.max(...ys);
+  const x=i=>n===1?W/2:L+(i/(n-1))*(W-L-R);
+  const y=v=>hi===lo?(T+H-B)/2:H-B-((v-lo)/(hi-lo))*(H-B-T);
+  const anchor=px=>px<W/3?'start':px>2*W/3?'end':'middle';
+  // Label the last, first, highest and lowest points, skipping any label that
+  // would sit on top of one already placed.
+  const placed=[];
+  [n-1,0,ys.indexOf(hi),ys.indexOf(lo)].forEach(i=>{
+    if(placed.some(p=>p.i===i))return;
+    const px=x(i),py=y(ys[i]),text=ccMoney(ys[i],cur),w=text.length*6.4;
+    const a=anchor(px),x0=a==='start'?px:a==='end'?px-w:px-w/2;
+    const ty=py-8<14?py+16:py-8;
+    if(placed.some(p=>x0<p.x1+6&&x0+w>p.x0-6&&Math.abs(ty-p.ty)<14))return;
+    placed.push({i,px,py,text,a,ty,x0,x1:x0+w});
+  });
+  const label=`Balance growth, day 1 to day ${n}, from ${ccMoney(ys[0],cur)} to ${ccMoney(ys[n-1],cur)}`;
+  return(
+    <svg ref={ref} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} style={{width:'100%',height:H,display:'block'}}>
+      <line x1={L} x2={W-R} y1={H-B} y2={H-B} stroke="var(--border)"/>
+      {n===1
+        ?<circle cx={x(0)} cy={y(ys[0])} r="4" fill="var(--text-accent)"/>
+        :<polyline points={ys.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')} fill="none" stroke="var(--text-accent)" strokeWidth="2" strokeLinejoin="round"/>}
+      {placed.map(p=>(
+        <g key={p.i}>
+          <circle cx={p.px} cy={p.py} r="3" fill="var(--text-accent)"/>
+          <text x={p.px} y={p.ty} fontSize="11" fill="var(--text-secondary)" textAnchor={p.a}>{p.text}</text>
+        </g>
+      ))}
+      <text x={L} y={H-8} fontSize="11" fill="var(--text-secondary)">Day 1</text>
+      <text x={W-R} y={H-8} fontSize="11" fill="var(--text-secondary)" textAnchor="end">Day {n}</text>
+    </svg>
+  );
+}
+
+const ccNote=(c)=>({fontSize:12,color:c,marginTop:6});
+export function CompoundCalculator({mode,bal,startBal,trades,wds}){
+  const[saved,setSaved]=useState(()=>ccLoad(mode));
+  const[draft,setDraft]=useState({});
+  const avg=useMemo(()=>avgDailyGainPct(trades,wds,mode,startBal),[trades,wds,mode,startBal]);
+
+  // Live defaults, derived on every render until the user overrides them.
+  const capDef=bal>0?bal.toFixed(2):'100';
+  let gainDef='',gainNote=null;
+  if(avg===null){gainDef='2';gainNote='No trade history yet, using 2% as an example.';}
+  else if(avg<=0)gainNote='Your average day is not above 0%, enter a gain to project.';
+  else if(avg>100)gainNote='Your average day is above 100%, enter a gain.';
+  else gainDef=avg.toFixed(2);
+
+  const txt=k=>k in draft?draft[k]:k in saved?String(saved[k]):k==='capital'?capDef:k==='gain'?gainDef:CC_DEFAULTS[k];
+  const raw={};
+  ['currency','capital','gain','days','wdFreq','wdPct','wdFrom','dpw','dpm'].forEach(k=>{raw[k]=txt(k);});
+  const{ok,errors,values:v}=validateCompoundInputs(raw);
+
+  // Functional update so rapid edits never build on a stale `saved`; the write is idempotent.
+  function put(k,val){setSaved(s=>{const next={...s,[k]:val};ccSave(mode,next);return next;});}
+  function edit(k,text){
+    setDraft(d=>({...d,[k]:text}));
+    const r=parseCompoundField(k,text);
+    if(r.value!==undefined)put(k,r.value);
+  }
+  function resetLive(){
+    setSaved(s=>{const next={...s};delete next.capital;delete next.gain;ccSave(mode,next);return next;});
+    setDraft(d=>{const n={...d};delete n.capital;delete n.gain;return n;});
+  }
+  const overridden='capital' in saved||'gain' in saved;
+
+  const input=(k,label,mode=k==='currency'?'text':'decimal')=>(
+    <div key={k}>
+      <label htmlFor={`cc-${k}`} style={ccLbl}>{label}</label>
+      <input id={`cc-${k}`} className="cc-ctl" inputMode={mode} autoComplete="off" value={txt(k)} onChange={e=>edit(k,e.target.value)}
+        aria-invalid={!!errors[k]} aria-describedby={`cc-${k}-e`}
+        style={{...inp,minHeight:44,fontFamily:'var(--font-mono)',borderColor:errors[k]?'var(--text-danger)':undefined}}/>
+      <div id={`cc-${k}-e`} aria-live="polite" style={{minHeight:16,fontSize:12,color:'var(--text-danger)',marginTop:3}}>{errors[k]||''}</div>
+    </div>
+  );
+  const select=(k,label,opts)=>(
+    <div key={k}>
+      <label htmlFor={`cc-${k}`} style={ccLbl}>{label}</label>
+      <select id={`cc-${k}`} className="cc-ctl" value={txt(k)} onChange={e=>put(k,e.target.value)} style={{...inp,minHeight:44}}>
+        {opts.map(o=><option key={o} value={o}>{o}</option>)}
+      </select>
+      <div style={{minHeight:16}}/>
+    </div>
+  );
+
+  const freq=txt('wdFreq');
+  const vKey=ok?JSON.stringify(v):'';
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rows=useMemo(()=>ok?buildCompoundSchedule(v):null,[vKey]);
+  const last=ok?rows[rows.length-1]:null;
+  const cur=ok?v.currency:'';
+  const totalProfit=ok?last.end+last.withdrawn-v.capital:0;
+  const cycle=freq==='Weekly'?v.dpw:freq==='Monthly'?v.dpm:0;
+  const wdLine=!ok?'':freq==='None'||v.wdPct===0?'No withdrawals planned':`Withdrawing ${v.wdPct}% of ${v.wdFrom.toLowerCase()}, ${freq.toLowerCase()}`;
+  const th={position:'sticky',top:0,background:'var(--surface-2)',padding:'8px 10px',fontSize:11,fontWeight:600,color:'var(--text-secondary)',whiteSpace:'nowrap',borderBottom:'1px solid var(--border)'};
+
+  return(
+    <div style={card}>
+      <h2 style={ccH}>Projection</h2>
+      {ok?(
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.08em'}}>Projected balance, day {v.days}</div>
+          <div style={{fontSize:32,fontWeight:700,letterSpacing:'-0.02em',fontFamily:'var(--font-mono)',overflowWrap:'anywhere',lineHeight:1.2}}>{ccMoney(last.end,cur)}</div>
+          <div style={{fontSize:13,color:'var(--text-secondary)',marginTop:2}}>{ccFmt((last.end+last.withdrawn)/v.capital)}x the capital above, withdrawals included</div>
+          <div style={{fontSize:13,color:'var(--text-secondary)'}}>{wdLine}</div>
+        </div>
+      ):(
+        <div role="status" style={{fontSize:13,color:'var(--text-warning)',background:'var(--bg-warning)',border:'1px solid var(--border-warning)',borderRadius:'var(--radius-sm)',padding:'10px 12px',marginBottom:12}}>Fix the marked field to see the projection.</div>
+      )}
+
+      <div style={ccGroup}>Account</div>
+      <div className="cc-grid">
+        {input('currency','Currency symbol')}
+        {input('capital',`Starting capital (${errors.currency?'$':v.currency})`)}
+        {input('gain','Gain per day (%)')}
+        {input('days','Period (days)','numeric')}
+      </div>
+      <div style={ccGroup}>Withdrawals</div>
+      <div className="cc-grid">
+        {select('wdFreq','Frequency',CC_FREQS)}
+        {freq!=='None'&&input('wdPct','Withdraw (%)')}
+        {freq!=='None'&&select('wdFrom','Withdraw from',CC_FROM)}
+        {freq==='Weekly'&&input('dpw','Days per week','numeric')}
+        {freq==='Monthly'&&input('dpm','Days per month','numeric')}
+      </div>
+      {'capital' in saved||'capital' in draft?null:bal<=0&&<div style={ccNote('var(--text-accent)')}>Using 100 as an example.</div>}
+      {'gain' in saved||'gain' in draft?null:gainNote&&<div style={ccNote('var(--text-accent)')}>{gainNote}</div>}
+      {freq!=='None'&&<div style={ccNote('var(--text-secondary)')}>Tip: if you count only trading days, use 5 per week and 20 to 22 per month.</div>}
+      {overridden&&<button type="button" className="cc-link" onClick={resetLive} style={{marginTop:8,minHeight:32,fontSize:12,color:'var(--text-accent)',background:'none',border:'none',cursor:'pointer',padding:0}}>Use my live numbers</button>}
+
+      {ok&&<>
+        <div className="grid-3" style={{marginTop:16}}>
+          <Metric label="Total withdrawn" value={ccMoney(last.withdrawn,cur)} color={ccOk} labelColor="var(--text-secondary)"/>
+          <Metric label="Total profit" value={ccMoney(totalProfit,cur)} labelColor="var(--text-secondary)"/>
+          <Metric label="Return on capital" value={`${ccFmt(totalProfit/v.capital*100,1)}%`} labelColor="var(--text-secondary)"/>
+        </div>
+        <CompoundChart rows={rows} cur={cur}/>
+      </>}
+      <div style={{...ccNote('var(--text-secondary)'),marginBottom:ok?12:0}}>Projection only. Assumes the same gain every day and no losing days, which no live account achieves.</div>
+
+      {ok&&<>
+        <div tabIndex={0} role="region" aria-label="Daily schedule" style={{maxHeight:360,overflow:'auto',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>
+          <table style={{width:'100%',minWidth:560,borderCollapse:'collapse',fontSize:12,fontFamily:'var(--font-mono)',fontVariantNumeric:'tabular-nums'}}>
+            <thead><tr>
+              {['Day','Start','Profit','Withdrawal','End balance','Withdrawn so far'].map(h=><th key={h} scope="col" style={{...th,textAlign:h==='Day'?'left':'right'}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {rows.map(r=>{
+                const w=r.withdrawal>0;
+                return<tr key={r.day} style={{background:w?'var(--bg-success)':undefined,borderBottom:'1px solid var(--border)'}}>
+                  <td style={{padding:'6px 10px',textAlign:'left'}}>{r.day}</td>
+                  <td style={{padding:'6px 10px',textAlign:'right'}}>{ccMoney(r.start,cur)}</td>
+                  <td style={{padding:'6px 10px',textAlign:'right'}}>{ccMoney(r.profit,cur)}</td>
+                  <td style={{padding:'6px 10px',textAlign:'right',fontWeight:w?700:400,color:w?ccOk:'var(--text-secondary)'}}>{ccMoney(r.withdrawal,cur)}</td>
+                  <td style={{padding:'6px 10px',textAlign:'right'}}>{ccMoney(r.end,cur)}</td>
+                  <td style={{padding:'6px 10px',textAlign:'right'}}>{ccMoney(r.withdrawn,cur)}</td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+        {cycle>v.days&&<div style={ccNote('var(--text-secondary)')}>No withdrawal day falls within the period.</div>}
+      </>}
+    </div>
+  );
+}
+
+const CompoundCalculatorMemo=memo(CompoundCalculator);
+const ccH={fontSize:14,fontWeight:500,margin:'0 0 10px'};
+const ccSec={scrollMarginTop:64};
+// a section counts as current once its top passes this far below the top of the scroll area (about the sticky bar's height)
+const CC_BAR_LINE=90;
+const ccLbl={...lbl,color:'var(--text-secondary)'};
+// success green mixed toward the text colour so it keeps 4.5:1 on the light theme too
+const ccOk='color-mix(in srgb, var(--text-success) 60%, var(--text-primary))';
+const ccGroup={fontSize:11,fontWeight:600,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.08em',margin:'4px 0 6px'};
+
+// ── Capital (the Money tab) ──────────────────────────────────────────────────
+// The compound calculator, milestones and sizer follow the global Demo/Real
+// toggle, so growth can be envisioned on Demo too. Withdrawal logging stays
+// Real-only — Demo has no concept of a withdrawal.
 function Money({settings,trades,wds,saveWds,mode,ss}){
   const startBal=getStartingBalanceForMode(settings,mode);
   const bal=balForMode(settings,trades,wds,mode);
-  const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const[amt,setAmt]=useState('');
   const[note,setNote]=useState('');
-  const[wks,setWks]=useState(12);
   const stake=calcStake(bal,settings,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
   const activeAmSession=ss?getActive(ss,mode):null;
   const mmIsEscalating=isEscalatingStyle(mmStyle);
   const amNextStake=mmIsEscalating?liveEscalatingNextStake(activeAmSession,bal,settings,mode,mmStyle):null;
   const amReasoning=mmIsEscalating?escalatingStakeReasoning(activeAmSession,bal,settings,mode,mmStyle):null;
-  const done=modeTrades.filter(t=>t.outcome!=='PENDING');
-  const wins=done.filter(t=>t.outcome==='WIN').length;
-  const losses=done.filter(t=>t.outcome==='LOSS').length;
-  const actualWr=(wins+losses)?wins/(wins+losses):0.65;
-  const[wrOverride,setWrOverride]=useState(null);
-  const wr=(wrOverride!=null?wrOverride:Math.round(actualWr*100))/100;
   const totalWd=wds.reduce((s,w)=>s+w.amount,0);
   const firstMs=settings.milestones[0];
   const phase1Thresh=settings.brokerMin/(firstMs.pct/100);
@@ -6147,32 +6456,76 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
     setAmt('');setNote('');
   }
 
-  const proj=[];let b=bal;
-  for(let i=0;i<=wks;i++){proj.push(b);const tw=settings.sessionsPerDay*6,ws=tw*wr,ls=tw-ws,stk=calcStake(b,settings,mode).actual;b=b+(ws*stk*PAYOUT)-(ls*stk);}
-  const maxP=Math.max(...proj);
+  const jumps=[['cap-projection','Projection'],['cap-sizer','Sizer'],['cap-milestones','Milestones'],...(mode==='REAL'?[['cap-withdrawals','Withdrawals']]:[])];
+  const[active,setActive]=useState('cap-projection');
+  const jumpTo=useRef(false);
+  const navRef=useRef(null);
+  // Active chip = last section whose top is above the sticky bar; at the very
+  // bottom, the last section. After a chip click the clicked chip stays marked
+  // (a short page may never scroll it to the top) until the user scrolls.
+  useEffect(()=>{
+    const sc=navRef.current?.closest('main');
+    if(!sc)return;
+    const ids=['cap-projection','cap-sizer','cap-milestones',...(mode==='REAL'?['cap-withdrawals']:[])];
+    const onScroll=()=>{
+      if(jumpTo.current)return;
+      const line=sc.getBoundingClientRect().top+CC_BAR_LINE;
+      let cur=ids[0];
+      ids.forEach(id=>{const el=document.getElementById(id);if(el&&el.getBoundingClientRect().top<=line)cur=id;});
+      if(sc.scrollTop+sc.clientHeight>=sc.scrollHeight-2)cur=ids[ids.length-1];
+      setActive(cur);
+    };
+    const free=()=>{jumpTo.current=false;};
+    const userEvents=['wheel','touchstart','mousedown','keydown'];
+    onScroll();
+    const ro=typeof ResizeObserver==='undefined'?null:new ResizeObserver(onScroll);
+    if(ro)ids.forEach(id=>{const el=document.getElementById(id);if(el)ro.observe(el);});
+    sc.addEventListener('scroll',onScroll,{passive:true});
+    userEvents.forEach(e=>sc.addEventListener(e,free,{passive:true}));
+    return()=>{if(ro)ro.disconnect();sc.removeEventListener('scroll',onScroll);userEvents.forEach(e=>sc.removeEventListener(e,free));};
+  },[mode]);
+  function jump(id){
+    jumpTo.current=true;
+    setActive(id);
+    const el=document.getElementById(id);
+    if(el&&el.scrollIntoView)el.scrollIntoView({behavior:'smooth',block:'start'});
+  }
 
   return(
     <div>
-      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Money management</div>
+      <div style={{fontSize:18,fontWeight:500,marginBottom:16,color:'var(--text-primary)'}}>Capital</div>
 
-      {mode!=='REAL'&&<Alert type="inf" title="Viewing Demo growth" body="Milestones and the growth projector below reflect your Demo balance — this is for practice only. Demo has no real withdrawals; switch to Real to log an actual withdrawal."/>}
+      {mode!=='REAL'&&<Alert type="inf" title="Viewing Demo growth" body="Milestones below reflect your Demo balance. This is for practice only. Demo has no real withdrawals; switch to Real to log an actual withdrawal."/>}
 
+      <nav ref={navRef} aria-label="Capital sections" className="cc-bar">
+        {jumps.map(([id,label])=>(
+          <button key={id} type="button" className="cc-chip" aria-current={active===id?'true':undefined} onClick={()=>jump(id)}
+            style={{flex:'0 0 auto',minHeight:40,padding:'0 14px',borderRadius:999,fontSize:13,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',
+              background:active===id?'var(--bg-accent)':'var(--surface-2)',color:active===id?'var(--text-accent)':'var(--text-secondary)',border:`1px solid ${active===id?'var(--border-accent)':'var(--border)'}`}}>{label}</button>
+        ))}
+      </nav>
+
+      <section id="cap-projection" style={ccSec}>
+        <CompoundCalculatorMemo key={mode} mode={mode} bal={bal} startBal={startBal} trades={trades} wds={wds}/>
+      </section>
+
+      <section id="cap-sizer" style={ccSec}>
       <div style={card}>
-        <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Position sizer</div>
+        <h2 style={ccH}>Position sizer</h2>
         <div className="grid-3">
-          <Metric label="Balance" value={f$(bal)}/>
+          <Metric label="Balance" value={f$(bal)} labelColor="var(--text-secondary)"/>
           {mmIsEscalating
-            ?<Metric label="Style" value={mmStyleLabel(mmStyle)} sub={amReasoning} color={isPlRecoveryStake(activeAmSession,mmStyle)?'var(--text-warning)':undefined}/>
-            :<Metric label={getRiskModeForMode(settings,mode)==='FIXED'?'Fixed stake':'Risk %'} value={getRiskModeForMode(settings,mode)==='FIXED'?f$(getRiskAmountForMode(settings,mode)):fp(getRiskPercentForMode(settings,mode))}/>}
-          <Metric label="Trade stake" value={f$(mmIsEscalating?amNextStake:stake.actual)} color="var(--text-accent)"/>
+            ?<Metric labelColor="var(--text-secondary)" label="Style" value={mmStyleLabel(mmStyle)} sub={amReasoning} color={isPlRecoveryStake(activeAmSession,mmStyle)?'var(--text-warning)':undefined}/>
+            :<Metric labelColor="var(--text-secondary)" label={getRiskModeForMode(settings,mode)==='FIXED'?'Fixed stake':'Risk %'} value={getRiskModeForMode(settings,mode)==='FIXED'?f$(getRiskAmountForMode(settings,mode)):fp(getRiskPercentForMode(settings,mode))}/>}
+          <Metric labelColor="var(--text-secondary)" label="Trade stake" value={f$(mmIsEscalating?amNextStake:stake.actual)} color="var(--text-accent)"/>
         </div>
         {mmStyle==='ANTI_MARTINGALE'&&(
-          <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:8}}>
             {getAmMultiplierForMode(settings,mode).toFixed(1)}× multiplier per win, capped at {getAmCeilingPctForMode(settings,mode)}% of balance · ends at +{getAmProfitTargetPctForMode(settings,mode)}% or −{getAmLossTargetPctForMode(settings,mode)}% of this session's starting balance.
           </div>
         )}
         {mmStyle==='PROFIT_LOCK'&&(
-          <div style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>
+          <div style={{fontSize:12,color:'var(--text-secondary)',marginTop:8}}>
             Stakes only banked profit, never base capital, capped at {getPlCeilingPctForMode(settings,mode)}% of balance · ends at +{getPlProfitTargetPctForMode(settings,mode)}% or −{getPlLossTargetPctForMode(settings,mode)}% of this session's starting balance.
           </div>
         )}
@@ -6182,13 +6535,18 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
           </div>
         )}
       </div>
+      </section>
 
+      <section id="cap-milestones" style={ccSec}>
       <div style={card}>
-        <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Withdrawal milestones</div>
+        <h2 style={ccH}>Withdrawal milestones</h2>
         {isPhase1
           ?<div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-accent)'}}>🔒 Phase 1 — Compounding. {mode==='REAL'?`First withdrawal advised at ${f$(phase1Thresh)}.`:`Keeps growing past ${f$(phase1Thresh)}.`}</div>
           :hitMs&&<div style={{padding:'8px 12px',background:'var(--bg-success)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-success)'}}>Milestone {hitMs.mul}× reached{mode==='REAL'?` — consider withdrawing ${hitMs.pct}% (≈${f$(bal*(hitMs.pct/100))}). Advisory only.`:'.'}</div>
         }
+        {nextMilestoneMessage && !hitMs && !isPhase1 && (
+          <div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-accent)'}}>{nextMilestoneMessage}</div>
+        )}
         {settings.milestones.map((m,i)=>{
           const target=startBal*m.mul;
           const reached=bal>=target;
@@ -6196,7 +6554,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
             <div key={i} style={{marginBottom:10}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                 <span style={{fontSize:13,color:reached?'var(--text-success)':'var(--text-primary)'}}>{reached?'✓ ':''}{m.mul}× — {f$(target)}</span>
-                <span style={{fontSize:12,color:'var(--text-muted)'}}>Withdraw {m.pct}%</span>
+                <span style={{fontSize:12,color:'var(--text-secondary)'}}>Withdraw {m.pct}%</span>
               </div>
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
                 <div style={{height:'100%',background:reached?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,(bal/target)*100)}%`}}/>
@@ -6204,53 +6562,25 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
             </div>
           );
         })}
-        {nextMilestoneMessage && !hitMs && (
-          <div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginTop:10,fontSize:13,color:'var(--text-accent)'}}>{nextMilestoneMessage}</div>
-        )}
       </div>
-
-      <div style={card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-          <div style={{fontSize:14,fontWeight:500}}>Growth projector</div>
-          <div style={{display:'flex',gap:6,alignItems:'center'}}>
-            <span style={{fontSize:12,color:'var(--text-muted)'}}>Weeks:</span>
-            <input type="range" min="4" max="52" step="1" value={wks} onChange={e=>setWks(+e.target.value)} style={{width:80}}/>
-            <span style={{fontSize:12,fontFamily:'var(--font-mono)',minWidth:20}}>{wks}</span>
-          </div>
-        </div>
-        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:10}}>
-          <span style={{fontSize:12,color:'var(--text-muted)'}}>Win rate:</span>
-          <input type="range" min="0" max="100" step="1" value={Math.round(wr*100)} onChange={e=>setWrOverride(+e.target.value)} style={{width:100}}/>
-          <span style={{fontSize:12,fontFamily:'var(--font-mono)',minWidth:32}}>{Math.round(wr*100)}%</span>
-          {wrOverride!=null&&<button onClick={()=>setWrOverride(null)} style={{fontSize:11,color:'var(--text-accent)',background:'none',border:'none',cursor:'pointer',padding:0}}>Reset to actual ({fp(actualWr*100)})</button>}
-        </div>
-        <div style={{display:'flex',alignItems:'flex-end',gap:2,height:72}}>
-          {proj.map((v,i)=>(
-            <div key={i} title={f$(v)} style={{flex:1,background:i===0?'var(--border-strong)':'var(--fill-accent)',borderRadius:'2px 2px 0 0',height:`${Math.max(4,(v/maxP)*100)}%`,opacity:0.6+(i/proj.length)*0.4}}/>
-          ))}
-        </div>
-        <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--text-muted)',marginTop:4}}>
-          <span>Now: {f$(bal)}</span><span>{wks}w: {f$(proj[proj.length-1])}</span>
-        </div>
-        <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>Based on {fp(wr*100)} win rate{wrOverride!=null?' (custom)':''} · {fp(getRiskPercentForMode(settings,mode))} risk · {settings.sessionsPerDay*6} trades/week</div>
-      </div>
+      </section>
 
       {mode==='REAL'&&(
+      <section id="cap-withdrawals" style={ccSec}>
       <div style={card}>
-        <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Log withdrawal</div>
+        <h2 style={ccH}>Log withdrawal</h2>
         <div className="grid-2">
-          <div><label style={lbl}>Amount ($)</label><input style={inp} type="number" min={settings.brokerMin} placeholder={f$(settings.brokerMin)} value={amt} onChange={e=>setAmt(e.target.value)}/></div>
-          <div><label style={lbl}>Notes</label><input style={inp} placeholder="Milestone..." value={note} onChange={e=>setNote(e.target.value)}/></div>
+          <div><label htmlFor="cap-wd-amt" style={ccLbl}>Amount ($)</label><input id="cap-wd-amt" style={inp} type="number" min={settings.brokerMin} placeholder={f$(settings.brokerMin)} value={amt} onChange={e=>setAmt(e.target.value)}/></div>
+          <div><label htmlFor="cap-wd-note" style={ccLbl}>Notes</label><input id="cap-wd-note" style={inp} placeholder="Milestone..." value={note} onChange={e=>setNote(e.target.value)}/></div>
         </div>
         {parseFloat(amt)>0&&parseFloat(amt)<settings.brokerMin&&<div style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>Minimum broker withdrawal: {f$(settings.brokerMin)}</div>}
         {parseFloat(amt)>0&&(bal-parseFloat(amt))<(stake.actual*20)&&parseFloat(amt)>=settings.brokerMin&&<div style={{fontSize:12,color:'var(--text-warning)',marginTop:6}}>⚠ Post-withdrawal balance covers fewer than 20 sessions. Consider waiting.</div>}
         <button style={{...btn('pri'),marginTop:10}} onClick={logWd} disabled={!amt||parseFloat(amt)<settings.brokerMin}>Log withdrawal</button>
       </div>
-      )}
 
-      {mode==='REAL'&&wds.length>0&&(
+      {wds.length>0&&(
         <div style={card}>
-          <div style={{fontSize:14,fontWeight:500,marginBottom:10}}>Withdrawal history</div>
+          <h2 style={ccH}>Withdrawal history</h2>
           {wds.map(w=>(
             <div key={w.id} style={{display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'0.5px solid var(--border)'}}>
               <span style={{fontSize:13,color:'var(--text-secondary)'}}>{new Date(w.timestamp).toLocaleDateString()}{w.notes?` — ${w.notes}`:''}</span>
@@ -6258,10 +6588,12 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
             </div>
           ))}
           <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,fontSize:13}}>
-            <span style={{color:'var(--text-muted)'}}>Total withdrawn</span>
+            <span style={{color:'var(--text-secondary)'}}>Total withdrawn</span>
             <span style={{fontFamily:'var(--font-mono)',fontWeight:500}}>{f$(totalWd)}</span>
           </div>
         </div>
+      )}
+      </section>
       )}
     </div>
   );
@@ -8453,7 +8785,7 @@ function Landing({onLogin}){
     {icon:BookOpen,title:'Trade Journal',desc:'Log every trade with screenshots, notes, trade grades, and outcomes. Track your execution quality over time.'},
     {icon:BarChart3,title:'Performance Analytics',desc:'Win rate with a real confidence interval, by trade grade, strategy, pair, and account mode — plus an auto-generated weekly/monthly Review digest, no manual entry.'},
     {icon:Target,title:'A Full Strategy Curriculum',desc:'8 rule-based price-action strategies plus Zone (S&D) and Trend/Pattern, built in from day one — or define your own. Tag every trade and break down win rate and P&L by strategy in Analytics.'},
-    {icon:Wallet,title:'Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade), Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss), or Profit Lock (stakes only the profit just banked, never original capital) — each ends its own session on a profit target, loss target, or max trades, independently per Demo/Real account. Milestone-based withdrawal tracking and growth projection included.'},
+    {icon:Wallet,title:'Capital and Money Management',desc:'Choose Fixed Risk % (a percent of balance or a fixed dollar amount, overridable per trade), Anti-Martingale (stakes escalate on a win up to a configurable cap, reset on any loss), or Profit Lock (stakes only the profit just banked, never original capital) — each ends its own session on a profit target, loss target, or max trades, independently per Demo/Real account. The Settings tab holds the style and rules; the Capital tab holds your balance, a compound projection with planned withdrawals, and milestone based withdrawal tracking.'},
     {icon:Zap,title:'Quick Log',desc:'A spreadsheet-style table built for Anti-Martingale and Profit Lock’s pace — mark each trade Win or Loss and watch balance, session P&L, and the next suggested stake update instantly, row by row.'},
     {icon:ClipboardList,title:'Trading Plan',desc:'Your rules, your style. A zone-selection checklist, pre-trade checklist, and discipline guidelines keep you consistent and away from emotional overtrading.'},
     {icon:Timer,title:'Session Timer',desc:'Each trade style carries its own adjustable session duration, with pause and auto-resume. A session ends the moment time runs out or your trade-limit rules trigger — whichever comes first. Skipping a session with no qualifying setup gets a shorter cooldown instead of the full gap.'},
@@ -9302,7 +9634,7 @@ export default function App(){
     // active Money Management Style — same gate QuickLog's own alert uses,
     // so the nav entry and the page content never disagree.
     ...(isEscalatingStyle(getMoneyMgmtStyleForMode(settings,mode))?[{id:'quicklog',icon:Zap,label:'Quick log'}]:[]),
-    {id:'money',icon:Wallet,label:'Money mgmt'},
+    {id:'money',icon:Wallet,label:'Capital'},
     {id:'plan',icon:ClipboardList,label:'Trading plan'},
     {id:'calendar',icon:Calendar,label:'Calendar'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},

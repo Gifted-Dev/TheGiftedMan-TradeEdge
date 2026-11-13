@@ -38,6 +38,8 @@ Stored in `docs/specs/`. Format: `docs/specs/NNNN-title.md`.
 - Style UI surfaces using Tailwind utility classes and theme tokens.
 - Handle state transitions and session cooldown timers client side with sound feedback.
 - Maintain test coverage for smoke tests and critical calculations using React Testing Library.
+- Scratch UI inputs that are not account settings (the Capital tab calculator) live in `localStorage` per Demo/Real mode, never in Supabase.
+- Tests use `@testing-library/user-event` v13 (no `userEvent.setup()`), and the app restores the last view from `sessionStorage` (`gm_view`), so clear `sessionStorage` between full app tests.
 
 ## Agent skills
 

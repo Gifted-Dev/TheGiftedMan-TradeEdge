@@ -23,9 +23,10 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 2 | Journal list pagination & page sizing | Slice 1 | done |
 | 3 | Journal search & quick pair filter | Slice 1 | in-progress |
 | 4 | Masaniello money management style | Slice 2 | in-progress |
-| 5 | Masaniello profit target & session counter | Slice 2 | in-progress |
+| 5 | Masaniello profit target & session counter | Slice 2 | done |
 | 6 | Masaniello settings recommender | Slice 2 | planned |
 | 7 | Settings page reorganization | Slice 3 | done |
+| 8 | Money tab compound calculator | Slice 4 | done |
 
 ## Existing features
 
@@ -116,7 +117,7 @@ Add a fourth Money Management Style where you pick how many wins you need (K) ou
 - [x] Test it: `/test masaniello money management style`
 Spec [0004](../specs/0004-masaniello-money-management-style/index.md) · code in `src/App.js`
 
-### 5. Masaniello profit target & session counter · in-progress
+### 5. Masaniello profit target & session counter · done
 Add a profit target to the Masaniello settings so you can see how many sessions it takes to reach it, and track how many sessions you have run toward it, with the alert and auto options from the tool. Masaniello is not held to the standard Sessions per day setting (2 or 3): the number of sessions comes from the target and the plan. UX comes first: one clear target field, a plain answer line ("About 4 sessions to reach $200"), and no extra screens.
 **Done when:** with Masaniello selected, you can set a profit target (% or $) in the Masaniello settings panel and see sessions required, projected account gain, and capital final, updating live as you change capital, total trades, win trades, or payout. Sessions required is not capped by Sessions per day, and the Session x/y counter for Masaniello shows progress toward the target instead of the standard cap. An empty or unreachable target shows a clear message, not a blank or a wrong number. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback.
 - [x] Design it (spec): `/architect masaniello profit target & session counter`
@@ -127,7 +128,7 @@ Add a profit target to the Masaniello settings so you can see how many sessions 
    - [x] Alerts: cycle end, target reached, stop loss (AC-13 to AC-15)
    - [x] Remove the Masaniello daily lock (AC-12)
    - [x] Stop Loss ends cycle toggle, `MS_STOP_LOSS` (AC-16, AC-17)
-- [ ] Verify it: `/check verify masaniello profit target & session counter`
+- [x] Verify it: `/check verify masaniello profit target & session counter`
 - [x] Test it: `/test masaniello profit target & session counter`
 Spec [0006](../specs/0006-masaniello-profit-target-session-counter.md) · code in `src/App.js`
 
@@ -151,6 +152,24 @@ The Settings page grew into one long stack of cards with repeated controls and l
 - [ ] Verify it: `/check verify settings page reorganization`
 - [x] Test it: `/test settings page reorganization`
 Spec [0005](../specs/0005-settings-page-reorganization/index.md) · code in `src/App.js` (`Cfg`, `MasanielloSettings`)
+
+## Slice 4: Money tab compound calculator
+
+### 8. Money tab compound calculator · done
+Rename the Money tab to "Capital" (it clashed with Settings "Money management"), give it a real UI and UX pass (one scroll, calculator first, jump bar, consistent cards), and rebuild it around the compound calculator in your sheet (`Compound_Calculator_v1.xlsx`): a headline projected balance, a settings block you tap to edit, summary tiles, a growth chart, and a day by day schedule with planned withdrawals. The calculator replaces the old win rate growth projector. Everything the tab does today stays: position sizer, withdrawal milestones, log withdrawal, and withdrawal history (existing feature F).
+**Done when:** the top of the Money tab shows "Projected balance, day N" with the multiple of starting capital (withdrawals included) and a line chart; a settings block lets you edit currency symbol, starting capital, account gain per day %, period in days (1 to 365), withdrawal %, withdraw from (Profit or Balance), withdrawal frequency (None, Daily, Weekly, Monthly), days per week, and days per month, and every number updates live; summary tiles show total withdrawn, total profit, and return on capital; a daily schedule table lists day, start, profit, withdrawal, end balance, and withdrawn so far; starting capital and gain per day default to your live balance and real average gain for the active mode (Demo or Real), and you can override them without touching Settings or any Save bar; bad input (empty, zero, out of range) shows a clear message, not NaN; a plain note says it is a projection that assumes the same gain every day with no losing days; the position sizer, milestones, log withdrawal, and withdrawal history still work as before; the layout holds at phone width.
+- [x] Design it (spec): `/architect money tab compound calculator`
+- [x] Build it: `/develop money tab compound calculator`
+   - [x] Thin thread: pure engine, calculator card, headline, schedule, live defaults (AC-1, AC-2, AC-3, AC-8)
+   - [x] Settings block: inputs, parsing, validation, withdrawal rules (AC-4, AC-6, AC-7)
+   - [x] Saving and live numbers: per mode browser storage, Use my live numbers (AC-8, AC-9)
+   - [x] Tiles, chart, note, money formatter (AC-5, AC-10, AC-11, AC-15)
+   - [x] Schedule polish, phone width, projector cleanup (AC-1, AC-12, AC-13, AC-14)
+   - [x] Rename tab to Capital (AC-16)
+   - [x] Layout and UX polish: one scroll, jump bar, consistent cards, tidy existing sections (AC-17, AC-18, AC-19)
+- [x] Verify it: `/check verify money tab compound calculator`
+- [x] Test it: `/test money tab compound calculator`
+Spec [0007](../specs/0007-money-tab-compound-calculator.md) · code in `src/App.js` (`Money`)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
