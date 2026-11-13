@@ -168,6 +168,19 @@ describe('Masaniello profit target (spec 0006)', () => {
     expect(msCounterLabel({ moneyMgmtStyleDemo: 'FIXED' }, 'DEMO', 500, ok, [active])).toBeNull();
   });
 
+  // covers: AC-7, AC-10 (bug: raising the target reset sessions done to zero)
+  test('raising the target keeps sessions done and only grows the total', () => {
+    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetDollarsDemo: 100, msTargetSetAtDemo: 1, msCapitalDemo: 50 };
+    const done = [1, 2, 3].map(i => ({ id: `d${i}`, accountMode: 'DEMO', msN: 10, isActive: false, endTime: 5 + i, sPnl: 10 }));
+    const active = { id: 'a', accountMode: 'DEMO', msN: 10, isActive: true, endTime: null, sPnl: 0 };
+    const ok = { status: 'ok', sessions: [] };
+    const before = msCounterLabel(settings, 'DEMO', 500, ok, [...done, active]);
+    const after = msCounterLabel({ ...settings, msTargetDollarsDemo: 1000 }, 'DEMO', 500, ok, [...done, active]);
+    expect(before).toMatch(/^Session 4\/\d+$/);
+    expect(after).toMatch(/^Session 4\/\d+$/);
+    expect(Number(after.split('/')[1])).toBeGreaterThan(Number(before.split('/')[1]));
+  });
+
   test('auto copy balance makes capital follow the balance', () => {
     expect(getMsCapitalForMode({ msCapitalDemo: 50 }, 'DEMO', 300)).toBe(50);
     expect(getMsCapitalForMode({ msCapitalDemo: 50, msAutoCopyBalanceDemo: true }, 'DEMO', 300)).toBe(300);
@@ -285,6 +298,31 @@ describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
     expect(run({ st, prevSessions: [win], sessions: [win] })).toEqual([]);
   });
 
+  // covers: AC-10, AC-15
+  test('lowering the goal under profit already made gives no alert; a later flip on the new goal still fires', () => {
+    const st = fresh();
+    const done = ms({ isActive: false, endTime: 5, endReason: 'MS_LOSS_LIMIT', sPnl: 90 });
+    expect(run({ st, prevSessions: null, sessions: [done] })).toEqual([]);
+    const lowered = { ...settings, msTargetDollarsDemo: 80 };
+    expect(run({ st, settings: lowered, prevSessions: [done], sessions: [done] })).toEqual([]);
+    const raised = { ...settings, msTargetDollarsDemo: 150 };
+    expect(run({ st, settings: raised, prevSessions: [done], sessions: [done] })).toEqual([]);
+    const win = ms({ id: 's2', isActive: false, endTime: 9, endReason: 'MS_TARGET', sPnl: 70 });
+    expect(titles(run({ st, settings: raised, prevSessions: [ms({ id: 's2' }), done], sessions: [win, done] }))).toEqual(['Profit target reached']);
+  });
+
+  // covers: AC-10, AC-15 (review: editing back to an earlier goal must not chime)
+  test('editing the goal back to an earlier value gives no alert', () => {
+    const st = fresh();
+    const done = ms({ id: 'd', isActive: false, endTime: 5, endReason: 'MS_LOSS_LIMIT', sPnl: 90 });
+    const win = ms({ id: 'w', isActive: false, endTime: 9, endReason: 'MS_LOSS_LIMIT', sPnl: 20 });
+    const raised = { ...settings, msTargetDollarsDemo: 200 };
+    run({ st, prevSessions: null, sessions: [done] });
+    run({ st, settings: raised, prevSessions: [done], sessions: [done] });
+    expect(run({ st, settings: raised, prevSessions: [done], sessions: [done, win] }).map(e => e.title)).toEqual(['Masaniello cycle lost']);
+    expect(titles(run({ st, prevSessions: [done, win], sessions: [done, win] }))).toEqual([]);
+  });
+
   test('target reached is not seeded or fired while history is still loading', () => {
     const st = fresh();
     const loading = () => ({ status: 'loading', sessions: [] });
@@ -331,15 +369,15 @@ describe('Masaniello settings panel (spec 0006)', () => {
     moneyMgmtStyleDemo: 'MASANIELLO', startingBalanceDemo: 500, startingBalanceReal: 0,
     msTotalTradesDemo: 10, msWinTradesDemo: 6, msPayoutPctDemo: 92, msStopLossPctDemo: 20,
   };
-  async function open(settings = {}) {
+  async function open(settings = {}, { msHist = {}, sessions = [] } = {}) {
     const saveSettings = jest.fn().mockResolvedValue(undefined);
     const user = {
       click: async el => { fireEvent.click(el); },
       type: async (el, v) => { fireEvent.change(el, { target: { value: v } }); },
       clear: async el => { fireEvent.change(el, { target: { value: '' } }); },
     };
-    render(<Cfg settings={{ ...base, ...settings }} saveSettings={saveSettings} ss={{ sessions: [] }} trades={[]} wds={[]}
-      strategies={[]} mode="DEMO" msHist={{}} resetAccount={jest.fn()} addStrategy={jest.fn()} updateStrategy={jest.fn()} deleteStrategy={jest.fn()} />);
+    render(<Cfg settings={{ ...base, ...settings }} saveSettings={saveSettings} ss={{ sessions }} trades={[]} wds={[]}
+      strategies={[]} mode="DEMO" msHist={msHist} resetAccount={jest.fn()} addStrategy={jest.fn()} updateStrategy={jest.fn()} deleteStrategy={jest.fn()} />);
     await user.click(screen.getByRole('tab', { name: 'Money management' }));
     return { user, saveSettings, target: screen.getByLabelText('Profit target') };
   }
@@ -417,6 +455,62 @@ describe('Masaniello settings panel (spec 0006)', () => {
     expect(screen.queryByText(/About \d+ sessions?/)).not.toBeInTheDocument();
   });
 
+  // covers: AC-3, AC-7, AC-10 (review: preview must count from the kept start time)
+  describe('editing a saved target', () => {
+    const saved = { msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 };
+    const done = { id: 'h1', accountMode: 'DEMO', msN: 10, isActive: false, endTime: 200, startTime: 100, sPnl: 90 };
+    const hist = { 'DEMO:111': { status: 'ok', sessions: [done] } };
+
+    test('raising the goal subtracts profit already made', async () => {
+      const { user, target } = await open(saved, { msHist: hist });
+      await user.clear(target);
+      await user.type(target, '110');
+      // 20 left, not 110: one session covers it at this plan
+      expect(screen.getByText(/About 1 session to reach \$110\.00/)).toBeInTheDocument();
+    });
+
+    test('lowering the goal under profit made says reached, and shows the start date', async () => {
+      const { user, target } = await open(saved, { msHist: hist });
+      await user.clear(target);
+      await user.type(target, '80');
+      expect(screen.getByText(/Target reached: \+\$90\.00 in 1 session\./)).toBeInTheDocument();
+      expect(screen.getByText(/Counting sessions since/)).toBeInTheDocument();
+    });
+
+    test('a failed history read hides the count even when the goal is edited', async () => {
+      const { user, target } = await open(saved, { msHist: { 'DEMO:111': { status: 'error', sessions: [] } } });
+      await user.clear(target);
+      await user.type(target, '150');
+      expect(screen.getByText('Could not read your earlier sessions, so the session count is hidden.')).toBeInTheDocument();
+    });
+
+    test('a percent edit keeps the start time and recomputes the dollars', async () => {
+      const { user, saveSettings, target } = await open({ startingBalanceDemo: 500, ...saved, msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 50 }, { msHist: hist });
+      await user.clear(target);
+      await user.type(target, '20');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 20, msTargetUnitDemo: '%', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
+    });
+
+    test('Real start time is untouched when Demo is edited', async () => {
+      const { user, saveSettings, target } = await open({ ...saved, msTargetValueReal: 50, msTargetUnitReal: '$', msTargetDollarsReal: 50, msTargetSetAtReal: 777 }, { msHist: hist });
+      await user.clear(target);
+      await user.type(target, '150');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 150, msTargetSetAtDemo: 111, msTargetDollarsReal: 50, msTargetSetAtReal: 777 });
+    });
+
+    test('clearing the goal nulls the dollars and the start time', async () => {
+      const { user, saveSettings, target } = await open(saved, { msHist: hist });
+      await user.clear(target);
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(saveSettings).toHaveBeenCalled());
+      expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: null, msTargetSetAtDemo: null });
+    });
+  });
+
   // covers: AC-10
   test('saving another setting keeps the stored dollar goal and its start time', async () => {
     const { user, saveSettings } = await open({ msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 40, msTargetSetAtDemo: 111 });
@@ -438,14 +532,14 @@ describe('Masaniello settings panel (spec 0006)', () => {
   });
 
   // covers: AC-10
-  test('a changed dollar goal restarts the count with a new start time', async () => {
+  test('a changed dollar goal keeps the start time so done sessions still count', async () => {
     jest.spyOn(Date, 'now').mockReturnValue(999);
     const { user, saveSettings, target } = await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
     await user.clear(target);
     await user.type(target, '150');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 150, msTargetSetAtDemo: 999 });
+    expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 150, msTargetSetAtDemo: 111 });
     Date.now.mockRestore();
   });
 

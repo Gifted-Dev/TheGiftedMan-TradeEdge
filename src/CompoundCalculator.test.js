@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { buildCompoundSchedule, validateCompoundInputs, parseCompoundField, avgDailyGainPct } from './App';
 
@@ -449,6 +449,23 @@ describe('Capital tab review follow ups', () => {
     userEvent.keyboard('{enter}');
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     expect(chip).toHaveAttribute('aria-current', 'true');
+  });
+
+  test('scrolling the page marks the section under the bar as current, and the last one at the bottom', async () => {
+    await open();
+    const bar = screen.getByRole('navigation', { name: 'Capital sections' });
+    const main = bar.closest('main');
+    const top = (id, y) => { document.getElementById(id).getBoundingClientRect = () => ({ top: y }); };
+    main.getBoundingClientRect = () => ({ top: 0 });
+    Object.defineProperty(main, 'clientHeight', { configurable: true, value: 500 });
+    Object.defineProperty(main, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(main, 'scrollTop', { configurable: true, writable: true, value: 600 });
+    top('cap-projection', -400); top('cap-sizer', 20); top('cap-milestones', 700);
+    fireEvent.scroll(main);
+    expect(within(bar).getByRole('button', { name: 'Sizer' })).toHaveAttribute('aria-current', 'true');
+    main.scrollTop = 1500; // 1500 + 500 >= 2000 - 2
+    fireEvent.scroll(main);
+    expect(within(bar).getByRole('button', { name: 'Milestones' })).toHaveAttribute('aria-current', 'true');
   });
 
   test('Log withdrawal fields have labels tied to their inputs (review)', async () => {
