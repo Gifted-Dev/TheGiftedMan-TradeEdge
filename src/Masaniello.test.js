@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { msTable, msPlanSummary, liveMasanielloNextStake, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msMergeSessions, msModeProgress, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsAlertStopLossForMode, getMsStopLossEndsForMode, getMsTargetDollarsForMode, getMsTargetSetAtForMode, msAlertEvents, msStopLossHit, Cfg } from './App';
+import { msTable, msPlanSummary, liveMasanielloNextStake, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msModeProgress, msTargetDollarsToday, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsAlertStopLossForMode, getMsStopLossEndsForMode, msAlertEvents, msStopLossHit, dayStartBalForMode, Cfg } from './App';
 
 const cycle = (over = {}) => ({ isActive: true, msN: 10, msK: 6, msPayoutPct: 92, msCapital: 100, msWins: 0, msLosses: 0, sPnl: 0, ...over });
 
@@ -137,48 +137,53 @@ describe('Masaniello profit target (spec 0006)', () => {
   test('percent target converts on the balance and validates', () => {
     expect(msTargetToDollars('10', '%', 500)).toBe(50);
     expect(msTargetToDollars('', '$', 500)).toBeNull();
-    expect(msFieldErrors({ msTargetValueDemo: '10', msTargetUnitDemo: '%' }, 'Demo', 0).msTargetValue).toBeTruthy();
-    expect(msFieldErrors({ msTargetValueDemo: '10', msTargetUnitDemo: '%' }, 'Demo', 500).msTargetValue).toBeUndefined();
-    expect(msFieldErrors({ msTargetValueDemo: '0.1', msTargetUnitDemo: '%' }, 'Demo', 1).msTargetValue).toBeTruthy();
-    expect(msFieldErrors({ msTargetValueDemo: '0', msTargetUnitDemo: '$' }, 'Demo', 500).msTargetValue).toBeTruthy();
-    expect(msFieldErrors({ msTargetValueDemo: '1000001' }, 'Demo', 500).msTargetValue).toBeTruthy();
+    expect(msFieldErrors({ msTargetValueDemo: '10', msTargetUnitDemo: '%' }, 'Demo').msTargetValue).toBeUndefined();
+    expect(msFieldErrors({ msTargetValueDemo: '0.05', msTargetUnitDemo: '%' }, 'Demo').msTargetValue).toBeTruthy();
+    expect(msFieldErrors({ msTargetValueDemo: '0', msTargetUnitDemo: '$' }, 'Demo').msTargetValue).toBeTruthy();
+    expect(msFieldErrors({ msTargetValueDemo: '1000001' }, 'Demo').msTargetValue).toBeTruthy();
   });
 
   test('progress counts in end order and stops at the crossing session', () => {
     const s = (id, end, pnl, over = {}) => ({ id, msN: 10, isActive: false, endTime: end, sPnl: pnl, ...over });
-    const r = msTargetProgress([s('d', 4, 20), s('c', 3, 50), s('a', 1, 30), s('b', 2, 40), s('old', 0, 999)], 100, 1);
+    const r = msTargetProgress([s('d', 4, 20), s('c', 3, 50), s('a', 1, 30), s('b', 2, 40)], 100);
     expect(r).toEqual({ count: 3, profit: 120, reached: true });
-    const ignored = msTargetProgress([s('x', 5, 10), s('y', 9, 10, { msN: null }), s('z', 9, 10, { isActive: true })], 100, 6);
+    const ignored = msTargetProgress([s('y', 9, 10, { msN: null }), s('z', 9, 10, { isActive: true })], 100);
     expect(ignored).toEqual({ count: 0, profit: 0, reached: false });
   });
 
   test('counter label: x includes active, loss raises y, reached, no target, other style', () => {
-    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetDollarsDemo: 100, msTargetSetAtDemo: 1, msCapitalDemo: 50 };
+    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetValueDemo: 100, msTargetUnitDemo: '$', msCapitalDemo: 50 };
     const ended = { id: 'e', accountMode: 'DEMO', msN: 10, isActive: false, endTime: 5, sPnl: -50 };
     const active = { id: 'a', accountMode: 'DEMO', msN: 10, isActive: true, endTime: null, sPnl: 0 };
-    const ok = { status: 'ok', sessions: [] };
-    const base = msCounterLabel(settings, 'DEMO', 500, ok, [active]);
+    const base = msCounterLabel(settings, 'DEMO', 500, [active], 500);
     expect(base).toMatch(/^Session 1\/\d+$/);
-    const afterLoss = msCounterLabel(settings, 'DEMO', 500, ok, [ended, active]);
+    const afterLoss = msCounterLabel(settings, 'DEMO', 500, [ended, active], 500);
     expect(Number(afterLoss.split('/')[1])).toBeGreaterThan(Number(base.split('/')[1]));
     const won = { ...ended, id: 'w', sPnl: 150 };
-    expect(msCounterLabel(settings, 'DEMO', 500, ok, [won])).toBe('Target reached · 1 session');
-    expect(msCounterLabel(settings, 'DEMO', 500, { status: 'loading' }, [active])).toBe('Session 1');
-    expect(msCounterLabel({ ...settings, msTargetDollarsDemo: null }, 'DEMO', 500, ok, [ended, active])).toBe('Session 2');
-    expect(msCounterLabel({ moneyMgmtStyleDemo: 'FIXED' }, 'DEMO', 500, ok, [active])).toBeNull();
+    expect(msCounterLabel(settings, 'DEMO', 500, [won], 500)).toBe('Target reached · 1 session');
+    expect(msCounterLabel({ ...settings, msTargetValueDemo: null }, 'DEMO', 500, [ended, active], 500)).toBe('Session 2');
+    expect(msCounterLabel({ moneyMgmtStyleDemo: 'FIXED' }, 'DEMO', 500, [active], 500)).toBeNull();
   });
 
-  // covers: AC-7, AC-10 (bug: raising the target reset sessions done to zero)
+  // covers: AC-7 (bug: raising the target reset sessions done to zero)
   test('raising the target keeps sessions done and only grows the total', () => {
-    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetDollarsDemo: 100, msTargetSetAtDemo: 1, msCapitalDemo: 50 };
+    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetValueDemo: 100, msTargetUnitDemo: '$', msCapitalDemo: 50 };
     const done = [1, 2, 3].map(i => ({ id: `d${i}`, accountMode: 'DEMO', msN: 10, isActive: false, endTime: 5 + i, sPnl: 10 }));
     const active = { id: 'a', accountMode: 'DEMO', msN: 10, isActive: true, endTime: null, sPnl: 0 };
-    const ok = { status: 'ok', sessions: [] };
-    const before = msCounterLabel(settings, 'DEMO', 500, ok, [...done, active]);
-    const after = msCounterLabel({ ...settings, msTargetDollarsDemo: 1000 }, 'DEMO', 500, ok, [...done, active]);
+    const before = msCounterLabel(settings, 'DEMO', 500, [...done, active], 500);
+    const after = msCounterLabel({ ...settings, msTargetValueDemo: 1000 }, 'DEMO', 500, [...done, active], 500);
     expect(before).toMatch(/^Session 4\/\d+$/);
     expect(after).toMatch(/^Session 4\/\d+$/);
     expect(Number(after.split('/')[1])).toBeGreaterThan(Number(before.split('/')[1]));
+  });
+
+  // covers: daily goal (a % target uses the balance at the start of the day)
+  test('a percent target follows the day start balance, not the current one', () => {
+    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTargetValueDemo: 10, msTargetUnitDemo: '%', msCapitalDemo: 50 };
+    const won = { id: 'w', accountMode: 'DEMO', msN: 10, isActive: false, endTime: 5, sPnl: 50 };
+    // 10% of 500 = 50: reached. Current balance 900 must not move the goal to 90.
+    expect(msCounterLabel(settings, 'DEMO', 900, [won], 500)).toBe('Target reached · 1 session');
+    expect(msCounterLabel(settings, 'DEMO', 900, [won], 1000)).toMatch(/^Session 1\/\d+$/);
   });
 
   test('auto copy balance makes capital follow the balance', () => {
@@ -218,45 +223,64 @@ describe('Masaniello target helpers (spec 0006)', () => {
     expect(getMsAlertSessionEndForMode({ msAlertSessionEndDemo: false }, 'DEMO')).toBe(false);
   });
 
-  // covers: AC-2, AC-10
-  test('target getters return null for missing or non numeric values', () => {
-    expect(getMsTargetDollarsForMode({}, 'DEMO')).toBeNull();
-    expect(getMsTargetSetAtForMode({ msTargetSetAtDemo: 'x' }, 'DEMO')).toBeNull();
-    expect(getMsTargetDollarsForMode({ msTargetDollarsReal: 75 }, 'REAL')).toBe(75);
-    expect(getMsTargetDollarsForMode({ msTargetDollarsReal: 75 }, 'DEMO')).toBeNull();
-  });
-
-  // covers: AC-9
-  test('merge keeps earlier history and lets a live session replace the stored copy', () => {
-    const merged = msMergeSessions([{ id: 'a', sPnl: 1 }, { id: 'b', sPnl: 2 }], [{ id: 'b', sPnl: 9 }, { id: 'c', sPnl: 3 }]);
-    expect(merged.sort((x, y) => x.id.localeCompare(y.id))).toEqual([{ id: 'a', sPnl: 1 }, { id: 'b', sPnl: 9 }, { id: 'c', sPnl: 3 }]);
-    expect(msMergeSessions(undefined, undefined)).toEqual([]);
-  });
-
-  // covers: AC-7, AC-9
-  test('mode progress joins history with today, only for that mode, and is null with no target', () => {
-    const settings = { msTargetDollarsDemo: 100, msTargetSetAtDemo: 1 };
-    const mk = (id, mode, pnl, end) => ({ id, accountMode: mode, msN: 10, isActive: false, endTime: end, sPnl: pnl });
-    const hist = { status: 'ok', sessions: [mk('h', 'DEMO', 60, 2)] };
-    const r = msModeProgress(settings, 'DEMO', hist, [mk('t', 'DEMO', 50, 3), mk('real', 'REAL', 999, 4)]);
-    expect(r).toMatchObject({ target: 100, status: 'ok', count: 2, profit: 110, reached: true });
-    expect(msModeProgress({}, 'DEMO', hist, [])).toBeNull();
-    expect(msModeProgress(settings, 'DEMO', undefined, []).status).toBe('loading');
+  // covers: daily goal
+  test('the daily goal in dollars: fixed $, or a % of the day start balance; null when missing', () => {
+    expect(msTargetDollarsToday({}, 'DEMO', 500)).toBeNull();
+    expect(msTargetDollarsToday({ msTargetValueDemo: 'x' }, 'DEMO', 500)).toBeNull();
+    expect(msTargetDollarsToday({ msTargetValueReal: 75 }, 'REAL', 500)).toBe(75);
+    expect(msTargetDollarsToday({ msTargetValueReal: 75 }, 'DEMO', 500)).toBeNull();
+    expect(msTargetDollarsToday({ msTargetValueDemo: 10, msTargetUnitDemo: '%' }, 'DEMO', 500)).toBe(50);
+    expect(msTargetDollarsToday({ msTargetValueDemo: 10, msTargetUnitDemo: '%' }, 'DEMO', 0)).toBeNull();
   });
 
   // covers: AC-7
-  test('a session that ended before the target was set never counts', () => {
-    const early = { id: 'e', msN: 10, isActive: false, endTime: 5, sPnl: 500 };
-    expect(msTargetProgress([early], 100, 6)).toEqual({ count: 0, profit: 0, reached: false });
-    expect(msTargetProgress([early], 0, 1)).toEqual({ count: 0, profit: 0, reached: false });
+  test('mode progress counts only that mode, and is null with no target', () => {
+    const settings = { msTargetValueDemo: 100, msTargetUnitDemo: '$' };
+    const mk = (id, mode, pnl, end) => ({ id, accountMode: mode, msN: 10, isActive: false, endTime: end, sPnl: pnl });
+    const r = msModeProgress(settings, 'DEMO', [mk('a', 'DEMO', 60, 2), mk('t', 'DEMO', 50, 3), mk('real', 'REAL', 999, 4)], 500);
+    expect(r).toMatchObject({ target: 100, count: 2, profit: 110, reached: true });
+    expect(msModeProgress({}, 'DEMO', [], 500)).toBeNull();
+  });
+
+  // covers: AC-7
+  test('no goal means no progress', () => {
+    const done = { id: 'e', msN: 10, isActive: false, endTime: 5, sPnl: 500 };
+    expect(msTargetProgress([done], 0)).toEqual({ count: 0, profit: 0, reached: false });
+    expect(msTargetProgress([done], null)).toEqual({ count: 0, profit: 0, reached: false });
+  });
+});
+
+describe('Day start balance (spec 0006 daily goal)', () => {
+  const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const settings = { startingBalanceDemo: 500, startingBalanceReal: 1000 };
+  const tr = (mode, pnl, ts, outcome = 'WIN') => ({ accountMode: mode, pnl, timestamp: ts, outcome });
+
+  test('counts only trades before local midnight, for that mode', () => {
+    const midnight = startOfToday();
+    const trades = [tr('DEMO', 40, midnight - 1), tr('DEMO', 25, midnight), tr('DEMO', 25, midnight + 5), tr('REAL', 99, midnight - 1)];
+    expect(dayStartBalForMode(settings, trades, [], 'DEMO')).toBe(540);
+    expect(dayStartBalForMode(settings, trades, [], 'REAL')).toBe(1099);
+  });
+
+  test('ignores pending trades, and takes Real withdrawals before midnight only', () => {
+    const midnight = startOfToday();
+    const trades = [tr('DEMO', 40, midnight - 1, 'PENDING')];
+    expect(dayStartBalForMode(settings, trades, [], 'DEMO')).toBe(500);
+    const wds = [{ amount: 100, timestamp: midnight - 1 }, { amount: 50, timestamp: midnight + 1 }];
+    expect(dayStartBalForMode(settings, [], wds, 'REAL')).toBe(900);
+    expect(dayStartBalForMode(settings, [], wds, 'DEMO')).toBe(500); // Demo has no withdrawals
+  });
+
+  test('a trade with no timestamp is left out, not counted as zero', () => {
+    expect(dayStartBalForMode(settings, [tr('DEMO', 40, undefined)], [], 'DEMO')).toBe(500);
   });
 });
 
 describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
-  const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msStopLossPctDemo: 30, msTargetDollarsDemo: 100, msTargetSetAtDemo: 1 };
+  const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msStopLossPctDemo: 30, msTargetValueDemo: 100, msTargetUnitDemo: '$' };
   const fresh = () => ({ alerted: new Set(), stopLossAlerted: new Set(), prevReached: {} });
   const ms = (over = {}) => ({ id: 's1', accountMode: 'DEMO', msN: 10, msK: 6, msCapital: 100, isActive: true, endTime: null, sPnl: 0, ...over });
-  const run = o => msAlertEvents({ histFor: () => ({ status: 'ok', sessions: [] }), settings, st: fresh(), ...o });
+  const run = o => msAlertEvents({ dayBal: () => 500, settings, st: fresh(), ...o });
   const titles = ev => ev.map(e => e.title);
 
   test('first load only seeds: no alert for sessions already ended', () => {
@@ -303,9 +327,9 @@ describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
     const st = fresh();
     const done = ms({ isActive: false, endTime: 5, endReason: 'MS_LOSS_LIMIT', sPnl: 90 });
     expect(run({ st, prevSessions: null, sessions: [done] })).toEqual([]);
-    const lowered = { ...settings, msTargetDollarsDemo: 80 };
+    const lowered = { ...settings, msTargetValueDemo: 80 };
     expect(run({ st, settings: lowered, prevSessions: [done], sessions: [done] })).toEqual([]);
-    const raised = { ...settings, msTargetDollarsDemo: 150 };
+    const raised = { ...settings, msTargetValueDemo: 150 };
     expect(run({ st, settings: raised, prevSessions: [done], sessions: [done] })).toEqual([]);
     const win = ms({ id: 's2', isActive: false, endTime: 9, endReason: 'MS_TARGET', sPnl: 70 });
     expect(titles(run({ st, settings: raised, prevSessions: [ms({ id: 's2' }), done], sessions: [win, done] }))).toEqual(['Profit target reached']);
@@ -316,20 +340,22 @@ describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
     const st = fresh();
     const done = ms({ id: 'd', isActive: false, endTime: 5, endReason: 'MS_LOSS_LIMIT', sPnl: 90 });
     const win = ms({ id: 'w', isActive: false, endTime: 9, endReason: 'MS_LOSS_LIMIT', sPnl: 20 });
-    const raised = { ...settings, msTargetDollarsDemo: 200 };
+    const raised = { ...settings, msTargetValueDemo: 200 };
     run({ st, prevSessions: null, sessions: [done] });
     run({ st, settings: raised, prevSessions: [done], sessions: [done] });
     expect(run({ st, settings: raised, prevSessions: [done], sessions: [done, win] }).map(e => e.title)).toEqual(['Masaniello cycle lost']);
     expect(titles(run({ st, prevSessions: [done, win], sessions: [done, win] }))).toEqual([]);
   });
 
-  test('target reached is not seeded or fired while history is still loading', () => {
+  // covers: daily goal (a new day starts again: reached yesterday, reached again today fires once)
+  test('a new day resets the latch: reaching the goal again today fires exactly once', () => {
     const st = fresh();
-    const loading = () => ({ status: 'loading', sessions: [] });
-    const win = ms({ isActive: false, endTime: 9, endReason: 'MS_TARGET', sPnl: 150 });
-    run({ st, histFor: loading, prevSessions: null, sessions: [] });
-    expect(st.prevReached).toEqual({});
-    expect(titles(run({ st, histFor: loading, prevSessions: [ms()], sessions: [win] }))).toEqual(['Masaniello cycle won']);
+    const yesterday = ms({ id: 'y', isActive: false, endTime: 5, endReason: 'MS_TARGET', sPnl: 150 });
+    run({ st, prevSessions: null, sessions: [yesterday] });
+    expect(run({ st, prevSessions: [yesterday], sessions: [] })).toEqual([]); // midnight: today's list is empty
+    const today = ms({ id: 't', isActive: false, endTime: 9, endReason: 'MS_TARGET', sPnl: 150 });
+    expect(titles(run({ st, prevSessions: [ms({ id: 't' })], sessions: [today] }))).toEqual(['Profit target reached']);
+    expect(run({ st, prevSessions: [today], sessions: [today] })).toEqual([]);
   });
 
   test('with the target reached alert off, the cycle end alert still plays', () => {
@@ -369,7 +395,7 @@ describe('Masaniello settings panel (spec 0006)', () => {
     moneyMgmtStyleDemo: 'MASANIELLO', startingBalanceDemo: 500, startingBalanceReal: 0,
     msTotalTradesDemo: 10, msWinTradesDemo: 6, msPayoutPctDemo: 92, msStopLossPctDemo: 20,
   };
-  async function open(settings = {}, { msHist = {}, sessions = [] } = {}) {
+  async function open(settings = {}, { sessions = [] } = {}) {
     const saveSettings = jest.fn().mockResolvedValue(undefined);
     const user = {
       click: async el => { fireEvent.click(el); },
@@ -377,7 +403,7 @@ describe('Masaniello settings panel (spec 0006)', () => {
       clear: async el => { fireEvent.change(el, { target: { value: '' } }); },
     };
     render(<Cfg settings={{ ...base, ...settings }} saveSettings={saveSettings} ss={{ sessions }} trades={[]} wds={[]}
-      strategies={[]} mode="DEMO" msHist={msHist} resetAccount={jest.fn()} addStrategy={jest.fn()} updateStrategy={jest.fn()} deleteStrategy={jest.fn()} />);
+      strategies={[]} mode="DEMO" resetAccount={jest.fn()} addStrategy={jest.fn()} updateStrategy={jest.fn()} deleteStrategy={jest.fn()} />);
     await user.click(screen.getByRole('tab', { name: 'Money management' }));
     return { user, saveSettings, target: screen.getByLabelText('Profit target') };
   }
@@ -389,28 +415,29 @@ describe('Masaniello settings panel (spec 0006)', () => {
     expect(screen.getByText('Set a profit target to see how many sessions it takes.')).toBeInTheDocument();
   });
 
-  // covers: AC-1, AC-2, AC-3, AC-10
-  test('a dollar target updates the answer line and saves dollars with a start time', async () => {
-    jest.spyOn(Date, 'now').mockReturnValue(1234567);
-    const { user, saveSettings, target } = await open();
+  // covers: AC-1, AC-2, AC-3
+  test('a dollar target updates the answer line and saves the typed value and unit', async () => {
+    const { user, saveSettings, target } = await open({ msTargetDollarsDemo: 50, msTargetSetAtDemo: 111 }); // stale keys from the old design
     await user.type(target, '200');
     expect(screen.getByText(/About 1 session to reach \$200\.00/)).toBeInTheDocument();
     expect(screen.getByText('Assumes every cycle reaches K wins')).toBeInTheDocument();
+    expect(screen.getByText(/A daily goal/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 200, msTargetUnitDemo: '$', msTargetDollarsDemo: 200, msTargetSetAtDemo: 1234567 });
-    Date.now.mockRestore();
+    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 200, msTargetUnitDemo: '$' });
+    expect(lastSaved(saveSettings)).not.toHaveProperty('msTargetDollarsDemo');
+    expect(lastSaved(saveSettings)).not.toHaveProperty('msTargetSetAtDemo');
   });
 
   // covers: AC-2
-  test('a percent target shows the dollar amount and saves it as dollars of the balance', async () => {
+  test('a percent target shows today as dollars of the day start balance and saves the percent', async () => {
     const { user, saveSettings, target } = await open();
     await user.type(target, '10');
     await user.click(screen.getByRole('button', { name: '%' }));
-    expect(screen.getByText(/= \$50\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/= \$50\.00 today/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 50 });
+    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 10, msTargetUnitDemo: '%' });
   });
 
   // covers: AC-1
@@ -423,14 +450,33 @@ describe('Masaniello settings panel (spec 0006)', () => {
     expect(screen.queryByText(/About \d+ sessions/)).not.toBeInTheDocument();
   });
 
-  // covers: AC-1, AC-10
-  test('an invalid target keeps the last saved target and start time', async () => {
-    const { user, saveSettings, target } = await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
+  // covers: AC-1
+  test('an invalid target keeps the last saved target', async () => {
+    const { user, saveSettings, target } = await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$' });
     await user.clear(target);
     await user.type(target, '0');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 100, msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
+    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 100, msTargetUnitDemo: '$' });
+  });
+
+  // covers: AC-1, AC-2 (a % goal needs a balance above 0 at the start of the day)
+  test('a percent goal with no day start balance says so and shows no answer line', async () => {
+    const { user, target } = await open({ startingBalanceDemo: 0 });
+    await user.type(target, '10');
+    await user.click(screen.getByRole('button', { name: '%' }));
+    expect(screen.getByText(/A % goal needs a balance above 0 at the start of the day/)).toBeInTheDocument();
+    expect(screen.queryByText(/= \$0\.00 today/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/About \d+ sessions?/)).not.toBeInTheDocument();
+  });
+
+  // covers: AC-1, AC-2 (a % goal under $0.01 is not a goal either)
+  test('a percent goal that rounds under one cent says so', async () => {
+    const { user, target } = await open({ startingBalanceDemo: 4 });
+    await user.type(target, '0.1');
+    await user.click(screen.getByRole('button', { name: '%' }));
+    expect(screen.getByText(/a goal of at least \$0\.01/)).toBeInTheDocument();
+    expect(screen.queryByText(/About \d+ sessions?/)).not.toBeInTheDocument();
   });
 
   // covers: AC-1
@@ -441,106 +487,50 @@ describe('Masaniello settings panel (spec 0006)', () => {
     expect(screen.getByText('No changes')).toBeInTheDocument();
   });
 
-  // covers: AC-2
-  test('a saved percent target stays valid after the balance drops to zero', async () => {
-    await open({ startingBalanceDemo: 0, msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 50, msTargetSetAtDemo: 111 });
-    expect(screen.getByLabelText('Profit target')).not.toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByText(/= \$50\.00/)).toBeInTheDocument();
-  });
-
-  // covers: AC-6
-  test('a saved target shows a loading line, not a count, while earlier sessions are read', async () => {
-    await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
-    expect(screen.getByText('Reading your earlier sessions…')).toBeInTheDocument();
-    expect(screen.queryByText(/About \d+ sessions?/)).not.toBeInTheDocument();
-  });
-
-  // covers: AC-3, AC-7, AC-10 (review: preview must count from the kept start time)
+  // covers: AC-3, AC-7, daily goal (the bug you hit: raising the target must keep today sessions)
   describe('editing a saved target', () => {
-    const saved = { msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 };
+    const saved = { msTargetValueDemo: 100, msTargetUnitDemo: '$' };
     const done = { id: 'h1', accountMode: 'DEMO', msN: 10, isActive: false, endTime: 200, startTime: 100, sPnl: 90 };
-    const hist = { 'DEMO:111': { status: 'ok', sessions: [done] } };
 
-    test('raising the goal subtracts profit already made', async () => {
-      const { user, target } = await open(saved, { msHist: hist });
+    test('raising the goal subtracts profit already made today', async () => {
+      const { user, target } = await open(saved, { sessions: [done] });
       await user.clear(target);
       await user.type(target, '110');
       // 20 left, not 110: one session covers it at this plan
       expect(screen.getByText(/About 1 session to reach \$110\.00/)).toBeInTheDocument();
     });
 
-    test('lowering the goal under profit made says reached, and shows the start date', async () => {
-      const { user, target } = await open(saved, { msHist: hist });
+    test('lowering the goal under profit made says reached', async () => {
+      const { user, target } = await open(saved, { sessions: [done] });
       await user.clear(target);
       await user.type(target, '80');
       expect(screen.getByText(/Target reached: \+\$90\.00 in 1 session\./)).toBeInTheDocument();
-      expect(screen.getByText(/Counting sessions since/)).toBeInTheDocument();
     });
 
-    test('a failed history read hides the count even when the goal is edited', async () => {
-      const { user, target } = await open(saved, { msHist: { 'DEMO:111': { status: 'error', sessions: [] } } });
-      await user.clear(target);
-      await user.type(target, '150');
-      expect(screen.getByText('Could not read your earlier sessions, so the session count is hidden.')).toBeInTheDocument();
-    });
-
-    test('a percent edit keeps the start time and recomputes the dollars', async () => {
-      const { user, saveSettings, target } = await open({ startingBalanceDemo: 500, ...saved, msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 50 }, { msHist: hist });
-      await user.clear(target);
-      await user.type(target, '20');
-      await user.click(screen.getByRole('button', { name: 'Save' }));
-      await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-      expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 20, msTargetUnitDemo: '%', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
-    });
-
-    test('Real start time is untouched when Demo is edited', async () => {
-      const { user, saveSettings, target } = await open({ ...saved, msTargetValueReal: 50, msTargetUnitReal: '$', msTargetDollarsReal: 50, msTargetSetAtReal: 777 }, { msHist: hist });
+    test('saving a raised goal stores only the new value', async () => {
+      const { user, saveSettings, target } = await open({ ...saved, msTargetValueReal: 50, msTargetUnitReal: '$' }, { sessions: [done] });
       await user.clear(target);
       await user.type(target, '150');
       await user.click(screen.getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-      expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 150, msTargetSetAtDemo: 111, msTargetDollarsReal: 50, msTargetSetAtReal: 777 });
+      expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: 150, msTargetValueReal: 50 });
     });
 
-    test('clearing the goal nulls the dollars and the start time', async () => {
-      const { user, saveSettings, target } = await open(saved, { msHist: hist });
+    test('clearing the goal saves no target', async () => {
+      const { user, saveSettings, target } = await open(saved, { sessions: [done] });
       await user.clear(target);
       await user.click(screen.getByRole('button', { name: 'Save' }));
       await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-      expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: null, msTargetSetAtDemo: null });
+      expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: null });
     });
-  });
 
-  // covers: AC-10
-  test('saving another setting keeps the stored dollar goal and its start time', async () => {
-    const { user, saveSettings } = await open({ msTargetValueDemo: 10, msTargetUnitDemo: '%', msTargetDollarsDemo: 40, msTargetSetAtDemo: 111 });
-    const stop = screen.getByLabelText('Stop Loss %');
-    await user.clear(stop);
-    await user.type(stop, '25');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 40, msTargetSetAtDemo: 111, msStopLossPctDemo: 25 });
-  });
-
-  // covers: AC-10
-  test('clearing the target clears the dollars and start time', async () => {
-    const { user, saveSettings, target } = await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
-    await user.clear(target);
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetValueDemo: null, msTargetDollarsDemo: null, msTargetSetAtDemo: null });
-  });
-
-  // covers: AC-10
-  test('a changed dollar goal keeps the start time so done sessions still count', async () => {
-    jest.spyOn(Date, 'now').mockReturnValue(999);
-    const { user, saveSettings, target } = await open({ msTargetValueDemo: 100, msTargetUnitDemo: '$', msTargetDollarsDemo: 100, msTargetSetAtDemo: 111 });
-    await user.clear(target);
-    await user.type(target, '150');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    expect(lastSaved(saveSettings)).toMatchObject({ msTargetDollarsDemo: 150, msTargetSetAtDemo: 111 });
-    Date.now.mockRestore();
+    test('sessions of the other mode never count', async () => {
+      const { user, target } = await open(saved, { sessions: [{ ...done, accountMode: 'REAL' }] });
+      await user.clear(target);
+      await user.type(target, '110');
+      expect(screen.getByText(/About \d+ sessions? to reach \$110\.00/)).toBeInTheDocument();
+      expect(screen.queryByText(/Target reached:/)).not.toBeInTheDocument();
+    });
   });
 
   // covers: AC-11
