@@ -50,3 +50,52 @@ test('dashboard renders day-locked state', () => {
   render(<Dashboard settings={settings} trades={trades} wds={[]} ss={ssEmpty} bal={12} mode="DEMO" nav={jest.fn()} />);
   expect(screen.getByText('Day locked')).toBeInTheDocument();
 });
+
+describe('Masaniello daily profit target', () => {
+  const ms = { ...settings, moneyMgmtStyleDemo: 'MASANIELLO' };
+  const done = { id: 'm1', num: 1, accountMode: 'DEMO', msN: 10, msK: 6, startTime: Date.now() - 2000, endTime: Date.now() - 1000, sPnl: 30, isActive: false, endReason: 'MS_TARGET' };
+
+  test('shows the target and progress', () => {
+    render(<Dashboard settings={{ ...ms, msTargetValueDemo: 100, msTargetUnitDemo: '$' }} trades={[]} wds={[]} ss={{ ...ssEmpty, sessions: [done] }} bal={50} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.getByText(/Daily profit target · \+\$100\.00/)).toBeInTheDocument();
+    expect(screen.getByText(/\+\$30\.00 so far/)).toBeInTheDocument();
+    expect(screen.getByText('$120.00')).toBeInTheDocument(); // day start $20 + $100 target
+  });
+
+  test('shows Target reached once the day profit hits the goal (covers: AC-7, AC-8)', () => {
+    render(<Dashboard settings={{ ...ms, msTargetValueDemo: 25, msTargetUnitDemo: '$' }} trades={[]} wds={[]} ss={{ ...ssEmpty, sessions: [done] }} bal={50} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.getByText('Target reached')).toBeInTheDocument();
+  });
+
+  test('a percent target uses the balance at the start of the day', () => {
+    // No trades before today, so day start is the $20 starting balance: 50% = $10, target balance $30.
+    render(<Dashboard settings={{ ...ms, msTargetValueDemo: 50, msTargetUnitDemo: '%' }} trades={[]} wds={[]} ss={ssEmpty} bal={99} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.getByText(/Daily profit target · \+\$10\.00/)).toBeInTheDocument();
+    expect(screen.getByText('$30.00')).toBeInTheDocument();
+  });
+
+  test('ignores Masaniello sessions of the other account mode', () => {
+    const real = { ...done, id: 'r1', accountMode: 'REAL' };
+    render(<Dashboard settings={{ ...ms, msTargetValueDemo: 100, msTargetUnitDemo: '$' }} trades={[]} wds={[]} ss={{ ...ssEmpty, sessions: [real] }} bal={50} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.getByText(/\+\$0\.00 so far/)).toBeInTheDocument();
+  });
+
+  test('a target that rounds under one cent shows the no target hint, never NaN', () => {
+    render(<Dashboard settings={{ ...ms, startingBalanceDemo: 4, msTargetValueDemo: 0.1, msTargetUnitDemo: '%' }} trades={[]} wds={[]} ss={ssEmpty} bal={4} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.queryByText(/NaN/)).toBeNull();
+    expect(screen.getByText('No daily target set')).toBeInTheDocument();
+  });
+
+  test('no target shows a hint with a way to set one', () => {
+    const nav = jest.fn();
+    render(<Dashboard settings={ms} trades={[]} wds={[]} ss={ssEmpty} bal={50} mode="DEMO" nav={nav} />);
+    expect(screen.getByText('No daily target set')).toBeInTheDocument();
+    screen.getByText('Set a daily target').click();
+    expect(nav).toHaveBeenCalledWith('settings');
+  });
+
+  test('other styles show no daily target block', () => {
+    render(<Dashboard settings={settings} trades={[]} wds={[]} ss={ssEmpty} bal={20} mode="DEMO" nav={jest.fn()} />);
+    expect(screen.queryByText('No daily target set')).toBeNull();
+  });
+});

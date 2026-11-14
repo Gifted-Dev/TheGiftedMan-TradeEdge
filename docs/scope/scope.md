@@ -27,6 +27,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 6 | Masaniello settings recommender | Slice 2 | planned |
 | 7 | Settings page reorganization | Slice 3 | done |
 | 8 | Money tab compound calculator | Slice 4 | done |
+| 9 | Dashboard shows the daily profit target | Slice 2 | done |
 
 ## Existing features
 
@@ -139,6 +140,14 @@ Spec [0006](../specs/0006-masaniello-profit-target-session-counter.md) · code i
 Suggest the wins and total trades setting that fits you, based on your overall win rate from the journal and your current account balance.
 **Done when:** with Masaniello selected, you see a recommended K of N (plus a short reason), using only configurations whose minimum capital fits your balance and whose required win rate sits safely below your real win rate. One click applies it, and too little trade history shows a clear "not enough data" state instead of a guess.
 - [ ] Design it (spec): `/architect masaniello settings recommender`
+
+### 9. Dashboard shows the daily profit target · done
+With Masaniello selected, the Dashboard shows the profit target you set for the day, so you always know what you are aiming for. Today the Masaniello cards show the cycle target (capital final) but not the daily goal from your settings. It reuses the daily target and progress numbers the tool already computes.
+**Done when:** with Masaniello selected and a profit target set, the Dashboard shows today's profit target in dollars and how far you are toward it; with no target set, it shows a short "No daily target set" hint with a way to set one, never a blank or NaN; it matches the target shown in Settings; the other money management styles keep their current Profit target card; the layout holds at phone width.
+code in `src/App.js` (`Dashboard`)
+- [x] Build it: `/develop dashboard daily profit target`
+- [ ] Verify it: `/check verify dashboard daily profit target`
+- [x] Test it: `/test dashboard daily profit target`
 
 ## Slice 3: Settings clarity
 

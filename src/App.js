@@ -3726,6 +3726,9 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const isDailyLocked=isModeDayLocked(trades,ss,settings,mode);
   const isAmPlLockCause=isAmPlDailyLocked(ss,mode);
   const msStartBlock=msStartBlockReason(settings,mode,bal);
+  // Masaniello daily goal (spec 0006): derived from today's sessions, same helper the counter and alerts use.
+  const msDayBal=dayStartBalForMode(settings,trades,wds,mode);
+  const msDaily=mmStyle==='MASANIELLO'?(msModeProgress(settings,mode,ss?.sessions,msDayBal)||{target:null}):null;
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
   const nextMs=mode==='REAL'?settings.milestones.find(m=>bal<startBal*m.mul):null;
   const recent=[...modeTrades].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
@@ -3866,6 +3869,32 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
               <div style={{fontSize:12,color:'var(--text-muted)'}}>No trades yet today</div>
             )}
           </div>
+
+          {msDaily&&(
+            <div style={{marginTop:20,paddingTop:16,borderTop:'1px solid var(--border)'}}>
+              {msDaily.target==null?(
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span style={{fontSize:12,color:'var(--text-muted)'}}>No daily target set</span>
+                  <button style={btn()} onClick={()=>nav('settings')}>Set a daily target</button>
+                </div>
+              ):(
+                <>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,flexWrap:'wrap',marginBottom:8}}>
+                    <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',display:'inline-flex',alignItems:'center',gap:6}}>
+                      <Target size={13} style={{color:'var(--text-accent)'}}/>Daily profit target · +{f$(msDaily.target)}
+                    </span>
+                    <span style={{fontSize:12,color:msDaily.reached?'var(--text-success)':'var(--text-muted)'}}>
+                      {msDaily.reached?'Target reached':`${msDaily.profit>=0?'+':'-'}${f$(msDaily.profit)} so far`}
+                    </span>
+                  </div>
+                  <div style={{fontSize:12,color:'var(--text-muted)',marginBottom:8}}>Target balance: <strong style={{color:'var(--text-primary)'}}>{f$(msDayBal+msDaily.target)}</strong> <span>(from {f$(msDayBal)} at the start of the day)</span></div>
+                  <div style={{background:'var(--surface-0)',borderRadius:999,height:6,overflow:'hidden'}}>
+                    <div style={{height:'100%',borderRadius:999,background:'var(--fill-success)',width:`${Math.max(0,Math.min(100,(msDaily.profit/msDaily.target)*100))}%`,transition:'width 0.4s ease'}}/>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {nextMs&&(
             <div style={{marginTop:20,paddingTop:16,borderTop:'1px solid var(--border)'}}>
