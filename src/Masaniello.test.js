@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { msTable, msPlanSummary, liveMasanielloNextStake, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msModeProgress, msTargetDollarsToday, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsAlertStopLossForMode, getMsStopLossEndsForMode, msAlertEvents, msStopLossHit, dayStartBalForMode, Cfg } from './App';
+import { msTable, msPlanSummary, liveMasanielloNextStake, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msModeProgress, msTargetDollarsToday, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsStopLossPctForMode, msLossLimitFromStopLoss, msAlertEvents, msStopLossHit, dayStartBalForMode, Cfg } from './App';
 
 const cycle = (over = {}) => ({ isActive: true, msN: 10, msK: 6, msPayoutPct: 92, msCapital: 100, msWins: 0, msLosses: 0, sPnl: 0, ...over });
 
@@ -63,8 +63,9 @@ describe('Masaniello math (spec 0004)', () => {
   test('labels: Stop Loss is a dollar line, Max Loss Limit is the loss count', () => {
     const p = msPlanSummary(200, 10, 6, 92, 500, 25);
     expect(p.stopLoss).toBe(50);
-    expect(p.maxLossLimit).toBe(5);
+    expect(p.maxLossLimit).toBe(1); // first stake $61.79 already crosses the $50 line
     expect(msPlanSummary(200, 10, 6, 92, 500).stopLoss).toBe(200);
+    expect(msPlanSummary(200, 10, 6, 92, 500).maxLossLimit).toBe(5);
     expect(msFieldErrors({ msStopLossPctDemo: '0' }, 'Demo').msStopLossPct).toBeTruthy();
   });
 
@@ -92,6 +93,23 @@ describe('Masaniello math (spec 0004)', () => {
   test('Stop Loss % accepts 1 to 100 and rejects 0, 101, and non numbers', () => {
     for (const ok of ['1', '50', '100', '']) expect(msFieldErrors({ msStopLossPctDemo: ok }, 'Demo').msStopLossPct).toBeUndefined();
     for (const bad of ['0', '101', 'abc']) expect(msFieldErrors({ msStopLossPctDemo: bad }, 'Demo').msStopLossPct).toBeTruthy();
+  });
+
+  // covers: AC-19, AC-20
+  test('Max Loss Limit follows Stop Loss, replays live stakes, and falls back to N-K+1', () => {
+    expect(msLossLimitFromStopLoss(100, 10, 6, 92, 100)).toBe(5);
+    expect(msLossLimitFromStopLoss(100, 10, 6, 92, 50)).toBe(2); // stakes 30.89 then 28.66 sum to 59.55
+    expect(msLossLimitFromStopLoss(100, 10, 6, 92, 1)).toBe(1);
+    expect(msLossLimitFromStopLoss(3.24, 10, 6, 92, 100)).toBe(4); // $1 minimum stake drains it early
+    expect(msLossLimitFromStopLoss(0, 10, 6, 92, 100)).toBe(5);
+    expect(msPlanSummary(100, 10, 6, 92, 500, 50).maxLossLimit).toBe(2);
+  });
+
+  // covers: AC-19
+  test('Stop Loss % getter counts blank, 0, 150 and text as 100', () => {
+    for (const bad of ['', 0, 150, 'abc', undefined]) expect(getMsStopLossPctForMode({ msStopLossPctDemo: bad }, 'DEMO')).toBe(100);
+    expect(getMsStopLossPctForMode({ msStopLossPctDemo: '40' }, 'DEMO')).toBe(40);
+    expect(getMsStopLossPctForMode({ msStopLossPctReal: 40 }, 'DEMO')).toBe(100);
   });
 
   test('no further counting once a bound is reached', () => {
@@ -198,11 +216,13 @@ describe('Masaniello profit target (spec 0006)', () => {
     expect(amPlLossTargetSessionCount({ sessions: am }, 'DEMO')).toBe(2);
   });
 
-  test('Stop Loss ends cycle only when toggled on; plan rules win; draw never ends', () => {
-    const on = { msStopLossEndsDemo: true, msStopLossPctDemo: 30 };
+  test('Stop Loss always ends the cycle; plan rules win; draw never ends', () => {
+    const on = { msStopLossPctDemo: 30 };
     const lossy = cycle({ msLosses: 1, sPnl: -35 });
     expect(checkMasanielloSessionEnd(lossy, on, 'DEMO')).toBe('MS_STOP_LOSS');
-    expect(checkMasanielloSessionEnd(lossy, { ...on, msStopLossEndsDemo: false }, 'DEMO')).toBeNull();
+    expect(checkMasanielloSessionEnd(lossy, { msStopLossPctDemo: 50 }, 'DEMO')).toBeNull();
+    expect(checkMasanielloSessionEnd(lossy, { ...on, msStopLossEndsDemo: false }, 'DEMO')).toBe('MS_STOP_LOSS'); // old key ignored
+    expect(checkMasanielloSessionEnd(cycle({ msCapital: 3.24, msLosses: 3, sPnl: -3.24 }), {}, 'DEMO')).toBe('MS_STOP_LOSS'); // 100% line: capital used up
     expect(checkMasanielloSessionEnd(cycle({ msWins: 6, msLosses: 1, sPnl: -35 }), on, 'DEMO')).toBe('MS_TARGET');
     expect(checkMasanielloSessionEnd(cycle({ sPnl: 0 }), on, 'DEMO')).toBeNull();
     const ms = [1, 2].map(i => ({ id: i, accountMode: 'DEMO', endReason: 'MS_STOP_LOSS' }));
@@ -216,10 +236,6 @@ describe('Masaniello target helpers (spec 0006)', () => {
     expect(getMsAutoCopyBalanceForMode({}, 'DEMO')).toBe(false);
     expect(getMsAlertSessionEndForMode({}, 'DEMO')).toBe(true);
     expect(getMsAlertTargetReachedForMode({}, 'DEMO')).toBe(true);
-    expect(getMsAlertStopLossForMode({}, 'DEMO')).toBe(false);
-    expect(getMsStopLossEndsForMode({}, 'DEMO')).toBe(false);
-    expect(getMsStopLossEndsForMode({ msStopLossEndsReal: true }, 'DEMO')).toBe(false);
-    expect(getMsStopLossEndsForMode({ msStopLossEndsReal: true }, 'REAL')).toBe(true);
     expect(getMsAlertSessionEndForMode({ msAlertSessionEndDemo: false }, 'DEMO')).toBe(false);
   });
 
@@ -278,7 +294,7 @@ describe('Day start balance (spec 0006 daily goal)', () => {
 
 describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
   const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msStopLossPctDemo: 30, msTargetValueDemo: 100, msTargetUnitDemo: '$' };
-  const fresh = () => ({ alerted: new Set(), stopLossAlerted: new Set(), prevReached: {} });
+  const fresh = () => ({ alerted: new Set(), prevReached: {} });
   const ms = (over = {}) => ({ id: 's1', accountMode: 'DEMO', msN: 10, msK: 6, msCapital: 100, isActive: true, endTime: null, sPnl: 0, ...over });
   const run = o => msAlertEvents({ dayBal: () => 500, settings, st: fresh(), ...o });
   const titles = ev => ev.map(e => e.title);
@@ -366,20 +382,12 @@ describe('Masaniello alerts (spec 0006 AC-13 to AC-15)', () => {
     expect(titles(run({ settings: off, st, prevSessions: [ms()], sessions: [win] }))).toEqual(['Masaniello cycle won']);
   });
 
-  test('Stop Loss alert fires once per cycle, only when its toggle is on and the line is crossed', () => {
-    const on = { ...settings, msAlertStopLossDemo: true };
-    const st = fresh();
-    expect(run({ settings: on, st, prevSessions: [ms()], sessions: [ms({ sPnl: -20 })] })).toEqual([]);
+  // covers: AC-18
+  test('no alert while an active cycle crosses the Stop Loss line; only the cycle end alerts', () => {
     const hit = [ms({ sPnl: -35 })];
-    expect(titles(run({ settings: on, st, prevSessions: hit, sessions: hit }))).toEqual(['Masaniello stop loss']);
-    expect(run({ settings: on, st, prevSessions: hit, sessions: hit })).toEqual([]);
-    expect(run({ settings, st: fresh(), prevSessions: hit, sessions: hit })).toEqual([]);
-  });
-
-  test('Stop Loss alert stays quiet while Stop Loss ends the cycle', () => {
-    const both = { ...settings, msAlertStopLossDemo: true, msStopLossEndsDemo: true };
-    const hit = [ms({ sPnl: -35 })];
-    expect(run({ settings: both, prevSessions: hit, sessions: hit })).toEqual([]);
+    expect(run({ prevSessions: hit, sessions: hit })).toEqual([]);
+    const ended = [ms({ sPnl: -35, isActive: false, endTime: 9, endReason: 'MS_STOP_LOSS' })];
+    expect(titles(run({ prevSessions: hit, sessions: ended }))).toEqual(['Masaniello cycle stopped by Stop Loss']);
   });
 
   test('the Stop Loss line helper matches the dollar line and ignores draws and wins', () => {
@@ -543,19 +551,38 @@ describe('Masaniello settings panel (spec 0006)', () => {
     expect(screen.getAllByText('Following your balance').length).toBeGreaterThan(0);
   });
 
-  // covers: AC-16
-  test('Stop Loss ends cycle shows the dollar line only while it is on', async () => {
-    const { user } = await open();
-    expect(screen.queryByText(/Cycle ends at a loss of/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole('checkbox', { name: /^Stop Loss ends cycle/ }));
+  // covers: AC-18, AC-19
+  test('the end hint is always shown and the two removed toggles are gone', async () => {
+    await open({ msStopLossEndsDemo: true, msAlertStopLossDemo: true });
     expect(screen.getByText('Cycle ends at a loss of $100.00')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /Stop Loss ends cycle/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /Stop loss alert/ })).not.toBeInTheDocument();
   });
 
-  // covers: AC-13
-  test('the three alert toggles start as on, on, off', async () => {
+  // covers: AC-20
+  test('Max Loss Limit shows the straight run count and the plan limit when below N-K+1', async () => {
+    await open(); // balance 500, Stop Loss 20% = $100 line, first stake $154.50 crosses it
+    expect(screen.getByText('1 losses')).toBeInTheDocument();
+    expect(screen.getByText('plan limit 5')).toBeInTheDocument();
+    expect(screen.getByText(/Counts a straight losing run/)).toBeInTheDocument();
+  });
+
+  // covers: AC-22
+  test('Max Loss Limit updates live when Stop Loss % changes', async () => {
+    const { user } = await open();
+    expect(screen.getByText('1 losses')).toBeInTheDocument(); // 20% of $500
+    const sl = screen.getByLabelText('Stop Loss %');
+    await user.clear(sl);
+    await user.type(sl, '100');
+    expect(screen.getByText('5 losses')).toBeInTheDocument();
+    expect(screen.queryByText(/plan limit/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Counts a straight losing run/)).not.toBeInTheDocument();
+  });
+
+  // covers: AC-13, AC-18
+  test('the two alert toggles start on', async () => {
     await open();
     expect(screen.getByRole('checkbox', { name: /Cycle end alert/ })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: /Target reached alert/ })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: /Stop loss alert/ })).not.toBeChecked();
   });
 });

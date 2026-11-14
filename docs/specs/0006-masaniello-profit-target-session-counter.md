@@ -13,6 +13,63 @@ The profit target is a daily goal, not a goal that runs across days. This replac
 - Known limits, accepted: a cycle that starts before midnight and ends after it counts toward neither day (sessions are grouped by their start date). A trade logged before midnight and settled after it moves that day's start balance, so a `%` goal can shift by a little during the day.
 - New helper `msTargetDollarsToday(settings, mode, dayStartBal)`. `msModeProgress`, `msCounterLabel` and `msAlertEvents` take today's sessions and the day start balance instead of a history entry.
 
+## Revision 2026-11-14 (b): Stop Loss always ends the cycle, Max Loss Limit follows it
+
+Stop Loss % now always ends a cycle, and the Max Loss Limit shown in the plan follows it. This replaces the "Stop Loss ends cycle" toggle and the "Stop loss alert" toggle. Wherever the text below still mentions those two toggles, this section wins.
+
+**Requirements** (new, continue the AC numbering):
+- **AC-18**: The "Stop Loss ends cycle" toggle (`msStopLossEnds{Mode}`) and the "Stop loss alert" toggle (`msAlertStopLoss{Mode}`) are removed from the panel, the settings whitelist, the draft defaults and the getters. Saved values of these keys in `settings.extra` are ignored and left in place (no migration). This replaces AC-16 (toggle) and the Stop Loss alert part of AC-13 and AC-14; only "Cycle end alert" and "Target reached alert" remain.
+- **AC-19**: Stop Loss always ends a cycle. After any trade result, if the cycle loss `-sPnl` is at or above the Stop Loss dollar line (`msCapital` times current `msStopLossPct{Mode}` / 100, blank counts as 100), the cycle ends with `MS_STOP_LOSS`. Order of checks, draw rule, overshoot rule and "not snapshotted" rule stay as AC-16 says. At 100 the line equals the full capital, so it fires only when the cycle's capital is used up (the $1 minimum stake can drain a small capital to 0 before loss `N - K + 1`; the cycle then ends `MS_STOP_LOSS` instead of sitting active with a $0 stake). The check runs after a trade result, so lowering Stop Loss % mid cycle ends the cycle on the next result, not on save. Live play and the panel read Stop Loss % through one getter, `getMsStopLossPctForMode(settings, mode)`: a blank, non number or out of range (not 1 to 100) value counts as 100. `msStopLossHit` and the panel default both use it. The hint "Cycle ends at a loss of $X" under the Stop Loss % field is always shown when the plan is valid. The `MS_STOP_LOSS` end text becomes "stopped by Stop Loss: loss $X of $Y line" (App.js near 5908; the notification text stays "stopped by Stop Loss"). The live "Losses x / N-K+1" metric (near 5942) and the `MS_LOSS_LIMIT` text (near 5907) keep `N - K + 1`. AC-17 (counts as Lost, counts toward the target, no daily lock, "stopped by Stop Loss" text, cycle end alert) still holds.
+- **AC-20**: The plan summary's "Max Loss Limit" is the number of losses in a straight losing run (every trade loses) that takes the cycle loss to the Stop Loss line, never more than `N - K + 1` and never less than 1. It uses the same plan stakes as live play, including the $1 minimum stake. With Stop Loss 100 (or blank) it equals `N - K + 1` unless the $1 minimum stake drains the capital sooner, in which case it is that smaller count. If capital is 0 or less it returns `N - K + 1`. It is still shown when capital is below Minimum capital (minimum capital already shows red). The metric shows "X losses". Only when X is less than `N - K + 1` the metric adds the sub text "plan limit 5" (the real number) and the note "Counts a straight losing run". The panel InfoTip near App.js:8004 is reworded to say the cycle ends on K wins or at the Stop Loss line, whichever comes first.
+- **AC-21**: Only the dollar line ends a live cycle. The straight run count is a plan number for the panel: with wins in between, the stakes differ and the dollar line still decides, so a cycle can end on a different loss count than the panel shows. The plan note says "Counts a straight losing run".
+- **AC-22**: The plan Max Loss Limit updates live as capital, N, K, payout or Stop Loss % change, and uses the same effective capital as the rest of the plan (`msCapital`, or the mode balance when Capital is empty or auto copy is on).
+
+**Decision**: Option A: derive the count from Stop Loss and drop both toggles. Runner ups: keep the toggles (two meanings for one metric), make the metric the Stop Loss dollar line only (loses the loss count the plan is built on).
+
+**Rationale**: The two numbers disagreed: with Stop Loss 20% the plan said 5 losses while the cycle already ended at a $20 loss. A toggle kept both meanings alive. One rule is easier to explain: the Stop Loss line is the cap, and the count is what that cap means in losses. A straight losing run is the only path with one clear answer, because stakes change with every win. Existing users who typed a Stop Loss below 100 with the toggle off will now see cycles end at that line. The default is 100, which never fires, so only users who set a line on purpose are affected, and no migration is run.
+
+**Build design**:
+- New pure function `msLossLimitFromStopLoss(capital, N, K, payoutPct, stopLossPct)`. If `capital <= 0` return `N - K + 1`. Otherwise for i = 0 to `N - K`: `stake = liveMasanielloNextStake({ msN: N, msK: K, msPayoutPct: payoutPct, msCapital: capital, msWins: 0, msLosses: i, sPnl: -cum })` where `cum` is the loss so far, then `cum += stake`; return i + 1 at the first loss where `cum >= capital * stopLossPct / 100 - 1e-9`. If none, return `N - K + 1`. It calls the live stake function, so rounding, the $1 minimum and the last all in stake match play by construction. `k > n` cannot happen inside the loop (after `N - K` losses `n = K`, and the last stake is all of `rc`).
+- New getter `getMsStopLossPctForMode` (see AC-19); the panel uses it instead of its own `isBlank ? 100` default.
+- `msPlanSummary` returns `maxLossLimit` from it (it already receives `stopLossPct`); keep the field `stopLoss` for the dollar line.
+- `checkMasanielloSessionEnd` drops the `getMsStopLossEndsForMode` condition; keep `msStopLossHit` as is.
+- Remove `getMsStopLossEndsForMode`, `getMsAlertStopLossForMode`, `stopLossAlertedRef` (declaration near 9542, reset near 9374), `stopLossAlerted` from the `st` contract of `msAlertEvents` (near 1768 and 9551), the Stop Loss branch of `msAlertEvents`, the two toggles, `stopEnds` (near 7990) with the hint gate (near 8016, becomes `plan &&`), and the draft and whitelist keys (App.js near lines 270 to 300, 1713, 1769, 1809, 8015, 8059, 8119). Update tests in `src/Masaniello.test.js`: lines 63 to 69 (`msPlanSummary(200,10,6,92,500,25).maxLossLimit` was 5, rewrite with a hand computed value), 77 to 88 (`checkMasanielloSessionEnd(s)` has no settings, so it now means a 100% line; pass settings and keep the $3.24 drain case, which now ends `MS_STOP_LOSS`), 202 to 222, 292 and 370 to 389.
+
+**Value sourcing**:
+| Action | Value | Source |
+|---|---|---|
+| Max Loss Limit metric | capital | effective capital as the plan uses it (AC-22) |
+| Max Loss Limit metric | N, K, payout | panel inputs |
+| Max Loss Limit metric | Stop Loss line | `msStopLossPct` input (blank is 100) times capital |
+| Max Loss Limit metric | per trade stake | `msTable` plan rule with the $1 minimum, as `liveMasanielloNextStake` |
+| Live cycle end | loss and line | `-session.sPnl`, `session.msCapital` times current `msStopLossPct{Mode}` |
+
+**Critical test scenarios**:
+- Capital $100, N 10, K 6, payout 92, Stop Loss 100: `msLossLimitFromStopLoss` returns 5. Verifies **AC-20**.
+- Same inputs, Stop Loss 20: returns the first run length whose summed stakes reach $20, below 5. Verifies **AC-20**.
+- Stop Loss 1 (tiny line): returns 1 (first stake already crosses). Verifies **AC-20**.
+- Plan stake raised to the $1 minimum is used in the replay (capital $10, K of N with a planned stake under $1). Verifies **AC-20**.
+- Capital $3.24, N 10, K 6, Stop Loss 100: returns 4 and the live cycle ends `MS_STOP_LOSS` when capital is used up. Capital 0 returns `N - K + 1`. Verifies **AC-19**, **AC-20**.
+- `getMsStopLossPctForMode` returns 100 for blank, 0, 150 and `abc`, and the value for 1 to 100. Verifies **AC-19**.
+- Lowering Stop Loss % below the current loss does not end the cycle until the next trade result. Verifies **AC-19**.
+- `msPlanSummary(...).maxLossLimit` follows Stop Loss, and the panel shows the note when below `N - K + 1`. Verifies **AC-20**, **AC-22**.
+- Session with a loss at or over the line ends `MS_STOP_LOSS` with no setting on; a draw does not; a win reaching K ends `MS_TARGET` first. Verifies **AC-19**.
+- The two removed toggles are not rendered and a saved `msStopLossEndsDemo: true` is ignored without error. Verifies **AC-18**.
+- Only two alert toggles render and a loss crossing the line gives one chime (cycle end). Verifies **AC-18**, **AC-19**.
+
+**Build plan**:
+8. Pure engine: `msLossLimitFromStopLoss`, `msPlanSummary.maxLossLimit`, `checkMasanielloSessionEnd` without the toggle, with tests. Satisfies **AC-19**, **AC-20**, **AC-22**.
+9. Panel and cleanup: Max Loss Limit metric and note, always visible end hint, remove both toggles, the getters, the ref and the alert branch, whitelist and draft keys, and update the old tests. Satisfies **AC-18**, **AC-21**, **AC-22**.
+
+**Consequences**:
+- One rule for Stop Loss, no toggle to explain.
+- Users with a saved Stop Loss below 100 now have cycles end at that line (accepted, no migration).
+- The panel loss count is a straight run estimate, so a live cycle with wins in between can end on another count.
+- The "Stop loss alert" is gone: a trader no longer gets a warning before the line, only the cycle end alert at it.
+- Stale `msStopLossEnds*` and `msAlertStopLoss*` keys stay in the settings JSON, harmless.
+- The Stop Loss line uses current settings while capital is snapshotted, so lowering Stop Loss % ends active cycles (also in another tab) on their next trade result.
+- At Stop Loss 100 a small capital can now end a cycle as `MS_STOP_LOSS` when the $1 minimum stake uses it up, where before it sat active with a $0 stake.
+
 ## Summary
 
 This adds one profit target field to the Masaniello settings panel, plus a plain answer line such as "About 4 sessions to reach $200". The Dashboard counter for a Masaniello mode then shows progress toward that target ("Session 2/4") instead of the Sessions per day cap. Progress is worked out from the sessions you have already finished, so it survives reloads and corrections without any new counter to keep in sync. It also adds three alerts (cycle end, target reached, stop loss), an "auto copy balance" option, a per mode toggle that lets Stop Loss % end a cycle (default off), and removes the daily loss lock for Masaniello. No database migration is needed.

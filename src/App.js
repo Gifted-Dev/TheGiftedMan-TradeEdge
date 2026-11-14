@@ -296,8 +296,6 @@ function toSettingsRow(userId,s){
       msAutoCopyBalanceDemo:s.msAutoCopyBalanceDemo,msAutoCopyBalanceReal:s.msAutoCopyBalanceReal,
       msAlertSessionEndDemo:s.msAlertSessionEndDemo,msAlertSessionEndReal:s.msAlertSessionEndReal,
       msAlertTargetReachedDemo:s.msAlertTargetReachedDemo,msAlertTargetReachedReal:s.msAlertTargetReachedReal,
-      msAlertStopLossDemo:s.msAlertStopLossDemo,msAlertStopLossReal:s.msAlertStopLossReal,
-      msStopLossEndsDemo:s.msStopLossEndsDemo,msStopLossEndsReal:s.msStopLossEndsReal,
       riskCalcBalance:s.riskCalcBalance,riskCalcTargetPct:s.riskCalcTargetPct,riskCalcTradesPerSession:s.riskCalcTradesPerSession}};
 }
 function fromSettingsRow(r){
@@ -1603,8 +1601,22 @@ export function msPlanSummary(capital, N, K, payoutPct, balance, stopLossPct = 1
     winProfit: capitalFinal - capital,
     accountGainPct: balance > 0 ? ((capitalFinal - capital) / balance) * 100 : null,
     stopLoss: capital * stopLossPct / 100, // dollar line, display only
-    maxLossLimit: N - K + 1,               // loss count that ends the cycle
+    maxLossLimit: msLossLimitFromStopLoss(capital, N, K, payoutPct, stopLossPct),
   };
+}
+// Losses in a straight losing run (every trade loses) that take the cycle loss to the
+// Stop Loss line, capped at N - K + 1. Replays the live stakes, so the $1 minimum and
+// the last all in stake match play (spec 0006 AC-20).
+export function msLossLimitFromStopLoss(capital, N, K, payoutPct, stopLossPct) {
+  const max = N - K + 1;
+  if (!(capital > 0)) return max;
+  const line = capital * stopLossPct / 100 - 1e-9;
+  let cum = 0;
+  for (let i = 0; i < max; i++) {
+    cum += liveMasanielloNextStake({ msN: N, msK: K, msPayoutPct: payoutPct, msCapital: capital, msWins: 0, msLosses: i, sPnl: -cum });
+    if (cum >= line) return i + 1;
+  }
+  return max;
 }
 function msLiveState(session) {
   return { n: session.msN - (session.msWins || 0) - (session.msLosses || 0), k: session.msK - (session.msWins || 0) };
@@ -1637,15 +1649,19 @@ export function advanceMasaniello(session, outcome) {
 }
 // Dollar line where a cycle's loss counts as hitting Stop Loss (current Stop Loss %, not snapshotted).
 export function msStopLossHit(session, settings, mode) {
-  const pct = parseFloat(settings?.[`msStopLossPct${msModeKey(mode)}`]);
-  const line = (session.msCapital || 0) * (Number.isFinite(pct) ? pct : 100) / 100;
+  const line = (session.msCapital || 0) * getMsStopLossPctForMode(settings, mode) / 100;
   return line > 0 && -(session.sPnl || 0) >= line - 1e-9;
+}
+// Stop Loss % for a mode: blank, non number or outside 1 to 100 counts as 100.
+export function getMsStopLossPctForMode(settings, mode) {
+  const v = parseFloat(settings?.[`msStopLossPct${msModeKey(mode)}`]);
+  return Number.isFinite(v) && v >= 1 && v <= 100 ? v : 100;
 }
 export function checkMasanielloSessionEnd(session, settings, mode) {
   if (!session?.isActive || session.msN == null) return null;
   if ((session.msWins || 0) >= session.msK) return 'MS_TARGET';
   if ((session.msLosses || 0) >= session.msN - session.msK + 1) return 'MS_LOSS_LIMIT';
-  if (getMsStopLossEndsForMode(settings, mode) && msStopLossHit(session, settings, mode)) return 'MS_STOP_LOSS';
+  if (msStopLossHit(session, settings, mode)) return 'MS_STOP_LOSS';
   return null;
 }
 // Recount from the session's resolved trades (corrections, deletes, replay).
@@ -1710,12 +1726,6 @@ export function getMsAlertSessionEndForMode(settings, mode) {
 export function getMsAlertTargetReachedForMode(settings, mode) {
   return settings?.[`msAlertTargetReached${msModeKey(mode)}`] !== false;
 }
-export function getMsStopLossEndsForMode(settings, mode) {
-  return settings?.[`msStopLossEnds${msModeKey(mode)}`] === true;
-}
-export function getMsAlertStopLossForMode(settings, mode) {
-  return settings?.[`msAlertStopLoss${msModeKey(mode)}`] === true;
-}
 export const MS_MAX_TARGET_SESSIONS = 100;
 // How many winning cycles reach the remaining target (best case: every cycle
 // reaches K wins at the planned payout). Returns {sessions, projectedProfit,
@@ -1766,7 +1776,7 @@ export function msModeProgress(settings, mode, liveSessions, dayStartBal) {
 }
 // Decides which alerts to play for one snapshot of today's sessions (spec 0006
 // AC-13 to AC-15). Returns [{title, body, tag}], one chime each. It MUTATES the
-// state it is given (st.alerted, st.stopLossAlerted: Sets; st.prevReached: object)
+// state it is given (st.alerted: Set; st.prevReached: object)
 // so each alert fires once; the caller keeps st between calls.
 // dayBal(mode) gives that mode's balance at the start of the day (for a % target).
 export function msAlertEvents({ prevSessions, sessions, settings, dayBal, st }) {
@@ -1803,14 +1813,6 @@ export function msAlertEvents({ prevSessions, sessions, settings, dayBal, st }) 
       return;
     }
     events.push({ title: 'Session locked', body: `${label(s.accountMode)} session ended — ${s.lockReason || 'locked'}.`, tag: `session-lock-${s.id}` });
-  });
-  // Stop Loss line: active cycles only, once per cycle. Not used while Stop Loss ends the cycle.
-  sessions.forEach(s => {
-    if (!s.isActive || s.msN == null || st.stopLossAlerted.has(s.id)) return;
-    if (getMsStopLossEndsForMode(settings, s.accountMode) || !msStopLossHit(s, settings, s.accountMode)) return;
-    st.stopLossAlerted.add(s.id);
-    if (first || !getMsAlertStopLossForMode(settings, s.accountMode)) return;
-    events.push({ title: 'Masaniello stop loss', body: `${label(s.accountMode)} cycle loss reached the Stop Loss line.`, tag: `ms-stop-${s.id}` });
   });
   return events;
 }
@@ -5905,7 +5907,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
     :sessionForMode?.endReason?.endsWith('TIME_LIMIT')?'60-minute session limit reached'
     :sessionForMode?.endReason==='MS_TARGET'?`target reached: ${sessionForMode.msK} wins`
     :sessionForMode?.endReason==='MS_LOSS_LIMIT'?`loss limit reached: ${sessionForMode.msN-sessionForMode.msK+1} losses`
-    :sessionForMode?.endReason==='MS_STOP_LOSS'?'stopped by Stop Loss'
+    :sessionForMode?.endReason==='MS_STOP_LOSS'?`stopped by Stop Loss: loss ${f$(-(sessionForMode.sPnl||0))} of ${f$(sessionForMode.msCapital*getMsStopLossPctForMode(settings,mode)/100)} line`
     :sessionForMode?.endReason==='MS_MANUAL'?'ended manually'
     :'max trades reached for this session';
 
@@ -7983,11 +7985,10 @@ function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
   const num=(k,d)=>{const v=f[`${k}${modeKey}`];return v==null||v===''?d:Number(v);};
   const followBalance=autoCopy||f[`msCapital${modeKey}`]==null||f[`msCapital${modeKey}`]==='';
   const capital=autoCopy?bal:num('msCapital',bal);
-  const N=num('msTotalTrades',10),K=num('msWinTrades',6),payout=num('msPayoutPct',92),stopLossPct=num('msStopLossPct',100);
+  const N=num('msTotalTrades',10),K=num('msWinTrades',6),payout=num('msPayoutPct',92),stopLossPct=getMsStopLossPctForMode(f,mode);
   const plan=valid&&capital>0?msPlanSummary(capital,N,K,payout,bal,stopLossPct):null;
   const won=sessions.filter(s=>s.accountMode===mode&&s.endReason==='MS_TARGET').length;
   const lost=sessions.filter(s=>s.accountMode===mode&&(s.endReason==='MS_LOSS_LIMIT'||s.endReason==='MS_STOP_LOSS')).length;
-  const stopEnds=f[`msStopLossEnds${modeKey}`]===true;
   // Target: a daily goal. Count and profit start at 0 each day; a % is of the day's starting balance.
   const unit=f[`msTargetUnit${modeKey}`]==='%'?'%':'$';
   const tv=f[`msTargetValue${modeKey}`];
@@ -8001,7 +8002,7 @@ function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
     <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
       <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
         Pick the wins you need (K) out of N trades.
-        <InfoTip text="Pick how many wins you need (K) out of a total number of trades (N). Every stake is sized so reaching K wins lands the cycle on its target. The cycle ends itself on K wins or on N minus K plus 1 losses, which loses the cycle's capital. Changes apply from the next cycle."/>
+        <InfoTip text="Pick how many wins you need (K) out of a total number of trades (N). Every stake is sized so reaching K wins lands the cycle on its target. The cycle ends itself on K wins or when its loss reaches the Stop Loss line, whichever comes first. Changes apply from the next cycle."/>
       </div>
       <div className="grid-2">
         {field('msCapital','Capital ($)',{min:'0.01',step:'0.01',placeholder:autoCopy?'Following your balance':`${bal.toFixed(2)} (current balance)`,disabled:autoCopy})}
@@ -8011,10 +8012,7 @@ function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
         {field('msStopLossPct','Stop Loss %',{min:'1',max:'100',step:'1',placeholder:'100'})}
       </div>
       {autoCopy&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Following your balance</div>}
-      <div style={{marginTop:12}}>
-        {toggle('msStopLossEnds','Stop Loss ends cycle','Off: Stop Loss % is display and alert only. On: the cycle ends when its loss reaches the Stop Loss line.')}
-        {stopEnds&&plan&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`Cycle ends at a loss of ${f$(plan.stopLoss)}`}</div>}
-      </div>
+      {plan&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>{`Cycle ends at a loss of ${f$(plan.stopLoss)}`}</div>}
       <div style={{marginTop:12}}>
         {toggle('msAutoCopyBalance','Auto copy balance','Each new cycle takes your current balance as its capital and ignores the Capital field.')}
       </div>
@@ -8047,16 +8045,16 @@ function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
             <Metric label="Win profit" value={`+${f$(plan.winProfit)}`} color="var(--text-success)"/>
             <Metric label="Account gain" value={plan.accountGainPct==null?'n/a':`+${fp(plan.accountGainPct)}`}/>
             <Metric label="Stop Loss" value={`-${f$(plan.stopLoss)}`} color="var(--text-danger)"/>
-            <Metric label="Max Loss Limit" value={`${plan.maxLossLimit} losses`} color="var(--text-danger)"/>
+            <Metric label="Max Loss Limit" value={`${plan.maxLossLimit} losses`} color="var(--text-danger)"
+              sub={plan.maxLossLimit<N-K+1?`plan limit ${N-K+1}`:undefined}/>
           </div>
-          <p style={{fontSize:11,color:'var(--text-muted)'}}>Assumes every trade pays the planned payout.</p>
+          <p style={{fontSize:11,color:'var(--text-muted)'}}>Assumes every trade pays the planned payout.{plan.maxLossLimit<N-K+1&&' Counts a straight losing run.'}</p>
         </div>
       )}
       <div style={{marginTop:12,display:'grid',gap:6}}>
         <label style={lbl}>Alerts</label>
         {toggle('msAlertSessionEnd','Cycle end alert')}
         {toggle('msAlertTargetReached','Target reached alert')}
-        {toggle('msAlertStopLoss','Stop loss alert','Alerts once per cycle when its loss reaches the Stop Loss line. Only used while Stop Loss ends cycle is off.')}
       </div>
       <div style={{marginTop:12}}>
         <label style={lbl}>Today's events</label>
@@ -8116,8 +8114,6 @@ const settingsEq=(a,b)=>{
     msAutoCopyBalanceDemo:settings?.msAutoCopyBalanceDemo ?? false,msAutoCopyBalanceReal:settings?.msAutoCopyBalanceReal ?? false,
     msAlertSessionEndDemo:settings?.msAlertSessionEndDemo ?? true,msAlertSessionEndReal:settings?.msAlertSessionEndReal ?? true,
     msAlertTargetReachedDemo:settings?.msAlertTargetReachedDemo ?? true,msAlertTargetReachedReal:settings?.msAlertTargetReachedReal ?? true,
-    msAlertStopLossDemo:settings?.msAlertStopLossDemo ?? false,msAlertStopLossReal:settings?.msAlertStopLossReal ?? false,
-    msStopLossEndsDemo:settings?.msStopLossEndsDemo ?? false,msStopLossEndsReal:settings?.msStopLossEndsReal ?? false,
   });}
 
 export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange}){
@@ -9371,7 +9367,7 @@ export default function App(){
     const uid=authUser?.id??null;
     if(msUserRef.current!==uid){
       if(msUserRef.current!==null){
-        alertedRef.current=new Set();stopLossAlertedRef.current=new Set();
+        alertedRef.current=new Set();
         prevSessionsForAlertRef.current=null;prevReachedRef.current={};
       }
       msUserRef.current=uid;
@@ -9537,9 +9533,8 @@ export default function App(){
   // since an in-page toast can't be seen in a tab that isn't on screen.
   // Spec 0006: the first run only seeds the previous state (no alerts for
   // sessions already ended at load). Masaniello sessions have their own branch:
-  // cycle end, target reached, stop loss, each gated by its per mode toggle.
+  // cycle end and target reached, each gated by its per mode toggle.
   const alertedRef=useRef(new Set());
-  const stopLossAlertedRef=useRef(new Set());
   const prevSessionsForAlertRef=useRef(null);
   const prevReachedRef=useRef({});
   useEffect(()=>{
@@ -9548,7 +9543,7 @@ export default function App(){
     prevSessionsForAlertRef.current=todaySS.sessions;
     const events=msAlertEvents({prevSessions:prev,sessions:todaySS.sessions,settings,
       dayBal:m=>dayStartBalForMode(settings,trades,wds,m),
-      st:{alerted:alertedRef.current,stopLossAlerted:stopLossAlertedRef.current,prevReached:prevReachedRef.current}});
+      st:{alerted:alertedRef.current,prevReached:prevReachedRef.current}});
     const chime=()=>{if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);};
     const notify=(title,body,tag)=>{
       if(document.hidden&&settings?.desktopAlertOn!==false&&typeof Notification!=='undefined'&&Notification.permission==='granted'){
