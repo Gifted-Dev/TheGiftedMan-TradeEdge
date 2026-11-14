@@ -119,7 +119,7 @@ Spec [0004](../specs/0004-masaniello-money-management-style/index.md) · code in
 
 ### 5. Masaniello profit target & session counter · done
 Add a profit target to the Masaniello settings so you can see how many sessions it takes to reach it, and track how many sessions you have run toward it, with the alert and auto options from the tool. Masaniello is not held to the standard Sessions per day setting (2 or 3): the number of sessions comes from the target and the plan. UX comes first: one clear target field, a plain answer line ("About 4 sessions to reach $200"), and no extra screens.
-**Done when:** with Masaniello selected, you can set a profit target (% or $) in the Masaniello settings panel and see sessions required, projected account gain, and capital final, updating live as you change capital, total trades, win trades, or payout. Sessions required is not capped by Sessions per day, and the Session x/y counter for Masaniello shows progress toward the target instead of the standard cap. An empty or unreachable target shows a clear message, not a blank or a wrong number. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback.
+**Done when:** with Masaniello selected, you can set a profit target (% or $) in the Masaniello settings panel and see sessions required, projected account gain, and capital final, updating live as you change capital, total trades, win trades, or payout. Sessions required is not capped by Sessions per day, and the Session x/y counter for Masaniello shows progress toward the target instead of the standard cap. An empty or unreachable target shows a clear message, not a blank or a wrong number. A session counter advances on each finished session (manual or auto). Optional toggles cover stop loss alert %, session end alert, low trade alert, auto copy balance into the next session, auto log, and auto count, each with sound feedback. Stop Loss always ends the cycle (the "Stop Loss ends cycle" and "Stop loss alert" toggles are removed), and the Max Loss Limit shown in the plan follows it: it shows how many losses in a straight losing run reach the stop loss line (never more than the plan's N minus K plus 1), so the two numbers no longer disagree.
 - [x] Design it (spec): `/architect masaniello profit target & session counter`
 - [x] Build it: `/develop masaniello profit target & session counter`
    - [x] Thin thread: pure engine, target field, save, answer line (AC-1 to AC-6, AC-10)
@@ -128,6 +128,9 @@ Add a profit target to the Masaniello settings so you can see how many sessions 
    - [x] Alerts: cycle end, target reached, stop loss (AC-13 to AC-15)
    - [x] Remove the Masaniello daily lock (AC-12)
    - [x] Stop Loss ends cycle toggle, `MS_STOP_LOSS` (AC-16, AC-17)
+   - [x] Design: Max Loss Limit follows Stop Loss, toggles removed (spec 0006 revision (b), AC-18 to AC-22)
+   - [x] Engine: `msLossLimitFromStopLoss`, `getMsStopLossPctForMode`, Stop Loss always ends the cycle (AC-19, AC-20, AC-22)
+   - [x] Panel and cleanup: Max Loss Limit metric and note, remove both toggles and their keys, update tests (AC-18, AC-21, AC-22)
 - [x] Verify it: `/check verify masaniello profit target & session counter`
 - [x] Test it: `/test masaniello profit target & session counter`
 Spec [0006](../specs/0006-masaniello-profit-target-session-counter.md) · code in `src/App.js`
