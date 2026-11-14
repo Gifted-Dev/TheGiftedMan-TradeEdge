@@ -3,6 +3,16 @@
 **Date**: 2026-11-12
 **Status**: Accepted
 
+## Revision 2026-11-14: daily goal
+
+The profit target is a daily goal, not a goal that runs across days. This replaces the earlier "count since `msTargetSetAt`" design, which reset the count whenever the target was edited and had no clear way to start a new day.
+
+- Each day starts at 0 sessions and 0 profit. The Dashboard shows "Session x/y" for today only.
+- A `%` goal uses the balance at the start of the day, so it follows the account as it grows.
+- Only `msTargetValue` and `msTargetUnit` are stored. `msTargetDollars`, `msTargetSetAt`, `loadMsTargetHistory`, `msMergeSessions`, the history cache and the "reading earlier sessions" state are removed. Wherever the text below still mentions them, this section wins.
+- Known limits, accepted: a cycle that starts before midnight and ends after it counts toward neither day (sessions are grouped by their start date). A trade logged before midnight and settled after it moves that day's start balance, so a `%` goal can shift by a little during the day.
+- New helper `msTargetDollarsToday(settings, mode, dayStartBal)`. `msModeProgress`, `msCounterLabel` and `msAlertEvents` take today's sessions and the day start balance instead of a history entry.
+
 ## Summary
 
 This adds one profit target field to the Masaniello settings panel, plus a plain answer line such as "About 4 sessions to reach $200". The Dashboard counter for a Masaniello mode then shows progress toward that target ("Session 2/4") instead of the Sessions per day cap. Progress is worked out from the sessions you have already finished, so it survives reloads and corrections without any new counter to keep in sync. It also adds three alerts (cycle end, target reached, stop loss), an "auto copy balance" option, a per mode toggle that lets Stop Loss % end a cycle (default off), and removes the daily loss lock for Masaniello. No database migration is needed.
@@ -23,21 +33,21 @@ Two facts in the current code shape the design. First, the app loads only today'
 - As a trader, I want a sound and a desktop alert when a cycle ends, when the target is reached, and when a cycle hits my stop loss line.
 
 **Acceptance criteria**:
-- **AC-1**: With Masaniello selected for a mode, the Masaniello settings panel shows one "Profit target" input with a `$` / `%` unit switch (default `$`). Empty means no target (switching the unit on an empty field changes nothing, so type the value first, then pick `%`). `$` accepts 0.01 to 1,000,000. `%` accepts 0.1 to 1000, and is invalid when the mode balance is 0 or less or when the result rounds to under $0.01. An invalid value shows an inline error and is not saved; the last saved target and `msTargetSetAt` stay.
-- **AC-2**: On Save, the target is stored in dollars. Unit `$`: the typed value. Unit `%`: typed value times the mode balance at the moment of saving, rounded to cents. The dollars are recomputed only when the typed value or the unit differs from the saved one. Any other save (for example a change on another tab) keeps the stored `msTargetDollars`. With `%` the panel shows the stored dollars next to the field ("= $120.00"). The dollar goal stays fixed after saving, even when the balance moves. A saved `%` target whose value and unit are unchanged stays valid when the balance later falls to 0 or the percent rounds under $0.01; the balance checks of AC-1 apply only to a new or changed value.
+- **AC-1**: With Masaniello selected for a mode, the Masaniello settings panel shows one "Profit target" input with a `$` / `%` unit switch (default `$`). Empty means no target (switching the unit on an empty field changes nothing, so type the value first, then pick `%`). `$` accepts 0.01 to 1,000,000. `%` accepts 0.1 to 1000, and works only while the balance at the start of the day is above 0: otherwise the panel says so, shows no answer line, and there is no goal that day. An out of range value shows an inline error and is not saved; the last saved target stays.
+- **AC-2**: The target is stored as typed: `msTargetValue` and `msTargetUnit` (`$` or `%`), nothing else. The goal in dollars is worked out each day: unit `$` is the typed value; unit `%` is the typed value times the mode balance at the start of that day (local midnight), rounded to cents. With `%` the panel shows "= $X today, from your balance at the start of the day".
 - **AC-3**: Under the target field an answer line updates live as capital, N, K, payout, the target, or the balance change: "About S sessions to reach $T" (singular "About 1 session"), followed by "Projected account gain +X%" (profit after S plan cycles divided by the mode balance). Capital final is already in the plan summary above it.
 - **AC-4**: Sessions required S assumes every cycle reaches K wins at the planned payout (the note "Assumes every cycle reaches K wins" is shown). S is the smallest count whose cumulative win profit reaches the remaining target. When the capital follows the balance (Capital empty, or auto copy balance on), each cycle starts from the grown balance (compounding). When Capital is a fixed value, every cycle makes the same profit. Formulas are in *Sessions math* below.
 - **AC-5**: S is not limited by the Sessions per day setting.
-- **AC-6**: The answer line never shows a blank or a wrong number. Empty target: "Set a profit target to see how many sessions it takes." Effective capital below Minimum capital: "Raise Capital to at least $X first." (when the capital follows the balance: "Balance is below the $X minimum for K of N.") More than 100 sessions needed: "More than 100 sessions at this plan. Lower the target or change N and K." Target already reached: "Target reached: +$P in S sessions." Invalid inputs show only the field errors. For a saved target, while the history read is pending or failed the line shows "Reading your earlier sessions…" or "Could not read your earlier sessions, so the session count is hidden." instead of a count.
-- **AC-7**: Sessions that count toward the target are the sessions of that mode with `msN` set (Masaniello), not active, and whose end time is at or after `msTargetSetAt`, whatever the end reason, in end order. Counting stops at the first session after which cumulative profit (sum of each session's `sPnl`) reaches the target, so "reached" never un reaches.
-- **AC-8**: The Dashboard mode card, for a mode on Masaniello with a target, shows "Session x/y". x = counted sessions plus 1 when a Masaniello session is active. y = counted sessions plus the sessions still required for the remaining target (a loss raises y). When the target is reached it shows "Target reached" and the counted number of sessions. With no target it shows all of today's sessions for the mode with no cap ("Session 2"). Fallbacks when y has no value: history still loading or failed, show "Session x" only; capital below minimum, show "Session x" plus the hint "capital below min"; more than 100 needed, show "Session x/100+". A mode on any other style keeps the existing "Session n/Sessions per day". The Dashboard reads saved settings (`getMs*ForMode`) and `balForMode(mode)`, never the Settings draft.
-- **AC-9**: Progress survives a page reload and trade corrections, because it is derived from stored sessions and not from a stored counter.
-- **AC-10**: Saving the first target sets `msTargetSetAt` to now. Editing an existing target (higher or lower) keeps `msTargetSetAt`, so sessions already counted still count and the session total adjusts. Clearing the target clears `msTargetSetAt`. Demo and Real are independent.
+- **AC-6**: The answer line never shows a blank or a wrong number. Empty target: "Set a profit target to see how many sessions it takes." Effective capital below Minimum capital: "Raise Capital to at least $X first." (when the capital follows the balance: "Balance is below the $X minimum for K of N.") More than 100 sessions needed: "More than 100 sessions at this plan. Lower the target or change N and K." Target already reached: "Target reached: +$P in S sessions." Invalid inputs show only the field errors. A % goal that is not usable (the balance at the start of the day is 0 or less, or the goal rounds under $0.01) shows a message and no answer line.
+- **AC-7**: Sessions that count toward today's goal are today's sessions of that mode with `msN` set (Masaniello) and not active, whatever the end reason, in end order. Counting stops at the first session after which cumulative profit (sum of each session's `sPnl`) reaches the goal, so "reached" never un reaches. Every new day starts again at 0 sessions and 0 profit.
+- **AC-8**: The Dashboard mode card, for a mode on Masaniello with a target, shows "Session x/y". x = counted sessions plus 1 when a Masaniello session is active. y = counted sessions plus the sessions still required for the remaining target (a loss raises y). When the target is reached it shows "Target reached" and the counted number of sessions. With no target it shows all of today's sessions for the mode with no cap ("Session 2"). Fallbacks when y has no value: capital below minimum, show "Session x" plus the hint "capital below min"; more than 100 needed, show "Session x/100+". A mode on any other style keeps the existing "Session n/Sessions per day". The Dashboard reads saved settings (`getMs*ForMode`) and `balForMode(mode)`, never the Settings draft.
+- **AC-9**: Progress survives a page reload and trade corrections, because it is derived from today's stored sessions and not from a stored counter. No read of earlier days is needed.
+- **AC-10**: Editing the target (higher, lower, or the unit) never resets the count. Only the goal changes, so the total sessions needed adjusts and the sessions already done today still count. Clearing the target removes the goal. Demo and Real are independent.
 - **AC-11**: A per mode toggle "Auto copy balance" (default off). On: each new cycle takes the current mode balance as its capital, ignoring `msCapital`, and the Capital field is disabled with the hint "Following your balance". Off: today's rule (fixed Capital stays, empty Capital follows the balance).
 - **AC-12**: Masaniello no longer counts toward the 2 per day loss target lock: an `MS_LOSS_LIMIT` or `MS_STOP_LOSS` session is not counted by `amPlLossTargetSessionCount`, and the lock messages stop naming Masaniello. A lock caused by earlier AM or PL sessions in the same mode still applies. This replaces the last sentence of 0004 AC-11.
 - **AC-13**: Three per mode alert toggles in the panel: "Cycle end alert" (default on), "Target reached alert" (default on), "Stop loss alert" (default off, only matters while "Stop Loss ends cycle" is off, see AC-16). Each plays the existing alert chime when sound is on, and a desktop notification when the tab is hidden and desktop alerts are on. The global sound and desktop settings still gate everything.
 - **AC-14**: Cycle end alert: when a Masaniello session ends, the chime and notification fire only if the toggle is on, and the notification says what happened ("Masaniello cycle won", "Masaniello cycle lost", "Masaniello cycle ended"), not "Session locked". A Masaniello session never falls through to the generic chime: with the toggle off it is silent. No alert fires for sessions that were already ended when the app loaded (the existing effect is fixed to seed its previous state on the first load, which also stops today's ended sessions re chiming on every reload). Target reached alert: fires once, when an ended session makes the target reached. If both fire at the same moment, one chime plays and the notification says "Profit target reached". Stop loss alert: fires once per cycle, while the cycle is active, when its loss (`-sPnl`) reaches the Stop Loss dollar line (capital times Stop Loss %). Stop Loss is checked only while the session is still active in the current snapshot, so the trade that ends the cycle gives one chime, not two. Stop Loss ends a cycle only when AC-16 is on. While AC-16 is on, the Stop loss alert does not fire (the cycle end alert covers it).
-- **AC-15**: Target reached alert timing: the "previous reached" value is seeded only after the history read has resolved for that mode, so late arriving history never fires it. It fires only on a flip caused by a session that ended after the app loaded.
+- **AC-15**: Target reached alert timing: it fires only on a flip caused by a session that ended after the app loaded. The previous "reached" value is kept per mode together with the goal in dollars, so editing the goal (even back to an earlier value) never plays it.
 - **AC-16**: A per mode toggle "Stop Loss ends cycle" (default off) sits next to the Stop Loss % field. Off: Stop Loss % stays display and alert only, as in 0004. On: after any trade result, if the cycle loss `-sPnl` is at or above the Stop Loss dollar line (`msCapital` times current `msStopLossPct{Mode}` / 100), the cycle ends with `endReason` `MS_STOP_LOSS`. Order of checks: `MS_TARGET`, then `MS_LOSS_LIMIT`, then `MS_STOP_LOSS`, so the plan's own rules win a tie. A draw changes no loss, so it never triggers it. The loss can overshoot the line by the last stake; the cycle ends on crossing, it is not capped. With Stop Loss % at 100 the line equals the full capital, so it effectively never fires. When the toggle is on, the panel shows "Cycle ends at a loss of $X" next to the field.
 - **AC-17**: An `MS_STOP_LOSS` session behaves like any ended Masaniello session. It counts toward the profit target (AC-7, any end reason), counts as Lost in the panel Won and Lost numbers, and is not counted by the daily lock (AC-12). The Session ended notice reads "Masaniello cycle stopped by Stop Loss". It uses the cycle end alert toggle (AC-14), not the Stop Loss alert toggle, so the end gives one chime. The session end text near App.js:5856 and the "won, lost, ended" word near App.js:9205 both gain this case.
 
@@ -114,8 +124,6 @@ Stop Loss % ending a cycle is a per mode toggle, default off, not always on. Opt
 |---|---|---|
 | `msTargetValue{Mode}` | number, nullable | typed value; null means no target |
 | `msTargetUnit{Mode}` | `'$'` or `'%'` | default `'$'` |
-| `msTargetDollars{Mode}` | number, nullable | the stored dollar goal (AC-2) |
-| `msTargetSetAt{Mode}` | epoch ms, nullable | set when a target is first set, kept on edits (AC-10) |
 | `msAutoCopyBalance{Mode}` | boolean | default false |
 | `msAlertSessionEnd{Mode}` | boolean | default true |
 | `msAlertTargetReached{Mode}` | boolean | default true |
@@ -126,15 +134,15 @@ Stop Loss % ending a cycle is a per mode toggle, default off, not always on. Opt
 
 Derived, never stored: counted sessions, profit so far, sessions required, y in "Session x/y", reached state.
 
-**State transitions** (target): `none` → `active` when a target is saved · `active` → `reached` when cumulative profit reaches the target (derived, latched by AC-7) · an edited target keeps the start time and the count (`reached` is derived again against the new goal) · any → `none` when the field is cleared, and saving a new target after that restarts the count. The settings panel shows "Counting sessions since <date>" so the start is visible. An edited goal is seeded silently by the alert latch (no chime on Save).
+**State transitions** (target): `none` → `active` when a target is saved · `active` → `reached` when today's cumulative profit reaches the goal (derived, latched by AC-7) · every new day starts `active` again at 0 sessions · an edited target keeps today's count (`reached` is derived again against the new goal) · any → `none` when the field is cleared. An edited goal is seeded silently by the alert latch (no chime on Save).
 
-**API surface**: no server endpoint. One client read plus pure functions in `src/App.js`:
+**API surface**: no server endpoint. Pure functions in `src/App.js`, no read:
 | Item | Inputs | Output |
 |---|---|---|
 | `msSessionsToTarget(targetDollars, profitSoFar, capital, followBalance, balance, N, K, payoutPct)` | numbers, boolean | `{sessions, projectedProfit, projectedGainPct}` or `{reason: 'below_min' or 'too_many' or 'reached'}` |
-| `msTargetProgress(endedMsSessions, targetDollars, setAt)` | sessions, number, epoch | `{count, profit, reached}` (sorted by `endTime`, stops at the crossing session) |
-| `loadMsTargetHistory(userId, mode, setAt)` | ids | one query: `sessions` where `account_mode` = mode, `is_active` false, `end_time` at or after `setAt` (ISO), no date filter. Rows go through `fromSessionRow`, then keep those with `msN` set (client side). Merged with live `todaySS` by session id, live wins. After midnight the live list starts empty, so the read runs again when the date changes (request key `${mode}:${setAt}:${date}`); the stored entry is marked loading until it resolves, so a tab left open overnight never shows a count that misses sessions. Runs on app load for each mode that has a target, stored under `${mode}:${setAt}`; re run when a changed target is saved. While pending or on error the counter shows "Session x" (error logged). A different signed in user resets the cache and the alert state. |
-| `getMsAutoCopyBalanceForMode`, `getMsTargetDollarsForMode`, `getMsTargetSetAtForMode`, `getMsAlert*ForMode` | settings, mode | values with the defaults above |
+| `msTargetProgress(endedMsSessions, targetDollars)` | sessions, number | `{count, profit, reached}` (sorted by `endTime`, stops at the crossing session) |
+| `msTargetDollarsToday(settings, mode, dayStartBal)` and `dayStartBalForMode(settings, trades, wds, mode)` | settings, mode, balance | the goal in dollars for today (`$` as typed; `%` of the balance at local midnight; null under $0.01), and the mode balance from trades and withdrawals before local midnight. A different signed in user resets the alert state. |
+| `getMsAutoCopyBalanceForMode`, `getMsAlert*ForMode` | settings, mode | values with the defaults above |
 
 `getMsCapitalForMode` gains a check: when `msAutoCopyBalance` is on, return the balance.
 
@@ -143,16 +151,14 @@ Derived, never stored: counted sessions, profit so far, sessions required, y in 
 **Value sourcing**:
 | Action | Value | Source |
 |---|---|---|
-| Save target | Dollar goal for `%` | typed value times `balForMode` at save (AC-2) |
-| Save target | `msTargetSetAt` | `Date.now()` only when no start time is stored yet |
+| Daily goal | Dollar goal for `%` | typed value times `dayStartBalForMode`, the balance at local midnight (AC-2) |
 | Answer line | W, g, Capital final | `msTable` and `msPlanSummary` from the panel inputs |
 | Answer line | Capital basis | `msCapital` input, or `balForMode` when empty or auto copy on |
 | Answer line | Minimum capital | `msPlanSummary(...).minCapital` |
-| Answer line | profitSoFar, counted sessions | `msTargetProgress` over history plus today's ended Masaniello sessions of the mode |
+| Answer line | profitSoFar, counted sessions | `msTargetProgress` over today's ended Masaniello sessions of the mode |
 | Answer line | Projected account gain | `msSessionsToTarget`, divided by `balForMode` |
 | Dashboard x | Active session | `getActive(ss, mode)` with `msN` set |
 | Dashboard y | Remaining sessions | `msSessionsToTarget` with remaining target |
-| History read | Earlier sessions | `sessions` table, filtered as in the API table above |
 | Today's sessions | Live state | `todaySS.sessions`, so no re read after a session ends |
 | Cycle end alert | Won or lost text | `endReason` `MS_TARGET` / `MS_LOSS_LIMIT` / `MS_MANUAL` |
 | Target reached alert | Reached flip | derived reached state before and after the session ended (ref of the previous value; not fired on first load) |
@@ -163,15 +169,14 @@ Derived, never stored: counted sessions, profit so far, sessions required, y in 
 
 **Key invariants**:
 - Progress is always derived. No counter is stored.
-- The dollar goal never changes after saving, unless the user saves a new one.
-- `msTargetSetAt` is set only when a target is first set (after none, or after clearing).
+- The goal in dollars is worked out each day from the saved value and unit. It is never stored.
 - Reached is latched by counting order (AC-7).
-- A session ended before `msTargetSetAt` never counts. A session already running when the target is set counts once it ends, with its full `sPnl` (a small overcount that is accepted).
+- A session counts once it has ended, with its full `sPnl`.
 - Masaniello ignores `settings.sessionsPerDay` everywhere it is shown.
 - The Stop Loss line ends a cycle only when `msStopLossEnds{Mode}` is on; default off keeps 0004 behavior.
 - Alerts fire only for sessions that ended or changed after the app loaded, never for history.
 
-**Security model**: no change. Settings and sessions are already owned per user under existing Row Level Security (database rules limiting each row to its owner). The history read filters on the signed in user id as every other read does.
+**Security model**: no change. Settings and sessions are already owned per user under existing Row Level Security (database rules limiting each row to its owner).
 
 **Configuration required**: none.
 
@@ -179,11 +184,11 @@ Derived, never stored: counted sessions, profit so far, sessions required, y in 
 - Math, fixed capital: `msSessionsToTarget` for target $200, capital $50, N 10, K 6, payout 92 gives `ceil(200 / (50 * g))` (g from `W(10,6) ≈ 0.4292`, so g ≈ 1.330). Verifies **AC-3**, **AC-4**.
 - Math, compounding: with balance $50, the first cycle makes `50 * g`, the second uses the grown balance, so S is lower than the fixed result for a large target. Verifies **AC-4**.
 - Messages: empty target, capital below minimum, 101 sessions needed, target already reached each show their exact message and no number. Verifies **AC-6**.
-- Percent: 10% on a $500 balance stores `msTargetDollars` 50 and shows "= $50.00". Verifies **AC-1**, **AC-2**.
-- Counting: three ended sessions with profits 30, 40, 50 and target 100: counts 3 and reached; a later session of +20 is not counted; a session ending before `msTargetSetAt` is ignored. Verifies **AC-7**.
-- Re save: saving the same or an edited dollar value keeps `msTargetSetAt`; the first save sets it; clearing nulls it. Verifies **AC-10**.
+- Percent: 10% with a day start balance of $500 gives a $50 goal today and shows "= $50.00 today". Verifies **AC-1**, **AC-2**.
+- Counting: three ended sessions with profits 30, 40, 50 and target 100: counts 3 and reached; a later session of +20 is not counted; sessions of the other mode are ignored. Verifies **AC-7**.
+- Edit: raising the goal keeps today's sessions and only grows the total; lowering it under the profit made shows reached; clearing saves no target. Verifies **AC-10**.
 - Counter label: x includes the active session; a losing session raises y; reached shows "Target reached"; no target shows "Session n"; a Fixed Risk mode keeps "n/Sessions per day". Verifies **AC-8**.
-- Reload: counted sessions from earlier days come back from the read and match before the reload. Verifies **AC-9**.
+- Reload: today's counted sessions match before and after a reload. Verifies **AC-9**.
 - Auto copy: toggle on makes `getMsCapitalForMode` return the balance and disables the Capital field. Verifies **AC-11**.
 - Lock: two `MS_LOSS_LIMIT` sessions today do not lock the mode; two `AM_LOSS_TARGET` sessions still do. Verifies **AC-12**.
 - Alerts: cycle end plays one chime when its toggle is on and none when off; target reached fires once on the flip and not on first load; coinciding end and target play one chime; Stop Loss fires once when the loss crosses the line. Verifies **AC-13**, **AC-14**.
@@ -194,10 +199,10 @@ Derived, never stored: counted sessions, profit so far, sessions required, y in 
 Tracer Bullet: first one real target saved and shown end to end, then the counter, then the extras.
 
 1. Pure engine and tests: `msSessionsToTarget`, `msTargetProgress`, the `getMs*ForMode` getters, and the `getMsCapitalForMode` auto copy check, covering the math, message, and counting scenarios above. Satisfies **AC-3**, **AC-4**, **AC-6**, **AC-7**.
-2. Thin thread: add the eight `settings.extra` keys for both modes (16 entries) to the settings whitelist (near App.js:270 and 298) and `settingsDraft` defaults (near 7511); add the Profit target field with unit switch, validation in `msFieldErrors`, the `%` to dollars conversion and `msTargetSetAt` logic in `Cfg`'s save (an errored target keeps its last saved values through the `msCleaned` pattern near App.js:7579, and the computed `msTargetDollars` and `msTargetSetAt` join the saved baseline so the draft is not left dirty), and the answer line in `MasanielloSettings` using today's sessions only. Save, reload, see the same line. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-5**, **AC-6**, **AC-10**.
-3. History read and counter: add `loadMsTargetHistory` and merge with today's sessions for the answer line (counted sessions and profit); replace the Session x/y text for Masaniello at the two Dashboard spots (near App.js:9041 and 9138). Satisfies **AC-7**, **AC-8**, **AC-9**.
+2. Thin thread: add the `settings.extra` keys for both modes to the settings whitelist (near App.js:270 and 298) and `settingsDraft` defaults (near 7511); add the Profit target field with unit switch, validation in `msFieldErrors`, and the save in `Cfg` (an errored target keeps its last saved value through the `msCleaned` pattern), and the answer line in `MasanielloSettings` using today's sessions only. Save, reload, see the same line. Satisfies **AC-1**, **AC-2**, **AC-3**, **AC-5**, **AC-6**, **AC-10**.
+3. Counter: count today's sessions for the answer line (counted sessions and profit); replace the Session x/y text for Masaniello at the two Dashboard spots (near App.js:9041 and 9138). Satisfies **AC-7**, **AC-8**, **AC-9**.
 4. Auto copy balance: the toggle, the disabled Capital field with its hint, and the getter change. Satisfies **AC-11**.
-5. Alerts: the three toggles, and an extension of the session ended effect (near App.js:8924): seed its previous state on the first load, give Masaniello sessions their own branch (cycle end text, target reached flip after history resolves, Stop Loss check with `stopLossAlertedRef`, active sessions only). The decisions live in the exported `msAlertEvents` so they can be unit tested; the effect only plays what it returns. Satisfies **AC-13**, **AC-14**, **AC-15**.
+5. Alerts: the three toggles, and an extension of the session ended effect (near App.js:8924): seed its previous state on the first load, give Masaniello sessions their own branch (cycle end text, target reached flip, Stop Loss check with `stopLossAlertedRef`, active sessions only). The decisions live in the exported `msAlertEvents` so they can be unit tested; the effect only plays what it returns. Satisfies **AC-13**, **AC-14**, **AC-15**.
 6. Remove the Masaniello daily lock: drop `MS_LOSS_LIMIT` from `amPlLossTargetSessionCount` (App.js:1069), fix the two lock messages (near 3711 and 4741), update the Lock test in `src/Masaniello.test.js`, and note the change on 0004 AC-11. Satisfies **AC-12**.
 7. Stop Loss ends cycle: add `msStopLossEnds{Mode}` to the whitelist and draft defaults, the toggle and the "Cycle ends at a loss of $X" hint in the panel, `getMsStopLossEndsForMode`, the `MS_STOP_LOSS` branch in `checkMasanielloSessionEnd` (pass `settings` and `mode` from the dispatcher), the Lost count, both end text spots, and the lock exclusion. Check the recount path near App.js:9055 uses the same dispatcher. Satisfies **AC-16**, **AC-17**.
 
@@ -217,7 +222,7 @@ Tracer Bullet: first one real target saved and shown end to end, then the counte
 - The Stop Loss line is not snapshotted, so editing Stop Loss % during a cycle moves its line.
 - Spec 0004 says Stop Loss % never ends a cycle; this spec changes that only when the toggle is on.
 - A session already running when the target is set counts with its full profit.
-- Corrections to trades of earlier days do not update those days' stored session profit, so history can be stale. A correction that lowers today's profit can un reach the target and fire the alert again on the next flip.
+- A correction that lowers today's profit can un reach the target and fire the alert again on the next flip.
 - While a cycle is active, y can move a little after each trade, because the balance already holds the cycle's partial result.
 
 **Neutral**:

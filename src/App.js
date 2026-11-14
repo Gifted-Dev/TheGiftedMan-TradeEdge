@@ -293,8 +293,6 @@ function toSettingsRow(userId,s){
       msStopLossPctDemo:s.msStopLossPctDemo,msStopLossPctReal:s.msStopLossPctReal,
       msTargetValueDemo:s.msTargetValueDemo??null,msTargetValueReal:s.msTargetValueReal??null,
       msTargetUnitDemo:s.msTargetUnitDemo,msTargetUnitReal:s.msTargetUnitReal,
-      msTargetDollarsDemo:s.msTargetDollarsDemo??null,msTargetDollarsReal:s.msTargetDollarsReal??null,
-      msTargetSetAtDemo:s.msTargetSetAtDemo??null,msTargetSetAtReal:s.msTargetSetAtReal??null,
       msAutoCopyBalanceDemo:s.msAutoCopyBalanceDemo,msAutoCopyBalanceReal:s.msAutoCopyBalanceReal,
       msAlertSessionEndDemo:s.msAlertSessionEndDemo,msAlertSessionEndReal:s.msAlertSessionEndReal,
       msAlertTargetReachedDemo:s.msAlertTargetReachedDemo,msAlertTargetReachedReal:s.msAlertTargetReachedReal,
@@ -1686,13 +1684,22 @@ export function getMsCapitalForMode(settings, mode, balance) {
 }
 // ── Masaniello profit target (spec 0006) ─────────────────────────────────
 const msModeKey = mode => (mode === 'REAL' ? 'Real' : 'Demo');
-export function getMsTargetDollarsForMode(settings, mode) {
-  const v = settings?.[`msTargetDollars${msModeKey(mode)}`];
-  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+// The profit target is a daily goal: every day starts at 0 sessions and 0 profit.
+// A `%` target is a share of the balance at the start of that day.
+export function msTargetDollarsToday(settings, mode, dayStartBal) {
+  const mk = msModeKey(mode);
+  const v = settings?.[`msTargetValue${mk}`];
+  if (!(typeof v === 'number' && v > 0)) return null;
+  const d = msTargetToDollars(v, settings?.[`msTargetUnit${mk}`] === '%' ? '%' : '$', dayStartBal);
+  return d >= 0.01 ? d : null;
 }
-export function getMsTargetSetAtForMode(settings, mode) {
-  const v = settings?.[`msTargetSetAt${msModeKey(mode)}`];
-  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+function msDayStart() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+// Mode balance at local midnight today: trades and withdrawals before it.
+export function dayStartBalForMode(settings, trades, wds, mode) {
+  const t0 = msDayStart();
+  return calcBal(getStartingBalanceForMode(settings, mode),
+    (trades || []).filter(t => getTradeMode(t) === mode && t.timestamp < t0),
+    mode === 'REAL' ? (wds || []).filter(w => w.timestamp < t0) : []);
 }
 export function getMsAutoCopyBalanceForMode(settings, mode) {
   return settings?.[`msAutoCopyBalance${msModeKey(mode)}`] === true;
@@ -1737,11 +1744,11 @@ export function msSessionsToTarget(targetDollars, profitSoFar, capital, followBa
 }
 // Counted sessions and profit toward the target, derived from stored sessions
 // (spec 0006 AC-7). Counting stops at the first session that reaches the target.
-export function msTargetProgress(sessions, targetDollars, setAt) {
+export function msTargetProgress(sessions, targetDollars) {
   const out = { count: 0, profit: 0, reached: false };
   if (!(targetDollars > 0)) return out;
   const eligible = (sessions || [])
-    .filter(s => s.msN != null && !s.isActive && s.endTime != null && (setAt == null || s.endTime >= setAt))
+    .filter(s => s.msN != null && !s.isActive && s.endTime != null)
     .sort((a, b) => a.endTime - b.endTime || (a.startTime || 0) - (b.startTime || 0));
   for (const s of eligible) {
     out.count += 1;
@@ -1750,35 +1757,19 @@ export function msTargetProgress(sessions, targetDollars, setAt) {
   }
   return out;
 }
-// One read of earlier-day Masaniello sessions since the target was set.
-export async function loadMsTargetHistory(userId, mode, setAt) {
-  const { data, error } = await supabase.from('sessions').select('*')
-    .eq('user_id', userId).eq('account_mode', mode).eq('is_active', false)
-    .gte('end_time', new Date(setAt).toISOString());
-  if (error) throw error;
-  return (data || []).map(fromSessionRow).filter(s => s.msN != null);
-}
-// Merge history with today's live sessions by id; live wins.
-export function msMergeSessions(history, live) {
-  const byId = new Map((history || []).map(s => [s.id, s]));
-  for (const s of live || []) byId.set(s.id, s);
-  return [...byId.values()];
-}
-// Progress for one mode from its history entry ({status, sessions}) plus live
-// sessions of the day. status is 'ok' | 'loading' | 'error'. null = no target.
-export function msModeProgress(settings, mode, histEntry, liveSessions) {
-  const target = getMsTargetDollarsForMode(settings, mode);
+// Progress for one mode from today's live sessions. null = no target.
+export function msModeProgress(settings, mode, liveSessions, dayStartBal) {
+  const target = msTargetDollarsToday(settings, mode, dayStartBal);
   if (target == null) return null;
   const live = (liveSessions || []).filter(s => s.accountMode === mode);
-  const merged = msMergeSessions(histEntry?.sessions, live);
-  return { target, status: histEntry?.status || 'loading', ...msTargetProgress(merged, target, getMsTargetSetAtForMode(settings, mode)) };
+  return { target, ...msTargetProgress(live, target) };
 }
 // Decides which alerts to play for one snapshot of today's sessions (spec 0006
 // AC-13 to AC-15). Returns [{title, body, tag}], one chime each. It MUTATES the
 // state it is given (st.alerted, st.stopLossAlerted: Sets; st.prevReached: object)
 // so each alert fires once; the caller keeps st between calls.
-// histFor(mode) gives that mode's {status, sessions} history entry.
-export function msAlertEvents({ prevSessions, sessions, settings, histFor, st }) {
+// dayBal(mode) gives that mode's balance at the start of the day (for a % target).
+export function msAlertEvents({ prevSessions, sessions, settings, dayBal, st }) {
   const first = prevSessions === null;
   const label = m => (m === 'REAL' ? 'Real' : 'Demo');
   const events = [];
@@ -1787,14 +1778,14 @@ export function msAlertEvents({ prevSessions, sessions, settings, histFor, st })
     const before = prevSessions.find(p => p.id === s.id);
     return !before || before.isActive;
   });
-  // Target reached flips. The previous value is seeded only once that mode's history has resolved.
+  // Target reached flips.
   const flipped = {};
   for (const m of ['DEMO', 'REAL']) {
-    const prog = msModeProgress(settings, m, histFor(m), sessions);
-    if (!prog || prog.status !== 'ok') continue;
+    const prog = msModeProgress(settings, m, sessions, dayBal(m));
+    if (!prog) continue;
     // One latch per mode, tied to the goal it saw. An edited goal changes the key, so it is
     // seeded silently and only a session end can flip it (also covers editing back to an old goal).
-    const key = `${getMsTargetSetAtForMode(settings, m)}:${getMsTargetDollarsForMode(settings, m)}`;
+    const key = String(prog.target);
     const prev = st.prevReached[m];
     const was = prev && prev.key === key ? prev.reached : undefined;
     st.prevReached[m] = { key, reached: prog.reached };
@@ -1825,15 +1816,14 @@ export function msAlertEvents({ prevSessions, sessions, settings, histFor, st })
 }
 // Dashboard counter text for a Masaniello mode (spec 0006 AC-8); null when the
 // mode is not on Masaniello so the caller keeps the existing label.
-export function msCounterLabel(settings, mode, balance, histEntry, liveSessions) {
+export function msCounterLabel(settings, mode, balance, liveSessions, dayStartBal) {
   if (getMoneyMgmtStyleForMode(settings, mode) !== 'MASANIELLO') return null;
   const live = (liveSessions || []).filter(s => s.accountMode === mode);
-  const prog = msModeProgress(settings, mode, histEntry, liveSessions);
+  const prog = msModeProgress(settings, mode, liveSessions, dayStartBal);
   if (!prog) return `Session ${live.length}`;
   const active = live.some(s => s.isActive && s.msN != null);
   const x = prog.count + (active ? 1 : 0);
   if (prog.reached) return `Target reached · ${prog.count} session${prog.count === 1 ? '' : 's'}`;
-  if (prog.status !== 'ok') return `Session ${x}`;
   const N = getMsTotalTradesForMode(settings, mode), K = getMsWinTradesForMode(settings, mode), payout = getMsPayoutPctForMode(settings, mode);
   const follow = getMsAutoCopyBalanceForMode(settings, mode) || !(parseFloat(settings?.[`msCapital${msModeKey(mode)}`]) > 0);
   const r = msSessionsToTarget(prog.target, prog.profit, getMsCapitalForMode(settings, mode, balance), follow, balance, N, K, payout);
@@ -7942,26 +7932,20 @@ const MM_TOOLTIPS={
 // Masaniello input validation (spec 0004 AC-2). Values in `f` are the raw
 // input strings; an errored field is never saved (see Cfg's save()).
 // Profit target in dollars from the typed value and unit; null when blank.
-// `%` is a share of the mode balance at the moment of saving (spec 0006 AC-2).
+// `%` is a share of the balance at the start of the day (spec 0006, daily goal).
 export function msTargetToDollars(value,unit,bal){
   if(value==null||value==='')return null;
   const v=Number(value);
   return unit==='%'?Math.round(v/100*bal*100)/100:v;
 }
-// `saved` (settings) is optional: an unchanged saved % target keeps its stored
-// dollars, so the balance based checks are skipped for it (spec 0006 AC-2).
-export function msFieldErrors(f,modeKey,bal,saved){
+export function msFieldErrors(f,modeKey){
   const e={},raw=k=>f?.[`${k}${modeKey}`];
   const tv=raw('msTargetValue'),tu=raw('msTargetUnit')==='%'?'%':'$';
   if(!(tv==null||tv==='')){
     const v=Number(tv);
-    const unchanged=saved&&saved[`msTargetValue${modeKey}`]===v&&(saved[`msTargetUnit${modeKey}`]??'$')===tu&&saved[`msTargetDollars${modeKey}`]!=null;
     if(!Number.isFinite(v))e.msTargetValue='Enter a number';
     else if(tu==='$'){if(!(v>=0.01&&v<=1000000))e.msTargetValue='Dollar amount from 0.01 to 1,000,000';}
     else if(!(v>=0.1&&v<=1000))e.msTargetValue='Percent from 0.1 to 1000';
-    else if(unchanged){/* stored dollars stay */}
-    else if(!(bal>0))e.msTargetValue='Needs a balance above 0 to turn a percent into dollars';
-    else if(msTargetToDollars(v,'%',bal)<0.01)e.msTargetValue='That percent is under $0.01 on your balance';
   }
   const isBlank=v=>v==null||v==='';
   const N=isBlank(raw('msTotalTrades'))?10:Number(raw('msTotalTrades'));
@@ -7977,8 +7961,8 @@ export function msFieldErrors(f,modeKey,bal,saved){
   if(!isBlank(c)&&!(Number.isFinite(Number(c))&&Number(c)>0))e.msCapital='Positive dollar amount, or empty to use your balance';
   return e;
 }
-function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
-  const errs=msFieldErrors(f,modeKey,bal,settings);
+function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
+  const errs=msFieldErrors(f,modeKey);
   const mode=modeKey==='Real'?'REAL':'DEMO';
   const autoCopy=f[`msAutoCopyBalance${modeKey}`]===true;
   const field=(k,label,props)=>(
@@ -8004,27 +7988,15 @@ function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
   const won=sessions.filter(s=>s.accountMode===mode&&s.endReason==='MS_TARGET').length;
   const lost=sessions.filter(s=>s.accountMode===mode&&(s.endReason==='MS_LOSS_LIMIT'||s.endReason==='MS_STOP_LOSS')).length;
   const stopEnds=f[`msStopLossEnds${modeKey}`]===true;
-  // Target: editing a saved target keeps the count; only clearing it and setting a new one restarts.
+  // Target: a daily goal. Count and profit start at 0 each day; a % is of the day's starting balance.
   const unit=f[`msTargetUnit${modeKey}`]==='%'?'%':'$';
   const tv=f[`msTargetValue${modeKey}`];
   const hasTarget=!(tv==null||tv==='');
-  const savedValue=settings?.[`msTargetValue${modeKey}`],savedUnit=settings?.[`msTargetUnit${modeKey}`]==='%'?'%':'$';
-  const unchanged=hasTarget&&savedValue!=null&&Number(tv)===Number(savedValue)&&unit===savedUnit&&getMsTargetDollarsForMode(settings,mode)!=null;
-  const targetDollars=!hasTarget||errs.msTargetValue?null:unchanged?getMsTargetDollarsForMode(settings,mode):msTargetToDollars(tv,unit,bal);
-  // Editing a saved target keeps its start time, so the draft counts from the saved
-  // start with the draft dollars. A first target (no start time yet) counts from zero.
-  const setAt=getMsTargetSetAtForMode(settings,mode);
-  const histEntry=msHist?.[`${mode}:${setAt}`];
-  const counting=hasTarget&&!errs.msTargetValue&&setAt!=null&&getMsTargetDollarsForMode(settings,mode)!=null;
-  const histStatus=histEntry?.status||'loading';
-  const progress=counting&&targetDollars>0
-    ?msTargetProgress(msMergeSessions(histEntry?.sessions,sessions.filter(s=>s.accountMode===mode)),targetDollars,setAt)
-    :{count:0,profit:0};
-  // A saved target counts earlier sessions too, so no count while that read is pending or failed (AC-6).
-  const histPending=counting&&histStatus!=='ok';
-  const answer=errs.msTargetValue||!valid?null:histPending
-    ?{text:histStatus==='error'?'Could not read your earlier sessions, so the session count is hidden.':'Reading your earlier sessions…'}
-    :msTargetAnswer({targetDollars,progress,capital,followBalance,balance:bal,N,K,payout});
+  // A % goal needs a day start balance big enough for at least $0.01.
+  const noDayBal=unit==='%'&&hasTarget&&!errs.msTargetValue&&!(msTargetToDollars(tv,'%',dayStartBal)>=0.01);
+  const targetDollars=!hasTarget||errs.msTargetValue||noDayBal?null:msTargetToDollars(tv,unit,dayStartBal);
+  const progress=targetDollars>0?msTargetProgress(sessions.filter(s=>s.accountMode===mode),targetDollars):{count:0,profit:0};
+  const answer=errs.msTargetValue||noDayBal||!valid?null:msTargetAnswer({targetDollars,progress,capital,followBalance,balance:bal,N,K,payout});
   return(
     <div style={{padding:10,borderRadius:'var(--radius)',border:'1px solid var(--border)',background:'var(--surface-0)'}}>
       <div style={{fontSize:11,color:'var(--text-muted)',marginBottom:12}}>
@@ -8056,8 +8028,9 @@ function MasanielloSettings({f,set,modeKey,bal,sessions,settings,msHist}){
           ))}
         </div>
         {errs.msTargetValue&&<div id={`msTargetValue${modeKey}-err`} style={{fontSize:11,color:'var(--text-danger)',marginTop:2}}>{errs.msTargetValue}</div>}
-        {unit==='%'&&hasTarget&&!errs.msTargetValue&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`= ${f$(targetDollars)}`}{unchanged?'':' (set when you save)'}</div>}
-        {counting&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`Counting sessions since ${new Date(setAt).toLocaleDateString()}. Clear the target and save to start a new count.`}</div>}
+        {unit==='%'&&hasTarget&&!errs.msTargetValue&&!noDayBal&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{`= ${f$(targetDollars)} today, from your balance at the start of the day`}</div>}
+        {noDayBal&&<div role="alert" style={{fontSize:11,color:'var(--text-danger)',marginTop:2}}>A % goal needs a balance above 0 at the start of the day, and a goal of at least $0.01. Use $ until then.</div>}
+        {hasTarget&&!errs.msTargetValue&&<div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>A daily goal: the count starts again at 0 every day.</div>}
         {answer&&(
           <div style={{marginTop:6}} aria-live="polite">
             <div style={{fontSize:13,color:'var(--text-primary)'}}>{answer.text}{answer.gain!=null&&` · Projected account gain +${fp(answer.gain)}`}</div>
@@ -8147,7 +8120,7 @@ const settingsEq=(a,b)=>{
     msStopLossEndsDemo:settings?.msStopLossEndsDemo ?? false,msStopLossEndsReal:settings?.msStopLossEndsReal ?? false,
   });}
 
-export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange,msHist}){
+export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange}){
   // `f` holds every Demo/Real field at once (storage stays per-mode); the
   // sidebar mode only picks which slice renders. Never re-seeded from props.
   const modeKey=mode==='REAL'?'Real':'Demo';
@@ -8192,35 +8165,27 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
   function msCleaned(v){
     const out={...v};
     for(const mk of['Demo','Real']){
-      const bal=balForMode(settings,trades,wds,mk==='Real'?'REAL':'DEMO');
-      const errs=msFieldErrors(v,mk,bal,settings);
+      const errs=msFieldErrors(v,mk);
       for(const k of['msCapital','msTotalTrades','msWinTrades','msPayoutPct','msStopLossPct']){
         const key=`${k}${mk}`;
         if(errs[k])out[key]=settings?.[key]??null;
         else if(v[key]===''||v[key]==null)out[key]=k==='msCapital'?null:v[key];
         else out[key]=Number(v[key]);
       }
-      // Profit target (spec 0006 AC-2, AC-10). An errored target keeps its last
-      // saved values. Dollars are recomputed only when the value or unit changed;
-      // msTargetSetAt is set when a target is first set and kept while it is edited; clearing resets it.
+      // Profit target (spec 0006): a daily goal, stored as the typed value and unit.
+      // An errored target keeps its last saved values.
       const tk=n=>`${n}${mk}`;
       const unit=v[tk('msTargetUnit')]==='%'?'%':'$';
       out[tk('msTargetUnit')]=unit;
+      // Keys from the old start time design are dropped on the next save.
+      delete out[tk('msTargetDollars')];delete out[tk('msTargetSetAt')];
       if(errs.msTargetValue){
         out[tk('msTargetValue')]=settings?.[tk('msTargetValue')]??null;
         out[tk('msTargetUnit')]=settings?.[tk('msTargetUnit')]??'$';
-        out[tk('msTargetDollars')]=settings?.[tk('msTargetDollars')]??null;
-        out[tk('msTargetSetAt')]=settings?.[tk('msTargetSetAt')]??null;
       }else if(v[tk('msTargetValue')]===''||v[tk('msTargetValue')]==null){
-        out[tk('msTargetValue')]=null;out[tk('msTargetDollars')]=null;out[tk('msTargetSetAt')]=null;
+        out[tk('msTargetValue')]=null;
       }else{
-        const val=Number(v[tk('msTargetValue')]);
-        const sameInput=settings?.[tk('msTargetValue')]===val&&(settings?.[tk('msTargetUnit')]??'$')===unit&&settings?.[tk('msTargetDollars')]!=null;
-        const dollars=sameInput?settings[tk('msTargetDollars')]:msTargetToDollars(val,unit,bal);
-        out[tk('msTargetValue')]=val;
-        out[tk('msTargetDollars')]=dollars;
-        // Editing an existing target keeps the start time so sessions already done still count.
-        out[tk('msTargetSetAt')]=settings?.[tk('msTargetSetAt')]!=null?settings[tk('msTargetSetAt')]:Date.now();
+        out[tk('msTargetValue')]=Number(v[tk('msTargetValue')]);
       }
     }
     return out;
@@ -8530,7 +8495,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
             </div>
           )}
           {isMasaniello&&(
-            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode)} sessions={ss?.sessions||[]} settings={settings} msHist={msHist}/>
+            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode)} dayStartBal={dayStartBalForMode(settings,trades,wds,mode)} sessions={ss?.sessions||[]}/>
           )}
 
           {!isMasaniello&&(
@@ -9400,41 +9365,19 @@ export default function App(){
   const bal=settings?balForMode(settings,trades,wds,mode):0;
   const todaySS=settings?getToday(ss):null;
 
-  // Earlier-day Masaniello sessions for each mode that has a profit target
-  // (spec 0006). Cached under `${mode}:${setAt}`; editing a target keeps its
-  // setAt, so no re-read (progress is recomputed from the cached sessions). Pending or failed reads leave the counter on "Session x".
-  const[msHist,setMsHist]=useState({});
-  const msHistRequested=useRef(new Set());
+  // A different user in the same tab starts from nothing (alert state).
   const msUserRef=useRef(null);
-  const msToday=todaySS?.date;
   useEffect(()=>{
-    // A different user in the same tab starts from nothing (history cache and alert state).
     const uid=authUser?.id??null;
     if(msUserRef.current!==uid){
       if(msUserRef.current!==null){
-        setMsHist({});msHistRequested.current=new Set();
         alertedRef.current=new Set();stopLossAlertedRef.current=new Set();
         prevSessionsForAlertRef.current=null;prevReachedRef.current={};
       }
       msUserRef.current=uid;
     }
-    if(!settings||!uid)return;
-    for(const m of['DEMO','REAL']){
-      const setAt=getMsTargetSetAtForMode(settings,m);
-      if(getMsTargetDollarsForMode(settings,m)==null||setAt==null)continue;
-      const key=`${m}:${setAt}`;
-      // Re-read when the day changes: after midnight today's live list starts
-      // empty, so sessions ended since the last read must come from storage.
-      const reqKey=`${key}:${msToday}`;
-      if(msHistRequested.current.has(reqKey))continue;
-      msHistRequested.current.add(reqKey);
-      setMsHist(p=>p[key]?{...p,[key]:{...p[key],status:'loading'}}:p);
-      loadMsTargetHistory(uid,m,setAt)
-        .then(sessions=>setMsHist(p=>({...p,[key]:{status:'ok',sessions}})))
-        .catch(e=>{console.error('Masaniello history read failed',e);setMsHist(p=>({...p,[key]:{status:'error',sessions:[]}}));});
-    }
-  },[settings,authUser?.id,msToday]); // eslint-disable-line react-hooks/exhaustive-deps
-  const msCounter=m=>msCounterLabel(settings,m,balForMode(settings,trades,wds,m),msHist[`${m}:${getMsTargetSetAtForMode(settings,m)}`],todaySS?.sessions);
+  },[authUser?.id]);
+  const msCounter=m=>msCounterLabel(settings,m,balForMode(settings,trades,wds,m),todaySS?.sessions,dayStartBalForMode(settings,trades,wds,m));
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
   // Lives here (not inside Dashboard) so the <audio> element is never
@@ -9604,7 +9547,7 @@ export default function App(){
     const prev=prevSessionsForAlertRef.current;
     prevSessionsForAlertRef.current=todaySS.sessions;
     const events=msAlertEvents({prevSessions:prev,sessions:todaySS.sessions,settings,
-      histFor:m=>msHist[`${m}:${getMsTargetSetAtForMode(settings,m)}`],
+      dayBal:m=>dayStartBalForMode(settings,trades,wds,m),
       st:{alerted:alertedRef.current,stopLossAlerted:stopLossAlertedRef.current,prevReached:prevReachedRef.current}});
     const chime=()=>{if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);};
     const notify=(title,body,tag)=>{
@@ -9614,7 +9557,7 @@ export default function App(){
     };
     events.forEach(e=>{chime();notify(e.title,e.body,e.tag);});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[todaySS,msHist,settings]);
+  },[todaySS,settings]);
 
   if(authLoading)return<Loading/>;
   if(!isSupabaseConfigured)return(
@@ -9828,7 +9771,7 @@ export default function App(){
             {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} mode={mode} nav={setView}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
             {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
-            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving} msHist={msHist}/>}
+            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving}/>}
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}
