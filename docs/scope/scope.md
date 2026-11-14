@@ -144,6 +144,7 @@ Suggest the wins and total trades setting that fits you, based on your overall w
 ### 9. Dashboard shows the daily profit target · done
 With Masaniello selected, the Dashboard shows the profit target you set for the day, so you always know what you are aiming for. Today the Masaniello cards show the cycle target (capital final) but not the daily goal from your settings. It reuses the daily target and progress numbers the tool already computes.
 **Done when:** with Masaniello selected and a profit target set, the Dashboard shows today's profit target in dollars and how far you are toward it; with no target set, it shows a short "No daily target set" hint with a way to set one, never a blank or NaN; it matches the target shown in Settings; the other money management styles keep their current Profit target card; the layout holds at phone width.
+code in `src/App.js` (`Dashboard`)
 - [x] Build it: `/develop dashboard daily profit target`
 - [ ] Verify it: `/check verify dashboard daily profit target`
 - [x] Test it: `/test dashboard daily profit target`
