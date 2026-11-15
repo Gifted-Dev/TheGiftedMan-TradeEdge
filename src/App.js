@@ -2023,7 +2023,7 @@ async function openRouterAnalyze(b64,mime,key){
 }
 
 async function groqAnalyze(b64,mime,key){
-  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'qwen/qwen3.6-27b',messages:[{role:'user',content:[{type:'text',text:PROMPT},{type:'image_url',image_url:{url:`data:${mime};base64,${b64}`}}]}],temperature:0.1,max_tokens:2000,response_format:{type:'json_object'},reasoning_effort:'none'})});
+  const res=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model:'qwen/qwen3.8-27b',messages:[{role:'user',content:[{type:'text',text:PROMPT},{type:'image_url',image_url:{url:`data:${mime};base64,${b64}`}}]}],temperature:0.1,max_tokens:2000,response_format:{type:'json_object'},reasoning_effort:'none'})});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`Groq API error ${res.status}`);}
   const d=await res.json();
   const txt=d.choices?.[0]?.message?.content||'{}';
@@ -2042,7 +2042,7 @@ async function polishJournalNote(text,settings){
   const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
   if(!key)throw new Error(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
   const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
-  const model=provider==='groq'?'qwen/qwen3.6-27b':'nvidia/nemotron-nano-12b-v2-vl:free';
+  const model=provider==='groq'?'qwen/qwen3.8-27b':'nvidia/nemotron-nano-12b-v2-vl:free';
   const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':`Bearer ${key}`},body:JSON.stringify({model,messages:[{role:'user',content:`${NOTE_POLISH_PROMPT}\n\n---\n${trimmed}`}],temperature:0.3,max_tokens:600,reasoning_effort:'none'})});
   if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`${provider==='groq'?'Groq':'OpenRouter'} API error ${res.status}`);}
   const d=await res.json();
@@ -2075,7 +2075,7 @@ async function aiChat(prompt,settings,{json=false,maxTokens=500,temperature=0.1,
   const key=provider==='groq'?settings?.groqApiKey:settings?.apiKey;
   if(!key)throw userError(`Add your ${provider==='groq'?'Groq':'OpenRouter'} API key in Settings first.`);
   const url=provider==='groq'?'https://api.groq.com/openai/v1/chat/completions':'https://openrouter.ai/api/v1/chat/completions';
-  const model=provider==='groq'?'qwen/qwen3.6-27b':'nvidia/nemotron-nano-12b-v2-vl:free';
+  const model=provider==='groq'?'qwen/qwen3.8-27b':'nvidia/nemotron-nano-12b-v2-vl:free';
   // 'none' everywhere by default (classifier/compose calls are cheap
   // structuring tasks, not worth the latency) — the advisory/coach call
   // below is the one call site that opts into real reasoning effort, since
@@ -8726,7 +8726,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
             <div>
               <label style={lbl} htmlFor="cfg-groq-key">Groq API key</label>
               <input id="cfg-groq-key" style={inp} type="password" placeholder="gsk_..." value={f.groqApiKey||''} onChange={e=>set('groqApiKey',e.target.value)}/>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://console.groq.com/keys" style={{color:'var(--text-accent)'}}>console.groq.com</a> · Model: qwen3.6-27b</div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Free key at <a href="https://console.groq.com/keys" style={{color:'var(--text-accent)'}}>console.groq.com</a> · Model: qwen3.8-27b</div>
             </div>
           )}
         </div>

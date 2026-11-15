@@ -173,7 +173,7 @@ A conversational assistant, grounded in your own journal data and this app's own
 4. Configure AI provider keys
    - Sign up in the app, then add your OpenRouter and/or Groq API key in Settings — needed for the Zone Analyzer's AI grading and the AI Coach ("Ask") chat.
    - OpenRouter: https://openrouter.ai/keys (free model: nemotron-nano-12b)
-   - Groq: https://console.groq.com/keys (free model: qwen3.6-27b)
+   - Groq: https://console.groq.com/keys (free model: qwen3.8-27b)
    - Configuring both is recommended: if Groq's free-tier rate limit is hit, the app automatically retries the same request on OpenRouter instead of failing or falling back to a plain data recap.
 
 5. Configure background music (optional)
