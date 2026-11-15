@@ -1590,12 +1590,23 @@ export function msTable(N, K, payoutPct) {
   }
   return W;
 }
+// On plan, state (n, k) holds running capital C0 * W[n][k] / W[N][K] and stakes W[n][k] - W[n-1][k]
+// of the target, so the stake is at least $1 for every reachable state when C0 >= W[N][K] / min gap.
+function msFullCapital(W, N, K) {
+  let gap = Infinity;
+  for (let n = 1; n <= N; n++) for (let k = 1; k <= Math.min(K, n); k++) if (n - k <= N - K) gap = Math.min(gap, W[n][k] - W[n - 1][k]);
+  const full = msCeilCent(W[N][K] / gap);
+  return Number.isFinite(full) ? full : null; // null when a very low payout underflows the gap to 0
+}
+const msCeilCent = x => Math.ceil(x * 100 - 1e-9) / 100;
 export function msPlanSummary(capital, N, K, payoutPct, balance, stopLossPct = 100) {
   const W = msTable(N, K, payoutPct), w0 = W[N][K];
   const capitalFinal = capital / w0;
   return {
     // Spreadsheet rule: smallest capital whose FIRST stake is $1. Later stakes can plan under $1 (raised to $1 live).
-    minCapital: Math.ceil((w0 / (w0 - W[N - 1][K])) * 100 - 1e-9) / 100,
+    minCapital: msCeilCent(w0 / (w0 - W[N - 1][K])),
+    // Smallest capital where every on plan stake is at least $1 (spec 0004 AC-22). Display only.
+    fullCapital: msFullCapital(W, N, K),
     requiredWinRate: (K / N) * 100,
     capitalFinal,
     winProfit: capitalFinal - capital,
@@ -1634,11 +1645,11 @@ export function liveMasanielloNextStake(session) {
   const p = msPlanStake(session);
   return p ? Math.min(p.rc, Math.max(1, p.plan)) : 0;
 }
-function msStakeReasoning(session) {
+export function msStakeReasoning(session) {
   if (session?.msN == null) return '';
   const { n, k } = msLiveState(session);
   const stake = liveMasanielloNextStake(session), p = msPlanStake(session);
-  const raised = p && stake > p.plan ? ` (plan $${p.plan.toFixed(2)}, raised to the $1 minimum)` : '';
+  const raised = p && p.plan > 0 && p.plan < 1 && stake >= 1 ? ` (plan $${p.plan.toFixed(2)}, raised to the $1 minimum)` : '';
   return `Need ${k} more win${k === 1 ? '' : 's'} in ${n} trade${n === 1 ? '' : 's'}. Stake $${stake.toFixed(2)}${raised}.`;
 }
 // DRAW is a push: no counter moves, so it never uses one of the N trades.
@@ -1848,7 +1859,7 @@ export function msTargetAnswer({ targetDollars, progress, capital, followBalance
   };
 }
 // AC-4 / AC-17 start gate; null means OK to start.
-function msStartBlockReason(settings, mode, balance) {
+export function msStartBlockReason(settings, mode, balance) {
   if (getMoneyMgmtStyleForMode(settings, mode) !== 'MASANIELLO') return null;
   const N = getMsTotalTradesForMode(settings, mode), K = getMsWinTradesForMode(settings, mode);
   const capital = getMsCapitalForMode(settings, mode, balance);
@@ -8078,6 +8089,11 @@ function MasanielloSettings({f,set,modeKey,bal,dayStartBal,sessions}){
               sub={plan.maxLossLimit<N-K+1?`plan limit ${N-K+1}`:undefined}/>
           </div>
           <p style={{fontSize:11,color:'var(--text-muted)'}}>Assumes every trade pays the planned payout.{plan.maxLossLimit<N-K+1&&' Counts a straight losing run.'}</p>
+          {plan.fullCapital!=null&&(
+            <div style={{fontSize:12,color:capital<plan.fullCapital?'var(--text-warning)':'var(--text-muted)'}} data-testid="ms-full-capital">
+              Full capital {f$(plan.fullCapital)}.{capital<plan.fullCapital&&` Below this, later stakes are raised to the $1 minimum and the cycle can finish a little under its target.`}
+            </div>
+          )}
         </div>
       )}
       <div style={{marginTop:12,display:'grid',gap:6}}>

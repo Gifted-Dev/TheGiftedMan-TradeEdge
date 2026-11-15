@@ -38,6 +38,7 @@ This adds Masaniello as a fourth Money Management Style next to Fixed Risk %, An
 - **AC-19**: Correcting or deleting a trade in an active Masaniello cycle recomputes `msWins` and `msLosses` from the session's resolved trades and persists the change. A correction never reopens an ended cycle (same rule as AM and PL today).
 - **AC-20**: Start session labels and the Quick Log time metric show "No time limit" for Masaniello instead of a minute count.
 - **AC-21**: Later in a cycle the plan can call for a stake under $1 (the minimum capital rule only guarantees the first stake). The live stake is then raised to $1, because the broker will not take less, and the reasoning line says so ("Need k more wins in n trades. Stake $1.00 (plan $0.62, raised to the $1 minimum)."). The plan summary does not list per trade stakes, so nothing shows a sub $1 amount.
+- **AC-22** (added 2026-11-14, replaces an earlier top up idea): The stake rule stays proportional (AC-6); no stake is ever aimed at a fixed target, because a replay of every path showed that any top up before the very last trade compounds payout drift (see rationale). Instead, the Settings summary (AC-3) adds a non blocking line "Full capital" with the smallest capital at which every on plan stake is at least $1, and when the entered capital is below it, a warning: "Below $X, later stakes are raised to the $1 minimum and the cycle can finish a little under its target." It never blocks Start (AC-4 stays as is) and never changes a stake. Full capital is `W(N,K) / min over reachable states (n, k) of (W(n,k) - W(n-1,k))`, for 1 ≤ k ≤ n ≤ N with k ≤ K and n - k ≤ N - K, rounded up to the cent. For 10 of 6 at 92% this is $21.50. When a very low payout makes it unrepresentable (infinite), the line is hidden.
 
 ## Decision
 
@@ -158,6 +159,8 @@ Never stored (always derived): next stake, running capital (`msCapital + sPnl`),
 - Labels: Stop Loss shows capital times Stop Loss %; Max Loss Limit shows N minus K plus 1 losses; Stop Loss % never ends a cycle while the spec 0006 AC-16 toggle is off. Verifies **AC-3**.
 - Cycle: 6 wins out of 10 ends `MS_TARGET`; 5 losses ends `MS_LOSS_LIMIT`; a draw in between changes nothing. Verifies **AC-8**, **AC-9**.
 - Drift: a trade at 85% payout under a 92% plan; next stake equals running capital × f. Verifies **AC-6**, **AC-7**.
+- Full capital: 10 of 6 at 92% gives $21.50; at that capital every on plan stake along every path is at least $1.00, and one cent lower some stake plans under $1. The warning shows below it and is absent at or above it; Start stays enabled either way. Verifies **AC-22**.
+- Screenshot case: 2 of 9 at 92%, capital $207.09, a win then a $1 raised loss; the next stake is the proportional $1.32 (not a top up) and the Full capital warning was already showing at setup. Verifies **AC-6**, **AC-22**.
 - Lock: two `MS_LOSS_LIMIT` sessions today lock the mode; four individual losses inside cycles do not. Verifies **AC-11**. (Replaced by spec 0006 AC-12: two `MS_LOSS_LIMIT` sessions no longer lock the mode.)
 - Reload: settings and mid cycle `msWins`/`msLosses` survive the Supabase round trip. Verifies **AC-12**.
 - Mid cycle edit of N does not change the running cycle. Verifies **AC-5**.
@@ -176,6 +179,7 @@ Tracer Bullet: first a thin thread that runs one real cycle end to end (setting,
 8. Today's events won and lost in the Masaniello settings panel. Satisfies **AC-10**.
 9. Daily lock: include `MS_LOSS_LIMIT` in `amPlLossTargetSessionCount`, and update the lock message text to name Masaniello. Satisfies **AC-11**.
 11. Spreadsheet alignment (added 2026-11-12, after the earlier steps were built): change `msPlanSummary` minimum capital to `W(N,K) / (W(N,K) - W(N-1,K))` and rename its fields (`stopLoss` dollars, `maxLossLimit` count); add `msStopLossPct{Mode}` to the settings whitelist, `msFieldErrors` and a fifth Settings input; relabel the two summary metrics; raise the live stake to $1 with the reasoning note; update the existing tests in `src/Masaniello.test.js`. Satisfies **AC-2**, **AC-3**, **AC-4**, **AC-21**.
+12. Full capital warning (added 2026-11-14): add `fullCapital` to `msPlanSummary` (formula in AC-22; no change to any stake function, and `msPlanStake` stays proportional). In the Masaniello Settings summary show a "Full capital" metric and, when the entered capital is below it, the warning line from AC-22. Do not touch the Start gate. Fix the `msStakeReasoning` wording so a plan of zero or less, or a running capital under $1, does not print "raised to the $1 minimum" (only print it when the plan stake is above $0 and below $1 and the stake is $1 or more). Add the two tests above. Satisfies **AC-22**, **AC-21**.
 10. Update `MM_STYLES_KNOWLEDGE` and the "Anti-Martingale / Profit Lock only" Quick Log alert copy for four styles. Satisfies **AC-13**.
 
 ## Consequences

@@ -1,5 +1,5 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { msTable, msPlanSummary, liveMasanielloNextStake, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msModeProgress, msTargetDollarsToday, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsStopLossPctForMode, msLossLimitFromStopLoss, msAlertEvents, msStopLossHit, dayStartBalForMode, Cfg } from './App';
+import { msTable, msPlanSummary, liveMasanielloNextStake, msStakeReasoning, msStartBlockReason, advanceMasaniello, checkMasanielloSessionEnd, msFieldErrors, msSessionsToTarget, msTargetProgress, msTargetToDollars, msTargetAnswer, msCounterLabel, getMsCapitalForMode, amPlLossTargetSessionCount, msModeProgress, msTargetDollarsToday, getMsAutoCopyBalanceForMode, getMsAlertSessionEndForMode, getMsAlertTargetReachedForMode, getMsStopLossPctForMode, msLossLimitFromStopLoss, msAlertEvents, msStopLossHit, dayStartBalForMode, Cfg } from './App';
 
 const cycle = (over = {}) => ({ isActive: true, msN: 10, msK: 6, msPayoutPct: 92, msCapital: 100, msWins: 0, msLosses: 0, sPnl: 0, ...over });
 
@@ -50,6 +50,68 @@ describe('Masaniello math (spec 0004)', () => {
     const after = { ...s, sPnl: +(stake * 0.85).toFixed(2), ...advanceMasaniello(s, 'WIN') };
     const W = msTable(10, 6, 92), f = 1 - W[8][5] / W[9][5];
     expect(liveMasanielloNextStake(after)).toBeCloseTo(Math.round((100 + after.sPnl) * f * 100) / 100, 2);
+  });
+
+  // Lowest raw plan stake (before the $1 minimum) over every on plan path at capital `cap`.
+  function lowestRawPlan(cap) {
+    let low = Infinity;
+    const go = (s) => {
+      if (checkMasanielloSessionEnd(s)) return;
+      const n = s.msN - s.msWins - s.msLosses, k = s.msK - s.msWins, W = msTable(s.msN, s.msK, s.msPayoutPct);
+      low = Math.min(low, (cap + s.sPnl) * (1 - W[n - 1][k] / W[n][k]));
+      const st = liveMasanielloNextStake(s);
+      go({ ...s, sPnl: s.sPnl + st * 0.92, ...advanceMasaniello(s, 'WIN') });
+      go({ ...s, sPnl: s.sPnl - st, ...advanceMasaniello(s, 'LOSS') });
+    };
+    go(cycle({ msCapital: cap }));
+    return low;
+  }
+
+  // covers: AC-22
+  test('full capital for 10 of 6 at 92% is $21.50: every on plan raw stake is $1 or more there, one cent lower some is not', () => {
+    const { fullCapital } = msPlanSummary(100, 10, 6, 92, 500);
+    expect(fullCapital).toBe(21.5);
+    expect(lowestRawPlan(fullCapital)).toBeGreaterThanOrEqual(1);
+    expect(lowestRawPlan(21.49)).toBeLessThan(1);
+  });
+
+  // covers: AC-22
+  test('full capital is null, not Infinity, when a very low payout underflows the gap', () => {
+    const { fullCapital } = msPlanSummary(100, 20, 1, 1, 500);
+    expect(fullCapital === null || Number.isFinite(fullCapital)).toBe(true);
+    for (const [N, K, P] of [[3, 1, 92], [10, 9, 92], [20, 10, 1], [20, 1, 1], [10, 6, 100]]) {
+      const f = msPlanSummary(100, N, K, P, 500).fullCapital;
+      expect(f === null || (Number.isFinite(f) && f > 0)).toBe(true);
+    }
+  });
+
+  // covers: AC-22, AC-21
+  test('reasoning says "raised to the $1 minimum" only for a plan between $0 and $1', () => {
+    const raised = cycle({ msCapital: 3.24 }); // first stake plans $1.00 exactly, later ones under
+    const late = cycle({ msCapital: 3.24, msWins: 3, msLosses: 0, sPnl: 0 });
+    expect(msStakeReasoning(cycle())).not.toMatch(/raised/);
+    expect(msStakeReasoning(raised)).not.toMatch(/raised/);
+    expect(msStakeReasoning(late)).toMatch(/plan \$0\.\d\d, raised to the \$1 minimum/);
+    const ahead = cycle({ msWins: 5, msLosses: 0, sPnl: 200 }); // plan far above $1, nothing raised
+    expect(msStakeReasoning(ahead)).not.toMatch(/raised/);
+  });
+
+  // covers: AC-22, AC-4
+  test('the Full capital warning never blocks Start: capital between Minimum and Full capital is allowed', () => {
+    const { minCapital, fullCapital } = msPlanSummary(100, 10, 6, 92, 500);
+    const settings = { moneyMgmtStyleDemo: 'MASANIELLO', msTotalTradesDemo: 10, msWinTradesDemo: 6, msPayoutPctDemo: 92 };
+    expect(minCapital).toBeLessThan(fullCapital);
+    expect(msStartBlockReason({ ...settings, msCapitalDemo: 10 }, 'DEMO', 500)).toBeNull();
+    expect(msStartBlockReason({ ...settings, msCapitalDemo: minCapital - 0.01 }, 'DEMO', 500)).toMatch(/Capital below minimum/);
+  });
+
+  test('AC-22 screenshot case: 2 of 9 at $207.09 stakes the proportional amount; Full capital is above the capital', () => {
+    const cap = 207.09;
+    expect(msPlanSummary(cap, 9, 2, 92, 500).fullCapital).toBeGreaterThan(cap);
+    let s = { msN: 9, msK: 2, msPayoutPct: 92, msCapital: cap, msWins: 0, msLosses: 0, sPnl: 0 };
+    s = { ...s, sPnl: +(liveMasanielloNextStake(s) * 0.92).toFixed(2), ...advanceMasaniello(s, 'WIN') };
+    s = { ...s, sPnl: +(s.sPnl - 1).toFixed(2), ...advanceMasaniello(s, 'LOSS') };
+    expect(liveMasanielloNextStake(s)).toBeCloseTo(1.32, 2);
   });
 
   test('minimum capital is the spreadsheet rule: first stake is $1', () => {
@@ -549,6 +611,21 @@ describe('Masaniello settings panel (spec 0006)', () => {
     await user.click(screen.getByRole('checkbox', { name: /Auto copy balance/ }));
     expect(capital).toBeDisabled();
     expect(screen.getAllByText('Following your balance').length).toBeGreaterThan(0);
+  });
+
+  // covers: spec 0004 AC-22
+  test('Full capital line warns below $21.50, never blocks, and is quiet at or above it', async () => {
+    const { user } = await open({ msCapitalDemo: 50 });
+    const capital = screen.getByLabelText('Capital ($)');
+    await user.clear(capital);
+    await user.type(capital, '20');
+    const line = screen.getByTestId('ms-full-capital');
+    expect(line).toHaveTextContent('Full capital $21.50.');
+    expect(line).toHaveTextContent(/raised to the \$1 minimum/);
+    await user.clear(capital);
+    await user.type(capital, '21.50');
+    expect(screen.getByTestId('ms-full-capital')).toHaveTextContent('Full capital $21.50.');
+    expect(screen.getByTestId('ms-full-capital')).not.toHaveTextContent(/raised to the \$1 minimum/);
   });
 
   // covers: AC-18, AC-19
