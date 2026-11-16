@@ -35,6 +35,7 @@ import {
   Target,
   Timer,
   TriangleAlert,
+  User,
   Volume2,
   VolumeX,
   Wallet,
@@ -9162,6 +9163,93 @@ function EmailConfirmed({onLogin}){
   );
 }
 
+// ── Profile (identity from the Supabase auth user; spec 0008) ───────────────
+function Profile({user,onSignOut,onSettings}){
+  const ids=user.identities||[];
+  const providers=ids.length?ids.map(i=>i.provider):[user.app_metadata?.provider||'email'];
+  const hasPw=providers.includes('email');
+  const provLabel=providers.map(p=>p==='email'?'Email and password':p.charAt(0).toUpperCase()+p.slice(1)).join(', ');
+  const created=user.created_at?new Date(user.created_at).toLocaleDateString(undefined,{dateStyle:'medium'}):'';
+  const saved=user.user_metadata?.display_name||'';
+  const[name,setName]=useState(saved);
+  useEffect(()=>{setName(saved);},[saved]); // follow the saved name if it changes while open
+  const[nameBusy,setNameBusy]=useState(false);
+  const[nameMsg,setNameMsg]=useState(null); // {ok,text}
+  const[pw,setPw]=useState('');
+  const[pw2,setPw2]=useState('');
+  const[pwBusy,setPwBusy]=useState(false);
+  const[pwMsg,setPwMsg]=useState(null);
+  const NET='Could not reach the server. Try again.';
+  const tall={minHeight:40};
+  const msg=m=>m&&<div role={m.ok?'status':'alert'} style={{fontSize:12,marginTop:8,color:m.ok?'var(--text-success)':'var(--text-danger)'}}>{m.text}</div>;
+  async function saveName(e){
+    e.preventDefault();
+    if(nameBusy)return;
+    const v=name.trim().slice(0,40);
+    setNameBusy(true);setNameMsg(null);
+    try{
+      const{error}=await supabase.auth.updateUser({data:{display_name:v}});
+      if(error)setNameMsg({ok:false,text:error.message});
+      else{setName(v);setNameMsg({ok:true,text:'Saved'});}
+    }catch{setNameMsg({ok:false,text:NET});}
+    setNameBusy(false);
+  }
+  async function savePw(e){
+    e.preventDefault();
+    if(pwBusy)return;
+    if(!pw){setPwMsg({ok:false,text:'Enter a new password.'});return;}
+    if(pw.length<6){setPwMsg({ok:false,text:'Password must be at least 6 characters.'});return;}
+    if(pw!==pw2){setPwMsg({ok:false,text:'Passwords do not match.'});return;}
+    setPwBusy(true);setPwMsg(null);
+    try{
+      const{error}=await supabase.auth.updateUser({password:pw});
+      if(error)setPwMsg({ok:false,text:error.message});
+      else{setPw('');setPw2('');setPwMsg({ok:true,text:'Password updated'});}
+    }catch{setPwMsg({ok:false,text:NET});}
+    setPwBusy(false);
+  }
+  const row=(k,v)=><div style={{display:'flex',justifyContent:'space-between',gap:12,flexWrap:'wrap',fontSize:13,padding:'6px 0'}}><span style={{color:'var(--text-muted)'}}>{k}</span><span style={{color:'var(--text-primary)',wordBreak:'break-all'}}>{v}</span></div>;
+  const title=t=><div style={{fontSize:14,fontWeight:600,color:'var(--text-primary)',marginBottom:8}}>{t}</div>;
+  return(
+    <div style={{maxWidth:560,width:'100%',margin:'0 auto'}}>
+      <h1 style={{fontSize:18,fontWeight:600,color:'var(--text-primary)',marginBottom:12}}>Profile</h1>
+      <div style={card}>
+        {title('Account details')}
+        {row('Email',user.email)}
+        {row('Created',created)}
+        {row('Sign in method',provLabel)}
+      </div>
+      <form style={card} onSubmit={saveName}>
+        {title('Display name')}
+        <label htmlFor="pf-name" style={lbl}>Display name</label>
+        <input id="pf-name" style={{...inp,...tall}} maxLength={40} value={name} onChange={e=>{setName(e.target.value);setNameMsg(null);}}/>
+        <button type="submit" style={{...btn('pri'),...tall,marginTop:10}} disabled={nameBusy||name.trim()===saved}>{nameBusy?'Saving...':'Save'}</button>
+        {msg(nameMsg)}
+      </form>
+      <div style={card}>
+        {title('Password')}
+        {hasPw?(
+          <form onSubmit={savePw} noValidate>
+            <label htmlFor="pf-pw" style={lbl}>New password</label>
+            <input id="pf-pw" type="password" autoComplete="new-password" style={{...inp,...tall}} value={pw} onChange={e=>{setPw(e.target.value);setPwMsg(null);}}/>
+            <label htmlFor="pf-pw2" style={{...lbl,marginTop:10}}>Confirm new password</label>
+            <input id="pf-pw2" type="password" autoComplete="new-password" style={{...inp,...tall}} value={pw2} onChange={e=>{setPw2(e.target.value);setPwMsg(null);}}/>
+            <button type="submit" style={{...btn('pri'),...tall,marginTop:10}} disabled={pwBusy}>{pwBusy?'Updating...':'Update password'}</button>
+            {msg(pwMsg)}
+          </form>
+        ):<div style={{fontSize:13,color:'var(--text-secondary)'}}>You sign in with {provLabel}. Manage your password there.</div>}
+      </div>
+      <div style={card}>
+        {title('Session')}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button type="button" style={{...btn(),...tall}} onClick={onSettings}>Go to Settings</button>
+          <button type="button" style={{...btn('dan'),...tall}} onClick={onSignOut}>Sign out</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App(){
   const[authUser,setAuthUser]=useState(null);
@@ -9210,7 +9298,7 @@ export default function App(){
     const{data:sub}=supabase.auth.onAuthStateChange((_e,session)=>{
       if(_e==='PASSWORD_RECOVERY')setRecovering(true);
       const next=session?.user||null;
-      setAuthUser(prev=>prev?.id===next?.id?prev:next);
+      setAuthUser(prev=>prev?.id===next?.id&&_e!=='USER_UPDATED'?prev:next);
     });
     return()=>sub.subscription.unsubscribe();
   },[]);
@@ -9634,6 +9722,7 @@ export default function App(){
     {id:'calendar',icon:Calendar,label:'Calendar'},
     {id:'analytics',icon:BarChart3,label:'Analytics'},
     {id:'ask',icon:MessageCircle,label:'Ask'},
+    {id:'profile',icon:User,label:'Profile'},
     {id:'settings',icon:Settings,label:'Settings'},
   ];
 
@@ -9811,6 +9900,7 @@ export default function App(){
             {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} mode={mode} nav={setView}/>}
             {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
             {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
+            {view==='profile'&&<Profile user={authUser} onSignOut={()=>requestLeave({type:'logout'})} onSettings={()=>requestLeave({type:'view',id:'settings'})}/>}
             {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving}/>}
           </div>
 

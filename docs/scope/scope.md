@@ -28,6 +28,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 7 | Settings page reorganization | Slice 3 | done |
 | 8 | Money tab compound calculator | Slice 4 | done |
 | 9 | Dashboard shows the daily profit target | Slice 2 | done |
+| 10 | User profile page | Slice 5 | done |
 
 ## Existing features
 
@@ -183,10 +184,27 @@ Rename the Money tab to "Capital" (it clashed with Settings "Money management"),
 - [x] Test it: `/test money tab compound calculator`
 Spec [0007](../specs/0007-money-tab-compound-calculator.md) · code in `src/App.js` (`Money`)
 
+## Slice 5: Profile
+
+### 10. User profile page · done
+When you are logged in there is no place to see who you are in the app. Add a Profile page you can open from the app shell, showing your account details and the basic account actions. Password reset by email exists on the login screen today; this brings change password inside the app.
+**Done when:** a logged in user can open a Profile page and see their email, when the account was created, and which sign in method they use; can change their password from there (with clear success and error messages, and a note for accounts that sign in another way); can sign out from it; and the page works at phone width. The spec adds a display name and a link to Settings; change email and delete account are deferred.
+- [x] Design it (spec): `/architect user profile page`
+- [x] Build it: `/develop user profile page`
+   - [x] Thin thread: Profile nav item, page shell, account details, Sign out, Settings link (AC-1, AC-2, AC-3, AC-10, AC-11)
+   - [x] Change password: form, validation, errors, provider note (AC-4, AC-5, AC-6, AC-7, AC-13)
+   - [x] Display name: input, save, `USER_UPDATED` listener (AC-8, AC-9, AC-13)
+   - [x] Phone width, regression pass, tests (AC-12, AC-14)
+- [ ] Verify it: `/check verify user profile page`
+- [x] Test it: `/test user profile page`
+Spec [0008](../specs/0008-user-profile-page.md) · code in `src/App.js` (`Profile`)
+
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
 - **Dense table view toggle**: compact tabular grid alternative to trade cards for large screens
 - **Trade export & backup**: CSV or JSON export of filtered journal entries
+- **Delete account** (from spec 0008): needs a service role endpoint and a full data cascade
+- **Change email** (from spec 0008): needs the confirm mail flow and a pending state
 
 ## Legend
 
