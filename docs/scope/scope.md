@@ -29,6 +29,7 @@ _These are recommendations to keep your build orderly, not requirements. Skip an
 | 8 | Money tab compound calculator | Slice 4 | done |
 | 9 | Dashboard shows the daily profit target | Slice 2 | done |
 | 10 | User profile page | Slice 5 | done |
+| 11 | Set balance (balance adjustments) | Slice 6 | done |
 
 ## Existing features
 
@@ -198,6 +199,22 @@ When you are logged in there is no place to see who you are in the app. Add a Pr
 - [ ] Verify it: `/check verify user profile page`
 - [x] Test it: `/test user profile page`
 Spec [0008](../specs/0008-user-profile-page.md) · code in `src/App.js` (`Profile`)
+
+## Slice 6: Balance adjustments
+
+### 11. Set balance (balance adjustments) · done
+Today the only way to fix your balance is to edit the starting balance, which skews percent P&L and the milestone baselines. Add a Set balance action in both Demo and Real: you type the balance you actually have, and the app records the difference as a dated adjustment (with a note), so past trades and stats stay untouched. It covers top ups, unjournaled trades, broker fees, bonuses, and Demo resets.
+**Done when:** on the Capital tab, in Demo and in Real, you can enter a new balance and an optional note and save it; the current balance, running balance, and equity curve change by exactly the difference; starting balance, past trades, win rate, and daily percent P&L do not change; adjustments show in a history list you can review and delete; each mode only sees its own adjustments; bad input (empty, zero change, not a number) shows a clear message, not NaN; the spec decides whether adjustments count toward milestone tiers and withdrawal advice; the layout holds at phone width.
+- [x] Design it (spec): `/architect set balance`
+- [x] Build it: `/develop set balance`
+   - [x] Thin thread: migration, `adjs` state and load, balance functions take adjustments, Balance section with one real save (AC-1, AC-2, AC-3, AC-9, AC-14)
+   - [x] Form rules: validation, preview, save failure, live session note (AC-5, AC-6, AC-11, AC-12)
+   - [x] History: list and delete with confirm and rollback (AC-7, AC-8)
+   - [x] Reach every screen: day stats and calendar line, milestones and Dashboard on trading balance, reset (AC-4, AC-10, AC-13)
+   - [x] Phone width and tests (AC-15)
+- [x] Verify it: `/check verify set balance`
+- [x] Test it: `/test set balance`
+Spec [0009](../specs/0009-set-balance.md) · code in `src/App.js` (`Money`)
 
 ## Deferred
 Out of scope for the current build pass, kept so the plan stays honest.
