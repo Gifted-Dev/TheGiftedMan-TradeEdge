@@ -375,6 +375,14 @@ function fromWdRow(r){
   return{id:r.id,timestamp:new Date(r.timestamp).getTime(),date:r.date,amount:r.amount,
     balanceBefore:r.balance_before,balanceAfter:r.balance_after,notes:r.notes};
 }
+function toAdjRow(userId,a){
+  return{id:a.id,user_id:userId,timestamp:new Date(a.timestamp).toISOString(),date:a.date,mode:a.mode,amount:a.amount,
+    balance_before:a.balanceBefore,balance_after:a.balanceAfter,notes:a.notes};
+}
+function fromAdjRow(r){
+  return{id:r.id,timestamp:new Date(r.timestamp).getTime(),date:r.date,mode:r.mode,amount:Number(r.amount),
+    balanceBefore:Number(r.balance_before),balanceAfter:Number(r.balance_after),notes:r.notes};
+}
 function toAnalysisRow(userId,a){
   return{id:a.id,user_id:userId,timestamp:new Date(a.timestamp).toISOString(),screenshot:shotPath(a.screenshot),
     detected_pair:a.detectedPair,zone_type:a.zoneType,grade:a.grade,verdict:a.verdict,criteria:a.criteria||{},
@@ -499,16 +507,21 @@ async function ensureBuiltinStrategies(userId){
 }
 const tod=()=>new Date().toLocaleDateString('en-CA');
 const f$=(n)=>`$${Math.abs(+n).toFixed(2)}`;
+const fs$=(n)=>`${n<0?'-':'+'}${f$(n)}`; // signed money (f$ drops the sign)
 const fp=(n)=>`${(+n).toFixed(1)}%`;
 
 function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(file);});}
 
 function toDataUrl(src,mime='image/png'){if(!src)return null;if(src.startsWith('data:')||src.startsWith('http'))return src;return `data:${mime};base64,${src}`;}
 
-function calcBal(start,trades,wds){
+// Balance adjustments (spec 0009): signed rows, one list per user, filtered by
+// mode here so no caller can mix Demo and Real.
+const modeAdjs=(adjs,mode)=>(adjs||[]).filter(a=>a.mode===mode);
+const sumAdjs=list=>list.reduce((s,a)=>s+a.amount,0);
+export function calcBal(start,trades,wds,adjs=[]){
   const pnl=trades.filter(t=>t.outcome!=='PENDING').reduce((s,t)=>s+t.pnl,0);
   const wd=wds.reduce((s,w)=>s+w.amount,0);
-  return start+pnl-wd;
+  return start+pnl-wd+sumAdjs(adjs);
 }
 
 // Risk sizing — mode (PERCENT/FIXED), percent, and amount are all genuine
@@ -758,23 +771,29 @@ function monthGridMonFirst(year,month){
 // Withdrawals (Real only) are folded in by date too, so the running balance
 // — and therefore the sparkline/drawdown built from it — stays accurate,
 // but a day's pctPnl reflects trading performance only, not withdrawals.
-function buildDayStats(trades,wds,mode,startBal){
+export function buildDayStats(trades,wds,mode,startBal,adjs=[]){
   const byDate={};
   trades.filter(t=>getTradeMode(t)===mode&&t.outcome!=='PENDING').forEach(t=>{
-    const d=byDate[t.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0};
+    const d=byDate[t.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0,adjusted:0};
     d.total++;if(t.outcome==='WIN')d.wins++;if(t.outcome==='LOSS')d.losses++;
     d.pnl+=t.pnl;
   });
   if(mode==='REAL')(wds||[]).forEach(w=>{
-    const d=byDate[w.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0};
+    const d=byDate[w.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0,adjusted:0};
     d.withdrawn+=w.amount;
+  });
+  // Adjustment lands at the END of its date: pctPnl still uses the day's
+  // opening balance and trade P&L only.
+  modeAdjs(adjs,mode).forEach(a=>{
+    const d=byDate[a.date]??={wins:0,losses:0,total:0,pnl:0,withdrawn:0,adjusted:0};
+    d.adjusted+=a.amount;
   });
   const out={};
   let running=startBal;
   Object.keys(byDate).sort().forEach(date=>{
     const d=byDate[date];
     const startOfDay=running;
-    running+=d.pnl-d.withdrawn;
+    running+=d.pnl-d.withdrawn+d.adjusted;
     out[date]={...d,pctPnl:startOfDay?(d.pnl/startOfDay)*100:0,startBalance:startOfDay,endingBalance:running};
   });
   return out;
@@ -1723,11 +1742,12 @@ export function msTargetDollarsToday(settings, mode, dayStartBal) {
 }
 function msDayStart() { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
 // Mode balance at local midnight today: trades and withdrawals before it.
-export function dayStartBalForMode(settings, trades, wds, mode) {
+export function dayStartBalForMode(settings, trades, wds, mode, adjs = []) {
   const t0 = msDayStart();
   return calcBal(getStartingBalanceForMode(settings, mode),
     (trades || []).filter(t => getTradeMode(t) === mode && t.timestamp < t0),
-    mode === 'REAL' ? (wds || []).filter(w => w.timestamp < t0) : []);
+    mode === 'REAL' ? (wds || []).filter(w => w.timestamp < t0) : [],
+    modeAdjs(adjs, mode).filter(a => a.timestamp < t0));
 }
 export function getMsAutoCopyBalanceForMode(settings, mode) {
   return settings?.[`msAutoCopyBalance${msModeKey(mode)}`] === true;
@@ -1888,10 +1908,15 @@ function getStartingBalanceForMode(settings,mode){
 // Demo and Real are fully independent trading tracks — a bal computed for one
 // mode never mixes the other mode's trades, starting balance, or withdrawals
 // (withdrawals only ever apply to Real; Demo has no concept of a withdrawal).
-function balForMode(settings,trades,wds,mode){
+export function balForMode(settings,trades,wds,mode,adjs=[]){
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const start=getStartingBalanceForMode(settings,mode);
-  return calcBal(start,modeTrades,mode==='REAL'?wds:[]);
+  return calcBal(start,modeTrades,mode==='REAL'?wds:[],modeAdjs(adjs,mode));
+}
+// Balance minus a net top up (spec 0009 AC-10): milestones measure trading
+// results, so a net plus is removed; a net minus is real loss and stays.
+export function tradingBalForMode(settings,trades,wds,mode,adjs=[]){
+  return balForMode(settings,trades,wds,mode,adjs)-Math.max(0,sumAdjs(modeAdjs(adjs,mode)));
 }
 
 function getActive(ss,mode){return ss?.sessions?.find(s=>s.isActive && s.accountMode===mode)||null;}
@@ -2566,7 +2591,7 @@ function factsToText(facts){
 // Aggregates every available data source into one holistic object the LLM can
 // reason about for advisory responses — trades, sessions, withdrawals, zone
 // analyses, money management settings, strategies, and discipline patterns.
-function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mode){
+function buildTraderProfile(trades,sessions,analyses,wds,adjs,settings,strategies,mode){
   const modeTrades=(trades||[]).filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
@@ -2577,7 +2602,7 @@ function buildTraderProfile(trades,sessions,analyses,wds,settings,strategies,mod
   const edge=Math.max(0,(wr/100)-((100-wr)/100));
   const totalPnl=Math.round(done.reduce((s,t)=>s+t.pnl,0)*100)/100;
   const startBal=getStartingBalanceForMode(settings,mode);
-  const curBal=balForMode(settings,trades,wds,mode);
+  const curBal=balForMode(settings,trades,wds,mode,adjs);
   const style=getMoneyMgmtStyleForMode(settings,mode);
   const tradeStyle=getTradeStyleForMode(settings,mode);
   // Rolling windows
@@ -3698,7 +3723,7 @@ function useSessionControls({userId,ss,saveSS,mode,settings,bal,music,active}){
   return{startSession,pauseSession,resumeSession,endSession};
 }
 
-export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,userId}){
+export function Dashboard({settings,trades,wds,adjs,ss,saveSS,bal,mode,nav,music,userId}){
   const modeTrades=trades.filter(t=>getTradeMode(t)===mode);
   const done=modeTrades.filter(t=>t.outcome!=='PENDING');
   const wins=done.filter(t=>t.outcome==='WIN').length;
@@ -3719,7 +3744,8 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const wr=(wins+losses)?((wins/(wins+losses))*100):0;
   const pnl=done.reduce((s,t)=>s+t.pnl,0);
   const startBal=getStartingBalanceForMode(settings,mode);
-  const growth=startBal?((bal-startBal)/startBal)*100:0;
+  const tbal=tradingBalForMode(settings,trades,wds,mode,adjs); // milestones and growth ignore a net top up (spec 0009 AC-10)
+  const growth=startBal?((tbal-startBal)/startBal)*100:0;
   const stake=calcStake(bal,settings,mode);
   const active=getActive(ss,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
@@ -3739,10 +3765,10 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
   const isAmPlLockCause=isAmPlDailyLocked(ss,mode);
   const msStartBlock=msStartBlockReason(settings,mode,bal);
   // Masaniello daily goal (spec 0006): derived from today's sessions, same helper the counter and alerts use.
-  const msDayBal=dayStartBalForMode(settings,trades,wds,mode);
+  const msDayBal=dayStartBalForMode(settings,trades,wds,mode,adjs);
   const msDaily=mmStyle==='MASANIELLO'?(msModeProgress(settings,mode,ss?.sessions,msDayBal)||{target:null}):null;
   // Milestones are a Real-only concept (Change 2) — Demo still gets growth/P&L, no milestone tracker.
-  const nextMs=mode==='REAL'?settings.milestones.find(m=>bal<startBal*m.mul):null;
+  const nextMs=mode==='REAL'?settings.milestones.find(m=>tbal<startBal*m.mul):null;
   const recent=[...modeTrades].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
   // Sorted newest-first explicitly (like `recent` above) rather than
   // trusting the incoming order — walking it forward then measures the
@@ -3914,10 +3940,10 @@ export function Dashboard({settings,trades,wds,ss,saveSS,bal,mode,nav,music,user
                 <span style={{fontSize:12,fontWeight:600,color:'var(--text-secondary)',display:'inline-flex',alignItems:'center',gap:6}}>
                   <Target size={13} style={{color:'var(--text-accent)'}}/>Next milestone · {nextMs.mul}×
                 </span>
-                <span style={{fontSize:12,color:'var(--text-muted)'}}>{f$(bal)} / {f$(msTarget)} · withdraw {nextMs.pct}% when reached</span>
+                <span style={{fontSize:12,color:'var(--text-muted)'}}>{f$(tbal)} / {f$(msTarget)} · withdraw {nextMs.pct}% when reached</span>
               </div>
               <div style={{background:'var(--surface-0)',borderRadius:999,height:6,overflow:'hidden'}}>
-                <div style={{height:'100%',borderRadius:999,background:'var(--fill-accent)',width:`${Math.min(100,(bal/msTarget)*100)}%`,transition:'width 0.4s ease'}}/>
+                <div style={{height:'100%',borderRadius:999,background:'var(--fill-accent)',width:`${Math.min(100,(tbal/msTarget)*100)}%`,transition:'width 0.4s ease'}}/>
               </div>
             </div>
           )}
@@ -4442,7 +4468,7 @@ function PaginationBar({currentPage,totalPages,pageSize,totalItems,startItem,end
 }
 
 // ── Journal ───────────────────────────────────────────────────────────────────
-export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,mode,userId,strategies,addStrategy}){
+export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,setPA,wds,adjs,mode,userId,strategies,addStrategy}){
   const activeStrategies=(strategies||[]).filter(s=>!s.archived);
   const[filt,setFilt]=useState('ALL');
   const[stratFilt,setStratFilt]=useState('ALL');
@@ -4558,7 +4584,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   // {calc,actual,eff} shape as calcStake so every call site (paStake,
   // manualDefaultStake, the stake-mode buttons) works unchanged.
   const stakeFor=m=>{
-    const modeBal=balForMode(settings,trades,wds,m);
+    const modeBal=balForMode(settings,trades,wds,m,adjs);
     const style=getMoneyMgmtStyleForMode(settings,m);
     if(isEscalatingStyle(style)){
       const actual=liveEscalatingNextStake(getActive(ss,m),modeBal,settings,m,style);
@@ -4612,10 +4638,10 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   async function mkSession(ssState,mode){
     const s=canStart(ssState,settings.sessionsPerDay,mode,settings);
     if(!s.ok){alert(s.msg);return null;}
-    const msBlock=msStartBlockReason(settings,mode,balForMode(settings,trades,wds,mode));
+    const msBlock=msStartBlockReason(settings,mode,balForMode(settings,trades,wds,mode,adjs));
     if(msBlock){alert(msBlock);return false;}
     const tryInsert=async base=>{
-      const candidate=buildSession(base,mode,getEffectiveSessionDuration(settings,mode),isStrictForMode(settings,mode),settings,balForMode(settings,trades,wds,mode));
+      const candidate=buildSession(base,mode,getEffectiveSessionDuration(settings,mode),isStrictForMode(settings,mode),settings,balForMode(settings,trades,wds,mode,adjs));
       const{error}=await supabase.from('sessions').insert(toSessionRow(userId,base.date,candidate));
       return{candidate,error};
     };
@@ -4634,7 +4660,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
     return{ss:upd,sess:candidate};
   }
 
-  const paBal=balForMode(settings,trades,wds,mode);
+  const paBal=balForMode(settings,trades,wds,mode,adjs);
   const paStake=resolveStakeOverride(paStakeMode,paStakeValue,stake.actual,paBal);
 
   async function recordPA(useOverride){
@@ -4702,7 +4728,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
         // t's prior pnl was 0 (it was PENDING), so trades still reflects
         // balance BEFORE this outcome — adding pnl gives balance after it,
         // which is what the next stake should be sized against.
-        const balAfter=balForMode(settings,trades,wds,tMode)+pnl;
+        const balAfter=balForMode(settings,trades,wds,tMode,adjs)+pnl;
         us={...us,...advanceEscalatingStake(tStyle,sess,outcome,pnl,balAfter,settings,tMode)};
         const endReason=checkEscalatingSessionEnd(us,tMode,settings);
         // No isLocked/lockReason/lockCode here — Strict Locking never applies
@@ -4743,7 +4769,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
       const pair=(mf.pair||'').trim()||'Manual';
       addPairOption(pair);
       const outcome=mf.outcome||'PENDING';
-      const entryBal=balForMode(settings,trades,wds,entryAccountMode);
+      const entryBal=balForMode(settings,trades,wds,entryAccountMode,adjs);
       const entryStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,stakeFor(entryAccountMode).actual,entryBal);
       const payoutPct=outcome==='WIN'?parseFloat(mf.payoutPct)||undefined:undefined;
       if(payoutPct)setLastPayoutPct(String(payoutPct));
@@ -4876,7 +4902,7 @@ export function Journal({settings,trades,saveTrades,deleteTrade,ss,saveSS,pa,set
   },[manual,tabDailyLocked]);
 
   const manualAccountMode=mf.accountMode||journalTab;
-  const manualBal=balForMode(settings,trades,wds,manualAccountMode);
+  const manualBal=balForMode(settings,trades,wds,manualAccountMode,adjs);
   const manualDefaultStake=stakeFor(manualAccountMode).actual;
   const manualStake=resolveStakeOverride(mf.stakeMode,mf.stakeValue,manualDefaultStake,manualBal);
   const manualStyle=getMoneyMgmtStyleForMode(settings,manualAccountMode);
@@ -5780,7 +5806,7 @@ function TradeDetailModal({trade,tradesList=[],onNavigate,onClose,onSaved,saveTr
 // just a faster per-row commit instead of opening the full form each time.
 // Row clicks open the shared TradeDetailModal in place, so pasting a
 // screenshot right after logging never requires leaving Quick Log.
-function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,strategies,music,userId}){
+function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,adjs,mode,strategies,music,userId}){
   const now=useNowTick(1000);
   const[selectedTrade,setSelectedTrade]=useState(null);
   // The most recent session for this mode today, active or not — NOT
@@ -5793,7 +5819,7 @@ function QuickLog({settings,trades,saveTrades,deleteTrade,ss,saveSS,wds,mode,str
   const sessionForMode=(ss?.sessions||[]).filter(s=>s.accountMode===mode).sort((a,b)=>b.startTime-a.startTime)[0]||null;
   const style=getMoneyMgmtStyleForMode(settings,mode);
   const isAm=isEscalatingStyle(style); // name kept for minimal diff — now covers both escalating styles
-  const bal=balForMode(settings,trades,wds,mode);
+  const bal=balForMode(settings,trades,wds,mode,adjs);
   // Same Start/Pause/Resume/End controls Dashboard uses, so a session never
   // requires leaving Quick Log — active here is getActive's strict
   // isActive-only session (not sessionForMode above, which also covers an
@@ -6231,8 +6257,8 @@ export function buildCompoundSchedule({capital,gainPct,days,wdPct,wdFrom,wdFreq,
 
 // Geometric mean of the trading days' percent gains, rounded to 2 decimals.
 // null when there are no finished trading days with an opening balance above 0.
-export function avgDailyGainPct(trades,wds,mode,startBal){
-  const days=Object.values(buildDayStats(trades,wds,mode,startBal)).filter(d=>d.total>0&&d.startBalance>0);
+export function avgDailyGainPct(trades,wds,mode,startBal,adjs=[]){
+  const days=Object.values(buildDayStats(trades,wds,mode,startBal,adjs)).filter(d=>d.total>0&&d.startBalance>0);
   if(!days.length)return null;
   let sum=0;
   for(const d of days){
@@ -6321,10 +6347,10 @@ function CompoundChart({rows,cur}){
 }
 
 const ccNote=(c)=>({fontSize:12,color:c,marginTop:6});
-export function CompoundCalculator({mode,bal,startBal,trades,wds}){
+export function CompoundCalculator({mode,bal,startBal,trades,wds,adjs}){
   const[saved,setSaved]=useState(()=>ccLoad(mode));
   const[draft,setDraft]=useState({});
-  const avg=useMemo(()=>avgDailyGainPct(trades,wds,mode,startBal),[trades,wds,mode,startBal]);
+  const avg=useMemo(()=>avgDailyGainPct(trades,wds,mode,startBal,adjs),[trades,wds,adjs,mode,startBal]);
 
   // Live defaults, derived on every render until the user overrides them.
   const capDef=bal>0?bal.toFixed(2):'100';
@@ -6467,11 +6493,52 @@ const ccGroup={fontSize:11,fontWeight:600,color:'var(--text-secondary)',textTran
 // The compound calculator, milestones and sizer follow the global Demo/Real
 // toggle, so growth can be envisioned on Demo too. Withdrawal logging stays
 // Real-only — Demo has no concept of a withdrawal.
-function Money({settings,trades,wds,saveWds,mode,ss}){
+function Money({settings,trades,wds,adjs,saveWds,addAdj,deleteAdj,mode,ss}){
   const startBal=getStartingBalanceForMode(settings,mode);
-  const bal=balForMode(settings,trades,wds,mode);
+  const bal=balForMode(settings,trades,wds,mode,adjs);
+  // Milestones measure trading results, so a net top up is left out (AC-10).
+  const tbal=tradingBalForMode(settings,trades,wds,mode,adjs);
+  const myAdjs=modeAdjs(adjs,mode);
+  const netAdj=sumAdjs(myAdjs);
   const[amt,setAmt]=useState('');
   const[note,setNote]=useState('');
+  const[adjBal,setAdjBal]=useState('');
+  const[adjNote,setAdjNote]=useState('');
+  const[adjBusy,setAdjBusy]=useState(false);
+  const[adjMsg,setAdjMsg]=useState('');
+  const[delAdj,setDelAdj]=useState(null);
+  const[delMsg,setDelMsg]=useState('');
+  useEffect(()=>{setAdjBal('');setAdjNote('');setAdjMsg('');setDelMsg('');setDelAdj(null);},[mode]);
+  // Balance form: text field, Number() + isFinite, cents. Never NaN/Infinity.
+  const adjRaw=adjBal.trim();
+  let adjErr=null,adjNew=null;
+  if(!adjRaw)adjErr='Enter your balance';
+  else{
+    const n=Number(adjRaw);
+    if(!Number.isFinite(n))adjErr='Enter a number';
+    else if(n<0)adjErr='Balance cannot be below 0';
+    else if(n>1e12)adjErr='Balance is too large'; // keeps cents math finite (1e307 overflowed n*100)
+    else{
+      adjNew=Math.round(n*100)/100;
+      if(Math.round(adjNew*100)===Math.round(bal*100))adjErr='That is already your balance';
+    }
+  }
+  const adjNoteT=adjNote.trim();
+  const adjNoteErr=adjNoteT.length>200?'Note is too long':null;
+  const adjAmount=adjErr?null:(Math.round(adjNew*100)-Math.round(bal*100))/100;
+  const adjHasSession=!!(ss&&getActive(ss,mode));
+  async function saveAdj(){
+    if(adjErr||adjNoteErr||adjBusy)return;
+    setAdjBusy(true);setAdjMsg('');
+    const ok=await addAdj({id:uid(),timestamp:Date.now(),date:tod(),mode,amount:adjAmount,balanceBefore:bal,balanceAfter:adjNew,notes:adjNoteT||null});
+    setAdjBusy(false);
+    if(ok){setAdjBal('');setAdjNote('');}else setAdjMsg('Could not save. Try again.');
+  }
+  async function confirmDelAdj(){
+    const id=delAdj.id;
+    setDelAdj(null);setDelMsg('');
+    if(!(await deleteAdj(id)))setDelMsg('Could not delete. Try again.');
+  }
   const stake=calcStake(bal,settings,mode);
   const mmStyle=getMoneyMgmtStyleForMode(settings,mode);
   const activeAmSession=ss?getActive(ss,mode):null;
@@ -6482,8 +6549,8 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   const firstMs=settings.milestones[0];
   const phase1Thresh=settings.brokerMin/(firstMs.pct/100);
   const isPhase1=bal<phase1Thresh;
-  const hitMs=settings.milestones.slice().reverse().find(m=>bal>=startBal*m.mul);
-  const nextMs=settings.milestones.find(m=>bal<startBal*m.mul);
+  const hitMs=settings.milestones.slice().reverse().find(m=>tbal>=startBal*m.mul);
+  const nextMs=settings.milestones.find(m=>tbal<startBal*m.mul);
   const nextMilestoneMessage=nextMs?`Next ${mode==='REAL'?'withdrawal ':''}milestone: ${nextMs.mul}× → ${f$(startBal*nextMs.mul)}${mode==='REAL'?` (withdraw ${nextMs.pct}%)`:''}.`:null;
 
   async function logWd(){
@@ -6492,7 +6559,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
     setAmt('');setNote('');
   }
 
-  const jumps=[['cap-projection','Projection'],['cap-sizer','Sizer'],['cap-milestones','Milestones'],...(mode==='REAL'?[['cap-withdrawals','Withdrawals']]:[])];
+  const jumps=[['cap-projection','Projection'],['cap-sizer','Sizer'],['cap-balance','Balance'],['cap-milestones','Milestones'],...(mode==='REAL'?[['cap-withdrawals','Withdrawals']]:[])];
   const[active,setActive]=useState('cap-projection');
   const jumpTo=useRef(false);
   const navRef=useRef(null);
@@ -6502,7 +6569,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
   useEffect(()=>{
     const sc=navRef.current?.closest('main');
     if(!sc)return;
-    const ids=['cap-projection','cap-sizer','cap-milestones',...(mode==='REAL'?['cap-withdrawals']:[])];
+    const ids=['cap-projection','cap-sizer','cap-balance','cap-milestones',...(mode==='REAL'?['cap-withdrawals']:[])];
     const onScroll=()=>{
       if(jumpTo.current)return;
       const line=sc.getBoundingClientRect().top+CC_BAR_LINE;
@@ -6542,7 +6609,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
       </nav>
 
       <section id="cap-projection" style={ccSec}>
-        <CompoundCalculatorMemo key={mode} mode={mode} bal={bal} startBal={startBal} trades={trades} wds={wds}/>
+        <CompoundCalculatorMemo key={mode} mode={mode} bal={bal} startBal={startBal} trades={trades} wds={wds} adjs={adjs}/>
       </section>
 
       <section id="cap-sizer" style={ccSec}>
@@ -6573,9 +6640,52 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
       </div>
       </section>
 
+      <section id="cap-balance" style={ccSec}>
+      <div style={card}>
+        <h2 style={ccH}>Set balance</h2>
+        <div className="grid-2">
+          <div><label htmlFor="cap-adj-bal" style={ccLbl}>New balance ($)</label><input id="cap-adj-bal" style={inp} type="text" inputMode="decimal" autoComplete="off" placeholder={f$(bal)} value={adjBal} aria-invalid={adjRaw&&adjErr?true:undefined} aria-describedby={adjErr?"cap-adj-bal-err":undefined} onChange={e=>setAdjBal(e.target.value)}/></div>
+          <div><label htmlFor="cap-adj-note" style={ccLbl}>Note (optional)</label><input id="cap-adj-note" style={inp} placeholder="Top up, broker fee..." value={adjNote} aria-invalid={adjNoteErr?true:undefined} aria-describedby={adjNoteErr?"cap-adj-note-err":undefined} onChange={e=>setAdjNote(e.target.value)}/></div>
+        </div>
+        {adjErr&&<div id="cap-adj-bal-err" style={{fontSize:12,color:adjRaw?'var(--text-danger)':'var(--text-secondary)',marginTop:6}}>{adjErr}</div>}
+        {adjNoteErr&&<div id="cap-adj-note-err" style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>{adjNoteErr}</div>}
+        {!adjErr&&<div style={{fontSize:12,color:'var(--text-secondary)',marginTop:6}}>Current {f$(bal)}, new {f$(adjNew)}, change {fs$(adjAmount)}</div>}
+        {adjHasSession&&<div style={{fontSize:12,color:'var(--text-warning)',marginTop:6}}>A session is running. The next session will use the new balance.</div>}
+        {adjMsg&&<div role="alert" style={{fontSize:12,color:'var(--text-danger)',marginTop:6}}>{adjMsg}</div>}
+        <button style={{...btn('pri'),marginTop:10}} onClick={saveAdj} disabled={!!adjErr||!!adjNoteErr||adjBusy}>Save balance</button>
+      </div>
+      <div style={card}>
+        <h2 style={ccH}>Balance adjustments</h2>
+        {myAdjs.length===0&&<div style={{fontSize:13,color:'var(--text-secondary)'}}>No adjustments yet</div>}
+        {delMsg&&<div role="alert" style={{fontSize:12,color:'var(--text-danger)',marginBottom:6}}>{delMsg}</div>}
+        {myAdjs.slice().sort((a,b)=>b.timestamp-a.timestamp).map(a=>(
+          <div key={a.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'0.5px solid var(--border)'}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:13,color:'var(--text-secondary)',overflowWrap:'anywhere'}}>{a.date}{a.notes?` — ${a.notes}`:''}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)'}}>{f$(a.balanceBefore)} to {f$(a.balanceAfter)} at the time</div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+              <span style={{fontFamily:'var(--font-mono)',fontSize:13,color:a.amount<0?'var(--text-danger)':'var(--text-success)'}}>{fs$(a.amount)}</span>
+              <button type="button" style={{...btn(),minHeight:40}} aria-label={`Delete adjustment ${a.date}`} onClick={()=>{setDelMsg('');setDelAdj(a);}}>Delete</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {delAdj&&(
+        <ConfirmDialog
+          title="Delete adjustment?"
+          body={`Balance will change by ${fs$(-delAdj.amount)}.`}
+          confirmLabel="Delete"
+          onCancel={()=>setDelAdj(null)}
+          onConfirm={confirmDelAdj}
+        />
+      )}
+      </section>
+
       <section id="cap-milestones" style={ccSec}>
       <div style={card}>
         <h2 style={ccH}>Withdrawal milestones</h2>
+        {netAdj!==0&&<div style={{fontSize:12,color:'var(--text-secondary)',marginBottom:10}}>Milestones ignore top ups.</div>}
         {isPhase1
           ?<div style={{padding:'8px 12px',background:'var(--bg-accent)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-accent)'}}>🔒 Phase 1 — Compounding. {mode==='REAL'?`First withdrawal advised at ${f$(phase1Thresh)}.`:`Keeps growing past ${f$(phase1Thresh)}.`}</div>
           :hitMs&&<div style={{padding:'8px 12px',background:'var(--bg-success)',borderRadius:'var(--radius)',marginBottom:12,fontSize:13,color:'var(--text-success)'}}>Milestone {hitMs.mul}× reached{mode==='REAL'?` — consider withdrawing ${hitMs.pct}% (≈${f$(bal*(hitMs.pct/100))}). Advisory only.`:'.'}</div>
@@ -6585,7 +6695,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
         )}
         {settings.milestones.map((m,i)=>{
           const target=startBal*m.mul;
-          const reached=bal>=target;
+          const reached=tbal>=target;
           return(
             <div key={i} style={{marginBottom:10}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -6593,7 +6703,7 @@ function Money({settings,trades,wds,saveWds,mode,ss}){
                 <span style={{fontSize:12,color:'var(--text-secondary)'}}>Withdraw {m.pct}%</span>
               </div>
               <div style={{background:'var(--surface-0)',borderRadius:4,height:6,overflow:'hidden'}}>
-                <div style={{height:'100%',background:reached?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,(bal/target)*100)}%`}}/>
+                <div style={{height:'100%',background:reached?'var(--fill-success)':'var(--fill-accent)',width:`${Math.min(100,(tbal/target)*100)}%`}}/>
               </div>
             </div>
           );
@@ -6718,7 +6828,7 @@ function Plan({settings,mode}){
 // generated commentary, just numbers and a delta vs the prior equal-length
 // period where one exists. Tone is deliberately factual: the trader applies
 // their own judgment.
-function ReviewDigest({trades,analyses,settings,wds,range}){
+function ReviewDigest({trades,analyses,settings,wds,adjs,range}){
   const[mode,setMode]=useState('DEMO');
   const{start,end}=rangeBounds(range);
   const prevR=prevRangeFor(range);
@@ -6728,7 +6838,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
   const pnlDelta=prev?cur.realPnl-prev.realPnl:null;
   const periodLabel=rangeLabel(range);
   const prevLabel=range.preset==='WEEK'?'the previous 7 days':'the previous 30 days';
-  const modeBal=balForMode(settings,trades,wds,mode);
+  const modeBal=balForMode(settings,trades,wds,mode,adjs);
   const trend=offPlanTrend(trades,mode);
 
   const tog=(items,val,setVal,colorFor)=>(
@@ -6843,7 +6953,7 @@ function ReviewDigest({trades,analyses,settings,wds,range}){
   );
 }
 
-export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyList}){
+export function Analytics({trades,analyses,settings,bal,wds,adjs,strategies:strategyList}){
   const[scope,setScope]=useState('ALL');
   const[tab,setTab]=useState('OVERVIEW');
   const[range,setRange]=useState({preset:'ALL',start:null,end:null});
@@ -6938,7 +7048,7 @@ export function Analytics({trades,analyses,settings,bal,wds,strategies:strategyL
           through the same tradesInRange/rangeBounds, never their own copies. */}
       <DateRangePicker range={range} setRange={setRange}/>
 
-      {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds} range={range}/>:<>
+      {tab==='REVIEW'?<ReviewDigest trades={trades} analyses={analyses} settings={settings} wds={wds} adjs={adjs} range={range}/>:<>
 
       <div className="grid-2">
         <Metric label="Total trades" value={total} sub={`${wins}W / ${losses}L`}/>
@@ -7098,6 +7208,7 @@ function dayCellColor(pctPnl,hasTrades){
 }
 function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
   const hasTrades=!!dayStats?.total;
+  const adjusted=dayStats?.adjusted||0;
   const{accent,alpha}=dayCellColor(dayStats?.pctPnl||0,hasTrades);
   const recede=!hasTrades||!inMonth;
   return(
@@ -7138,14 +7249,17 @@ function DayCell({dateKey,day,inMonth,dayStats,isStreakEdge,onOpen}){
           </>}
         </div>
       </summary>
-      {hasTrades&&(
+      {(hasTrades||adjusted!==0)&&(
         <div style={{position:'absolute',zIndex:30,top:'100%',left:0,marginTop:2,width:180,padding:'8px 10px',borderRadius:'var(--radius)',background:'var(--surface-1)',border:'1px solid var(--border)',boxShadow:'0 4px 16px rgba(0,0,0,0.3)',fontSize:11,color:'var(--text-secondary)',lineHeight:1.6}}>
           <div style={{fontWeight:600,color:'var(--text-primary)',marginBottom:2}}>{dateKey}</div>
-          <div>P&amp;L: <span style={{color:dayStats.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{dayStats.pnl>=0?'+':''}{f$(dayStats.pnl)}</span></div>
-          <div>{dayStats.wins}W / {dayStats.losses}L ({dayStats.total} trades)</div>
-          <div>Ending balance: {f$(dayStats.endingBalance)}</div>
-          {dayStats.withdrawn>0&&<div>Withdrawn: {f$(dayStats.withdrawn)}</div>}
-          <div style={{marginTop:4,color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>onOpen(dateKey)}>View trades →</div>
+          {hasTrades&&<>
+            <div>P&amp;L: <span style={{color:dayStats.pnl>=0?'var(--text-success)':'var(--text-danger)'}}>{dayStats.pnl>=0?'+':''}{f$(dayStats.pnl)}</span></div>
+            <div>{dayStats.wins}W / {dayStats.losses}L ({dayStats.total} trades)</div>
+            <div>Ending balance: {f$(dayStats.endingBalance)}</div>
+            {dayStats.withdrawn>0&&<div>Withdrawn: {f$(dayStats.withdrawn)}</div>}
+          </>}
+          {adjusted!==0&&<div>Balance adjusted {fs$(adjusted)}</div>}
+          {hasTrades&&<div style={{marginTop:4,color:'var(--text-accent)',cursor:'pointer'}} onClick={()=>onOpen(dateKey)}>View trades →</div>}
         </div>
       )}
     </details>
@@ -7242,14 +7356,14 @@ function DayMixStat({green,red,noTrade}){
     </div>
   );
 }
-export function CalendarPage({trades,settings,wds,mode,nav}){
+export function CalendarPage({trades,settings,wds,adjs,mode,nav}){
   const now=new Date();
   const[cursor,setCursor]=useState({y:now.getFullYear(),m:now.getMonth()});
   const startBal=getStartingBalanceForMode(settings,mode);
   // Full history, always — a month's pctPnl must measure against the real
   // running balance carried from account start, never reset at month
   // boundaries (see buildDayStats' own comment for why).
-  const allDayStats=buildDayStats(trades,wds,mode,startBal);
+  const allDayStats=buildDayStats(trades,wds,mode,startBal,adjs);
   const monthPrefix=`${cursor.y}-${String(cursor.m+1).padStart(2,'0')}`;
   const monthDates=Object.keys(allDayStats).filter(d=>d.startsWith(monthPrefix)).sort();
   const monthDayStats={};monthDates.forEach(d=>monthDayStats[d]=allDayStats[d]);
@@ -7257,7 +7371,8 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
   const monthLabel=new Date(cursor.y,cursor.m,1).toLocaleDateString(undefined,{month:'long',year:'numeric'});
 
   // Monthly summary
-  const tradingDays=monthDates.map(d=>monthDayStats[d]);
+  const tradeDates=monthDates.filter(d=>monthDayStats[d].total>0); // adjustment only days are not trading days
+  const tradingDays=tradeDates.map(d=>monthDayStats[d]);
   const greenDays=tradingDays.filter(d=>d.pctPnl>=0).length;
   const redDays=tradingDays.filter(d=>d.pctPnl<0).length;
   const totalCellsInMonth=new Date(cursor.y,cursor.m+1,0).getDate();
@@ -7265,8 +7380,8 @@ export function CalendarPage({trades,settings,wds,mode,nav}){
   const monthPnl=tradingDays.reduce((s,d)=>s+d.pnl,0);
   const monthStartBalance=monthDates.length?monthDayStats[monthDates[0]].startBalance:startBal;
   const monthPnlPct=monthStartBalance?(monthPnl/monthStartBalance)*100:0;
-  const bestDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl>=monthDayStats[b].pctPnl?a:b):null;
-  const worstDay=tradingDays.length?monthDates.reduce((a,b)=>monthDayStats[a].pctPnl<=monthDayStats[b].pctPnl?a:b):null;
+  const bestDay=tradingDays.length?tradeDates.reduce((a,b)=>monthDayStats[a].pctPnl>=monthDayStats[b].pctPnl?a:b):null;
+  const worstDay=tradingDays.length?tradeDates.reduce((a,b)=>monthDayStats[a].pctPnl<=monthDayStats[b].pctPnl?a:b):null;
   const wins=tradingDays.reduce((s,d)=>s+d.wins,0);
   const losses=tradingDays.reduce((s,d)=>s+d.losses,0);
   const totalTrades=tradingDays.reduce((s,d)=>s+d.total,0);
@@ -7448,7 +7563,7 @@ function MarkdownLite({text}){
     );
   });
 }
-function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
+function Ask({trades,settings,mode,userId,strategies,analyses,wds,adjs,ss}){
   const[messages,setMessages]=useState([]);
   const[input,setInput]=useState('');
   const[busy,setBusy]=useState(false);
@@ -7580,7 +7695,7 @@ function Ask({trades,settings,mode,userId,strategies,analyses,wds,ss}){
     }
     if(spec.intent==='TRADING_ADVISORY'){
       const advisoryType=spec.advisoryType||'PERFORMANCE_REVIEW';
-      const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,settings,strategies,resolvedMode);
+      const profile=buildTraderProfile(trades,ss?.sessions||[],analyses,wds,adjs,settings,strategies,resolvedMode);
       const advisoryContext=buildAdvisoryContext(profile,question,advisoryType);
       // buildAdvisoryContext already slices `profile` down to exactly what
       // this advisoryType needs — sending the ENTIRE nested profile too
@@ -8162,7 +8277,7 @@ const settingsEq=(a,b)=>{
     msAlertTargetReachedDemo:settings?.msAlertTargetReachedDemo ?? true,msAlertTargetReachedReal:settings?.msAlertTargetReachedReal ?? true,
   });}
 
-export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange}){
+export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,adjs,strategies,mode,addStrategy,updateStrategy,deleteStrategy,guardRef,onSavingChange}){
   // `f` holds every Demo/Real field at once (storage stays per-mode); the
   // sidebar mode only picks which slice renders. Never re-seeded from props.
   const modeKey=mode==='REAL'?'Real':'Demo';
@@ -8266,13 +8381,13 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
   const calcTradesN=Math.max(1,parseFloat(calc.tradesPerSession)||(calcIsAM?calcLiveMaxTrades():6));
   // Refill from live values whenever the global mode changes (and on mount).
   useEffect(()=>{
-    const liveBalance=balForMode(settings,trades,wds,mode);
+    const liveBalance=balForMode(settings,trades,wds,mode,adjs);
     setCalc(prev=>({...prev,balance:String(Math.round(liveBalance*100)/100),
       ...(calcIsAM?{targetPct:String(calcLiveProfitTargetPct()),tradesPerSession:String(calcLiveMaxTrades())}:{})}));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[mode]);
   function resetCalcToLive(){
-    const liveBalance=balForMode(settings,trades,wds,mode);
+    const liveBalance=balForMode(settings,trades,wds,mode,adjs);
     setCalc(prev=>({...prev,balance:String(Math.round(liveBalance*100)/100),
       ...(calcIsAM?{targetPct:String(calcLiveProfitTargetPct()),tradesPerSession:String(calcLiveMaxTrades())}:{})}));
   }
@@ -8298,7 +8413,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
     const modes=scope==='BOTH'?['DEMO','REAL']:[scope];
     const label=scope==='BOTH'?'Demo and Real':(scope==='REAL'?'Real':'Demo');
     const extra=includeBalances?', and reset the starting balance to $0'+(modes.includes('REAL')?' (withdrawal history for Real will also be cleared)':''):'';
-    setConfirmReset({scope,label,body:`This permanently deletes all ${label} trades and session history${extra}. This cannot be undone.`});
+    setConfirmReset({scope,label,body:`This permanently deletes all ${label} trades, session history, and balance adjustments${extra}. This cannot be undone.`});
   }
   async function confirmResetNow(){
     const{scope}=confirmReset;
@@ -8333,7 +8448,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
   }
 
   // Save bar text. Masaniello skipped fields show whether clean or dirty (AC-11).
-  const msErrCount=m=>Object.keys(msFieldErrors(f,m,balForMode(settings,trades,wds,m==='Real'?'REAL':'DEMO'),settings)).length;
+  const msErrCount=m=>Object.keys(msFieldErrors(f,m,balForMode(settings,trades,wds,m==='Real'?'REAL':'DEMO',adjs),settings)).length;
   const msBad=['Demo','Real'].filter(m=>msErrCount(m));
   const msBadN=msBad.reduce((n,m)=>n+msErrCount(m),0);
   const styleKey=`moneyMgmtStyle${modeKey}`;
@@ -8421,7 +8536,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
           {f[`mbEnabled${modeKey}`]&&<p style={hint}>Replaces Risk sizing while On.</p>}
           {f[`mbEnabled${modeKey}`]&&(()=>{
             const bufferPct=parseFloat(f[`mbDemotionBufferPct${modeKey}`])||MB_DEMOTION_BUFFER_PCT_DEFAULT;
-            const liveBalance=balForMode(settings,trades,wds,mode);
+            const liveBalance=balForMode(settings,trades,wds,mode,adjs);
             const curTier=getMbTierForMode(settings,mode);
             const curStake=milestoneTierStake(curTier);
             const curFloor=milestoneTierFloor(curTier);
@@ -8537,7 +8652,7 @@ export function Cfg({settings,saveSettings,ss,resetAccount,trades,wds,strategies
             </div>
           )}
           {isMasaniello&&(
-            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode)} dayStartBal={dayStartBalForMode(settings,trades,wds,mode)} sessions={ss?.sessions||[]}/>
+            <MasanielloSettings f={f} set={set} modeKey={modeKey} bal={balForMode(settings,trades,wds,mode,adjs)} dayStartBal={dayStartBalForMode(settings,trades,wds,mode,adjs)} sessions={ss?.sessions||[]}/>
           )}
 
           {!isMasaniello&&(
@@ -9260,6 +9375,7 @@ export default function App(){
   const[trades,setTrades]=useState([]);
   const[analyses,setAnalyses]=useState([]);
   const[wds,setWds]=useState([]);
+  const[adjs,setAdjs]=useState([]);
   const[strategies,setStrategies]=useState([]);
   const[ss,setSS]=useState(null);
   const[view,setView]=useState(()=>sessionStorage.getItem('gm_view')||'dashboard');
@@ -9304,7 +9420,7 @@ export default function App(){
   },[]);
 
   useEffect(()=>{
-    if(!userId){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setStrategies([]);setSS(null);setLoading(false);prevUserId.current=null;return;}
+    if(!userId){setSettings(null);setTrades([]);setAnalyses([]);setWds([]);setAdjs([]);setStrategies([]);setSS(null);setLoading(false);prevUserId.current=null;return;}
     if(prevUserId.current===userId)return;
     prevUserId.current=userId;
     setLoading(true);
@@ -9315,13 +9431,15 @@ export default function App(){
       // alongside the data queries (one round trip, not two); only a first
       // load that actually inserted rows needs the strategies list re-read.
       const ensured=ensureBuiltinStrategies(userId);
-      const[{data:s},{data:t},{data:sessRows},{data:w},{data:a},{data:strat0}]=await Promise.all([
+      const[{data:s},{data:t},{data:sessRows},{data:w},{data:a},{data:strat0},{data:adjRows}]=await Promise.all([
         supabase.from('settings').select('*').eq('user_id',userId).maybeSingle(),
         supabase.from('trades').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
         supabase.from('sessions').select('*').eq('user_id',userId).eq('date',tod()),
         supabase.from('withdrawals').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
         supabase.from('zone_analyses').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
         supabase.from('strategies').select('*').eq('user_id',userId).order('created_at',{ascending:true}),
+        // reads data only: a missing table (migration not run) gives an empty list
+        supabase.from('balance_adjustments').select('*').eq('user_id',userId).order('timestamp',{ascending:false}),
       ]);
       let strat=strat0;
       if(await ensured){
@@ -9355,6 +9473,7 @@ export default function App(){
       setTrades(tradesObj);
       setAnalyses(analysesObj);
       setWds((w||[]).map(fromWdRow));
+      setAdjs((adjRows||[]).map(fromAdjRow));
       setStrategies((strat||[]).map(fromStrategyRow));
       setSS(normalized?dayFromSessionRows(sessRows||[]):null);
       setLoading(false);
@@ -9416,6 +9535,23 @@ export default function App(){
     await supabase.from('zone_analyses').upsert(uploaded.map(a=>toAnalysisRow(authUser.id,a)));
   };
   const saveWds=async v=>{setWds(v);if(authUser)await supabase.from('withdrawals').upsert(v.map(w=>toWdRow(authUser.id,w)));};
+  // One row per call, optimistic with rollback. Returns true on success.
+  const addAdj=async adj=>{
+    setAdjs(prev=>[adj,...prev]);
+    if(!authUser)return true;
+    const{error}=await supabase.from('balance_adjustments').insert(toAdjRow(authUser.id,adj));
+    if(error){setAdjs(prev=>prev.filter(a=>a.id!==adj.id));return false;}
+    return true;
+  };
+  const deleteAdj=async id=>{
+    const row=adjs.find(a=>a.id===id);
+    if(!row)return true;
+    setAdjs(prev=>prev.filter(a=>a.id!==id));
+    if(!authUser)return true;
+    const{error}=await supabase.from('balance_adjustments').delete().eq('id',id);
+    if(error){setAdjs(prev=>prev.some(a=>a.id===id)?prev:[row,...prev].sort((a,b)=>b.timestamp-a.timestamp));return false;}
+    return true;
+  };
   const saveSS=async v=>{setSS(v);if(authUser)await supabase.from('sessions').upsert(v.sessions.map(s=>toSessionRow(authUser.id,v.date,s)));};
 
   const addStrategy=async(name,description)=>{
@@ -9471,6 +9607,10 @@ export default function App(){
     setTrades(prev=>prev.filter(t=>!modes.includes(getTradeMode(t))));
     if(idsToDelete.length)await supabase.from('trades').delete().in('id',idsToDelete);
 
+    // Adjustments go with either reset kind (unlike withdrawals), spec 0009 AC-13.
+    setAdjs(prev=>prev.filter(a=>!modes.includes(a.mode)));
+    await supabase.from('balance_adjustments').delete().eq('user_id',authUser.id).in('mode',modes);
+
     await supabase.from('sessions').delete().eq('user_id',authUser.id).in('account_mode',modes);
     const keptSessions=(ss?.sessions||[]).filter(s=>!modes.includes(s.accountMode));
     setSS(prev=>prev?{...prev,sessions:keptSessions,perMode:perModeFromSessions(keptSessions)}:prev);
@@ -9491,7 +9631,7 @@ export default function App(){
   const mode=settings?.activeMode==='REAL'?'REAL':'DEMO';
   const setMode=m=>saveSettings({...settings,activeMode:m});
 
-  const bal=settings?balForMode(settings,trades,wds,mode):0;
+  const bal=settings?balForMode(settings,trades,wds,mode,adjs):0;
   const todaySS=settings?getToday(ss):null;
 
   // A different user in the same tab starts from nothing (alert state).
@@ -9506,7 +9646,7 @@ export default function App(){
       msUserRef.current=uid;
     }
   },[authUser?.id]);
-  const msCounter=m=>msCounterLabel(settings,m,balForMode(settings,trades,wds,m),todaySS?.sessions,dayStartBalForMode(settings,trades,wds,m));
+  const msCounter=m=>msCounterLabel(settings,m,balForMode(settings,trades,wds,m,adjs),todaySS?.sessions,dayStartBalForMode(settings,trades,wds,m,adjs));
   const pending=trades.filter(t=>t.outcome==='PENDING'&&getTradeMode(t)===mode).length;
 
   // Lives here (not inside Dashboard) so the <audio> element is never
@@ -9650,14 +9790,14 @@ export default function App(){
       if(getActive(todaySS,m))continue; // never mid-session
       // No startBal dependency anymore — the ladder is fixed/universal, so
       // the tier is determined purely by the current balance.
-      const balance=balForMode(settings,trades,wds,m);
+      const balance=balForMode(settings,trades,wds,m,adjs);
       const curTier=getMbTierForMode(settings,m);
       const resolved=resolveMilestoneTier(balance,curTier,getMbDemotionBufferPctForMode(settings,m));
       if(resolved!==curTier)patch[m==='REAL'?'mbTierReal':'mbTierDemo']=resolved;
     }
     if(Object.keys(patch).length)saveSettings({...settings,...patch});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[settings,todaySS,trades,wds]);
+  },[settings,todaySS,trades,wds,adjs]);
 
   // Plays the session-lock chime the instant any session (either mode) ends —
   // separate from the email effect above so it isn't gated on having an email
@@ -9675,7 +9815,7 @@ export default function App(){
     const prev=prevSessionsForAlertRef.current;
     prevSessionsForAlertRef.current=todaySS.sessions;
     const events=msAlertEvents({prevSessions:prev,sessions:todaySS.sessions,settings,
-      dayBal:m=>dayStartBalForMode(settings,trades,wds,m),
+      dayBal:m=>dayStartBalForMode(settings,trades,wds,m,adjs),
       st:{alerted:alertedRef.current,prevReached:prevReachedRef.current}});
     const chime=()=>{if(settings?.soundAlertOn!==false)music.playAlert(ALERT_CHIME_SRC,settings?.alertVolume??ALERT_VOLUME_DEFAULT);};
     const notify=(title,body,tag)=>{
@@ -9891,17 +10031,17 @@ export default function App(){
           )}
 
           <div key={view} className="mx-auto max-w-5xl animate-[fadeIn_200ms_ease-out]">
-            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music} userId={authUser?.id}/>}
+            {view==='dashboard'&&<Dashboard settings={settings} trades={trades} wds={wds} adjs={adjs} ss={todaySS} saveSS={saveSS} bal={bal} mode={mode} nav={setView} music={music} userId={authUser?.id}/>}
             {view==='analyzer'&&<Analyzer settings={settings} ss={todaySS} mode={mode} saveAnalyses={saveAnalyses} analyses={analyses} nav={setView} setPA={setPA} trades={trades}/>}
-            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} mode={mode} userId={authUser?.id} strategies={strategies} addStrategy={addStrategy}/>}
-            {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} wds={wds} mode={mode} strategies={strategies} music={music} userId={authUser?.id}/>}
-            {view==='money'&&<Money settings={settings} trades={trades} wds={wds} saveWds={saveWds} mode={mode} ss={todaySS}/>}
+            {view==='journal'&&<Journal settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} pa={pa} setPA={setPA} wds={wds} adjs={adjs} mode={mode} userId={authUser?.id} strategies={strategies} addStrategy={addStrategy}/>}
+            {view==='quicklog'&&<QuickLog settings={settings} trades={trades} saveTrades={saveTrades} deleteTrade={deleteTrade} ss={todaySS} saveSS={saveSS} wds={wds} adjs={adjs} mode={mode} strategies={strategies} music={music} userId={authUser?.id}/>}
+            {view==='money'&&<Money settings={settings} trades={trades} wds={wds} adjs={adjs} saveWds={saveWds} addAdj={addAdj} deleteAdj={deleteAdj} mode={mode} ss={todaySS}/>}
             {view==='plan'&&<Plan settings={settings} mode={mode}/>}
-            {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} mode={mode} nav={setView}/>}
-            {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} strategies={strategies}/>}
-            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} ss={todaySS}/>}
+            {view==='calendar'&&<CalendarPage trades={trades} settings={settings} wds={wds} adjs={adjs} mode={mode} nav={setView}/>}
+            {view==='analytics'&&<Analytics trades={trades} analyses={analyses} settings={settings} bal={bal} wds={wds} adjs={adjs} strategies={strategies}/>}
+            {view==='ask'&&<Ask trades={trades} settings={settings} mode={mode} userId={authUser?.id} strategies={strategies} analyses={analyses} wds={wds} adjs={adjs} ss={todaySS}/>}
             {view==='profile'&&<Profile user={authUser} onSignOut={()=>requestLeave({type:'logout'})} onSettings={()=>requestLeave({type:'view',id:'settings'})}/>}
-            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving}/>}
+            {view==='settings'&&<Cfg settings={settings} saveSettings={saveSettings} ss={todaySS} resetAccount={resetAccount} trades={trades} wds={wds} adjs={adjs} strategies={strategies} mode={mode} addStrategy={addStrategy} updateStrategy={updateStrategy} deleteStrategy={deleteStrategy} guardRef={guardRef} onSavingChange={setSettingsSaving}/>}
           </div>
 
           {/* Rendered once here (not inside Dashboard) so it's never unmounted by navigation. */}

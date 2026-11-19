@@ -268,7 +268,7 @@ describe('Capital tab', () => {
   test('jump bar lists the sections, hides Withdrawals in Demo, and scrolls to the chosen one (AC-17)', async () => {
     const { user } = await openCapital();
     const bar = screen.getByRole('navigation', { name: 'Capital sections' });
-    expect(within(bar).getAllByRole('button').map((b) => b.textContent)).toEqual(['Projection', 'Sizer', 'Milestones']);
+    expect(within(bar).getAllByRole('button').map((b) => b.textContent)).toEqual(['Projection', 'Sizer', 'Balance', 'Milestones']);
     await user.click(within(bar).getByRole('button', { name: 'Milestones' }));
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     expect(within(bar).getByRole('button', { name: 'Milestones' })).toHaveAttribute('aria-current', 'true');
@@ -460,7 +460,7 @@ describe('Capital tab review follow ups', () => {
     Object.defineProperty(main, 'clientHeight', { configurable: true, value: 500 });
     Object.defineProperty(main, 'scrollHeight', { configurable: true, value: 2000 });
     Object.defineProperty(main, 'scrollTop', { configurable: true, writable: true, value: 600 });
-    top('cap-projection', -400); top('cap-sizer', 20); top('cap-milestones', 700);
+    top('cap-projection', -400); top('cap-sizer', 20); top('cap-balance', 400); top('cap-milestones', 700);
     fireEvent.scroll(main);
     expect(within(bar).getByRole('button', { name: 'Sizer' })).toHaveAttribute('aria-current', 'true');
     main.scrollTop = 1500; // 1500 + 500 >= 2000 - 2
